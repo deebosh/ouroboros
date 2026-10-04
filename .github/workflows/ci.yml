@@ -725,10 +725,15 @@ jobs:
     name: e2e-live (SM1 x1 — largest subset feasible under the $30 cap)
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.e2e_live == 'true'
     runs-on: ubuntu-latest
-    # One SM1 lane: the task (--task-timeout 2400), the self-mod evolution cycle
-    # as a second root task, the absorb wait with the re-exec restart, and two
-    # hermetic preflight suites on a 4-vCPU runner — well inside this bound.
-    timeout-minutes: 150
+    # One SM1 lane: the task (--task-timeout 4500 = 75 min; at 2400 all four runs
+    # hit the deadline, and the traced one spent ~21 min on edits and ~17 min on
+    # the review path before a review wave was cut off, #1501), the self-mod
+    # evolution cycle as a second root task, the absorb wait with the re-exec
+    # restart, and two hermetic preflight suites on a 4-vCPU runner. The
+    # stand's own worst case is 2 x (task + ready) + 16 min of fixed waits
+    # ~= 176 min; this bound adds provisioning, so the stand ends the run with
+    # its own verdict and traces, never a job kill.
+    timeout-minutes: 210
     env:
       HAS_E2E_LIVE_KEY: ${{ secrets.OUROBOROS_E2E_LIVE_OPENROUTER_KEY != '' && 'true' || 'false' }}
     steps:
@@ -769,7 +774,7 @@ jobs:
           python -m devtools.e2e_live.run_live_lanes \
             --source-repo "$GITHUB_WORKSPACE" --seed HEAD --out "$RUNNER_TEMP/e2e_live" \
             --scenarios SM1 --attempts 1 --pass-of 1 --lanes 1 \
-            --total-budget 30 --per-task-usd 15 --task-timeout 2400 --self-mod \
+            --total-budget 30 --per-task-usd 15 --task-timeout 4500 --self-mod \
             --key-env OUROBOROS_E2E_LIVE_OPENROUTER_KEY --watch-interval 60
       # The manifest is written at admission and finalized on EVERY exit path,
       # so the summary reads the run's own record — and must render EVERY shape

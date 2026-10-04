@@ -105,7 +105,8 @@ def test_the_paid_lane_fires_only_on_an_opted_in_dispatch():
             assert "inputs" not in str(job.get("if", "")), (name, job.get("if"))
     assert _job()["runs-on"] == "ubuntu-latest"
     # One SM1 lane with --self-mod: the task, the evolution cycle, the absorb
-    # wait and two hermetic preflight suites on a 4-vCPU runner.
+    # wait and two hermetic preflight suites on a 4-vCPU runner; the bound
+    # itself is derived from the stand's waits in the test below.
     assert int(_job()["timeout-minutes"]) >= 120
     # No job downstream of the release chain may wait for a paid opt-in lane.
     for name, job in workflow["jobs"].items():
@@ -153,7 +154,9 @@ def test_the_stand_runs_with_the_operator_flag_set_on_a_clean_seed_of_the_checko
     assert args["--out"].startswith("$RUNNER_TEMP/")
     assert args["--self-mod"] is None
     assert float(args["--total-budget"]) == TOTAL_BUDGET_USD
-    assert int(args["--task-timeout"]) == 2400 and float(args["--watch-interval"]) == 60
+    # 75 minutes (owner decision on #1501): at 2400 all four runs hit the deadline
+    # with review still in flight; the model and the money fence stay as they were.
+    assert int(args["--task-timeout"]) == 4500 and float(args["--watch-interval"]) == 60
     assert "--stub" not in args and "--profile" not in args and "--model" not in args
     # The seed's `git describe` and the release admission gate read history and tags.
     checkout = _job()["steps"][0]
@@ -167,6 +170,34 @@ def test_the_stand_runs_with_the_operator_flag_set_on_a_clean_seed_of_the_checko
     steps = _job()["steps"]
     assert any(step.get("uses", "").startswith("actions/setup-node@") for step in steps)
     assert any("playwright install --with-deps chromium" in str(step.get("run", "")) for step in steps)
+
+
+# The stand's fixed waits around one awaited SM1 task (devtools/e2e_live/scenarios.py):
+# LaneContext.wait_task's grace past the deadline (300), the cancel wait after a
+# timeout (300), the durable-row wait (180), and the two event waits of run_sm1
+# (scope_review_complete and llm_usage, 90 each).
+STAND_FIXED_WAITS_SEC = 300 + 300 + 180 + 90 + 90
+# Checkout with history, the Python env, node 22, Chromium with its apt deps,
+# and the summary and upload steps after the stand.
+PROVISION_MARGIN_SEC = 15 * 60
+
+
+def test_the_job_bound_outlasts_the_stand_worst_case(monkeypatch):
+    """The stand, not GitHub, must end the run: a job killed mid-wait loses the
+    finalized manifest, the step summary's verdict and the traces bundle. The
+    worst case is server ready + the task (+ fixed waits) + the absorb wait
+    (``confirm_absorb`` reuses --task-timeout) + the post-restart health wait,
+    read from the stand's own parser over the job's exact argv, so raising
+    --task-timeout without the job bound trips here, and the bound passes only
+    with room for provisioning."""
+    from devtools.e2e_live import run_live_lanes
+
+    monkeypatch.setattr(run_live_lanes.tempfile, "gettempdir", lambda: "/tmp")
+    argv = shlex.split(_stand_step()["run"].replace("\\\n", " "))[3:]
+    parsed = run_live_lanes.parse_args(argv)
+    worst = 2 * (parsed.task_timeout + parsed.ready_timeout) + STAND_FIXED_WAITS_SEC
+    bound = int(_job()["timeout-minutes"]) * 60
+    assert bound >= worst + PROVISION_MARGIN_SEC, (bound, worst)
 
 
 def test_the_run_size_is_feasible_under_the_cap_by_the_worst_case_reservation_rule():
