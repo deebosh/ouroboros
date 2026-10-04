@@ -669,20 +669,7 @@ def test_tools_module_imports_no_retired_memory_machinery_and_lazy_domains_stay_
 
 # --- through the registry (root task) --------------------------------------------------------------
 
-@pytest.fixture
-def chronicle_policy_skip(monkeypatch):
-    """Stand-in for the three safety.py POLICY_SKIP rows the integrator adds in P6 (OA-13b).
-
-    Remove in P6: without it each call through ToolRegistry falls to DEFAULT_POLICY
-    (a paid safety check), which a test must never reach.
-    """
-    from ouroboros.safety import POLICY_SKIP, TOOL_POLICY
-
-    for name in ("chronicle_write", "memory_read", "memory_mark"):
-        monkeypatch.setitem(TOOL_POLICY, name, POLICY_SKIP)
-
-
-def test_registry_root_writes_to_the_canonical_data_root_and_reads_back(tmp_path, chronicle_policy_skip):
+def test_registry_root_writes_to_the_canonical_data_root_and_reads_back(tmp_path):
     from ouroboros.tools.registry import ToolRegistry
 
     canonical, own = tmp_path / "canonical", tmp_path / "own-drive"
@@ -728,8 +715,7 @@ def test_both_child_sets_read_write_knowledge_mark_and_draft_but_neither_writes_
         assert name not in LOCAL_READONLY_SUBAGENT_TOOL_NAMES and name not in ACTING_SUBAGENT_TOOL_NAMES
 
 
-def test_readonly_child_registry_writes_signed_memory_and_is_refused_notes_identity_and_scratchpad(
-        tmp_path, chronicle_policy_skip):
+def test_readonly_child_registry_writes_signed_memory_and_is_refused_notes_identity_and_scratchpad(tmp_path):
     from ouroboros.contracts.task_constraint import TaskConstraint
     from ouroboros.tools.registry import ToolRegistry
 
@@ -767,8 +753,7 @@ def test_readonly_child_registry_writes_signed_memory_and_is_refused_notes_ident
     assert identity.read_text(encoding="utf-8") == scratchpad.read_text(encoding="utf-8") == "unchanged"
 
 
-def test_acting_child_registry_reads_chat_history_and_writes_memory_but_no_note(
-        tmp_path, monkeypatch, chronicle_policy_skip):
+def test_acting_child_registry_reads_chat_history_and_writes_memory_but_no_note(tmp_path, monkeypatch):
     from ouroboros.contracts.task_constraint import TaskConstraint
     from ouroboros.tools.registry import ToolRegistry
 
