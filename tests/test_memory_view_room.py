@@ -568,3 +568,26 @@ def test_a_nanny_keeps_its_rooms_sealed_pages_on_its_room_page_and_a_child_reads
     nanny, _text = _view(tmp_path, {**base, "id": "nan9", "configured_subagent": {"route": {"kind": "agent_session"}}})
     assert [item["id"] for item in nanny.room["under_parts"]] == [
         sealed.record["id"], draft.record["id"], newer.record["id"], part.record["id"]]
+
+
+def test_a_storyless_room_page_keeps_story_order_when_an_older_period_is_sealed_later(tmp_path):
+    """Review fix (simulated triad, delta 3): a nanny's room page is in story (stream) order, not publication order,
+    so F4 (oldest first, D-37) addresses the older period first even when its page was published after a newer one."""
+    from ouroboros.tools.chronicle import page_covers
+
+    _rooms, rows = _install(tmp_path)
+    store = ChronicleStore(tmp_path)
+
+    def seal(first, last, text):
+        covers = page_covers(tmp_path, "1", from_addr=_addr(rows[first]), to_addr=_addr(rows[last]))["covers"]
+        result = store.publish_page(room_id="1", text=text, covers=covers, author=shared.MIND)
+        assert result.ok, result
+        return result.record["id"]
+
+    newer = seal(3, 3, "The newer period.")
+    older = seal(0, 1, "The older period, sealed later.")
+    nanny, text = _view(tmp_path, {"id": "nan9", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1",
+                                   "configured_subagent": {"route": {"kind": "agent_session"}}})
+    assert [item["id"] for item in nanny.room["under_parts"]] == [older, newer]
+    page = _section(text, "### Pages of this room")
+    assert page.index("The older period, sealed later.") < page.index("The newer period.")

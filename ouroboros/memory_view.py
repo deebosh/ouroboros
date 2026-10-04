@@ -592,10 +592,10 @@ def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
                                 {"covers": record.get("covers"), "range_text": _mapping(record.get("metadata")).get(
                                     "legacy_range_text")}, getattr(unit, "ts_span", None))}
                            for record in retold if not getattr(unit := units.get(record["id"]), "folded", False)]
-        own = {} if spec.story else {e["id"]: {**e, "part": None} for e in _story_pages(store, label)[0] if e["room_id"] == room}
+        own = {} if spec.story else {e["id"]: {**e, "part": None} for e in _story_pages(store, label)[0] if e["room_id"] == room}  # walked in story order (D-37)
         facts["under_parts"] = [own.get(record["id"]) or {"id": record["id"], "kind": record["kind"], "part": record["folded_into"],
                                  "period": _period(_mapping(record.get("covers")).get("ts_span")), "text": str(record.get("current_text") or "")}
-                                for record in records if record["kind"] in ("page", "part") and (record.get("folded_into") or record["id"] in own)]
+                                for record in (records if spec.story else store.pages_of_room(room)) if record["kind"] in ("page", "part") and (record.get("folded_into") or record["id"] in own)]
         facts["notes"] = list(notes.get(room, ()))
     if spec.origin_words and room.lstrip("-").isdigit() and int(room) in memory_inventory.membership_facts(
             root).project_chat_ids:
