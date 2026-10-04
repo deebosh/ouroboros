@@ -5,7 +5,8 @@ call. With it off (or its switch unknown) nobody else reads the open memory betw
 owner's turns, so after a root task the Light helper drafts ONE unit, chosen from facts:
 
 1. The task's view showed this room's open rows only by address (``shortage_from_trace``,
-   ``open_rows``): the room's oldest open segment, up to the newest addressed row.
+   ``open_rows``): the room's oldest open segment, up to the newest addressed row (a
+   later one when an older one is unreadable to the helper or already refused).
 2. Else the view showed old narrative only by pointer (``narrative``): the oldest adjacent
    unfolded records of one kind of one room among those pointers, folded into a part.
 3. Else, only after a root that was not a direct turn (the late phase of a direct turn
@@ -228,9 +229,9 @@ def candidate_units(root: Any, store: ChronicleStore, shortage: Optional[Shortag
     """Units in the order the writer considers them: the shortage's unit, then old periods."""
     root = pathlib.Path(root)
     if shortage is not None and shortage.kind == "open_rows":
-        segment = memory_inventory.oldest_open_segment(root, store, shortage.room_id,
-                                                       until=shortage.newest_addressed_row)
-        if segment is not None:
+        # Oldest run first; a later run only when an older one has no readable input or a receipt.
+        for segment in memory_inventory.open_segments(root, store, shortage.room_id,
+                                                      until=shortage.newest_addressed_row):
             first = segment.rows[0][0]["row_sha256"][:12]
             yield FallbackUnit("page", segment.room_id, f"open:{segment.room_id}:{first}", segment=segment,
                                head_sequence=segment.head_sequence)

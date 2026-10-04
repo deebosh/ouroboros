@@ -44,7 +44,7 @@ import json
 import pathlib
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, FrozenSet, List, Mapping, NamedTuple, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterator, List, Mapping, NamedTuple, Optional, Tuple
 
 from ouroboros import chat_chain
 from ouroboros.chronicle_import import legacy_frontier
@@ -543,35 +543,44 @@ def oldest_open_segment(root: Any, store: ChronicleStore, room_id: Any, *,
     that row inclusive; when it names no row of these, or one before the first open row,
     there is no run. People's words and short replies inside the run stay in it.
     """
+    return next(open_segments(root, store, room_id, pos_range=pos_range, until=until), None)
+
+
+def open_segments(root: Any, store: ChronicleStore, room_id: Any, *,
+                  pos_range: Optional[Tuple[int, int]] = None, until: Any = None) -> Iterator[OpenSegment]:
+    """The room's runs of open rows, oldest first (``oldest_open_segment`` is the first).
+
+    A writer that cannot read the oldest run (one row larger than its window) takes the
+    next one instead of stopping the room's open rows for good.
+    """
     room = str(room_id)
     bound = None
     if until is not None:
         try:
             bound = chat_chain._normalized(until)
         except ValueError:
-            return None
+            return
     entries = _room_entries(root, store, room, pos_range)
     if bound is not None:
         hits = [index for index, entry in enumerate(entries) if _is_row(entry[0], bound)]
         entries = entries[:hits[-1] + 1] if hits else []
     if not entries:
-        return None
+        return
     sealed = _sealed(store, room, _authority(store))
+    head = store.room_head(room)
     run: List[Entry] = []
     seen = set()
-    for entry in entries:
-        sha = entry[0]["row_sha256"]
-        if sha in sealed:
+    for entry in [*entries, None]:
+        sha = entry[0]["row_sha256"] if entry is not None else None
+        if entry is None or sha in sealed:
             if run:
-                break
+                yield OpenSegment(room_id=room, from_addr=dict(run[0][0]), to_addr=dict(run[-1][0]),
+                                  rows=tuple(run), head_sequence=head)
+                run, seen = [], set()
             continue
         if sha not in seen:  # a byte-identical redelivered row is one member of a page's set
             seen.add(sha)
             run.append(entry)
-    if not run:
-        return None
-    return OpenSegment(room_id=room, from_addr=dict(run[0][0]), to_addr=dict(run[-1][0]), rows=tuple(run),
-                       head_sequence=store.room_head(room))
 
 
 # --- the view's floor fact as a writer's shortage ---------------------------------------------------

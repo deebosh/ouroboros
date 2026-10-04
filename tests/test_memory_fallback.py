@@ -289,6 +289,31 @@ def test_a_helper_draft_never_seals_a_mind_note_it_did_not_read(tmp_path, monkey
     assert ref in page["covers"]["rows"] and ref in ChronicleStore(tmp_path).sealed_row_refs(alpha)
 
 
+def test_an_unreadable_oldest_stretch_lets_the_next_open_stretch_be_drafted(tmp_path, monkeypatch, light):
+    shared.world(tmp_path)
+    _consciousness(monkeypatch, False)
+    chat = tmp_path / "logs" / "chat.jsonl"
+    shared.append(chat, shared.msg("2026-09-03T00:10:00+00:00", "owner before the giant", client_message_id="m8"),
+                  shared.msg("2026-09-03T00:11:00+00:00", "x" * 60_000, direction="out", task_id="t9"),
+                  shared.msg("2026-09-03T00:12:00+00:00", "owner after the giant", client_message_id="m9"))
+    light.window = mf.ANSWER_RESERVE_TOKENS + 6_000
+    assert _run(tmp_path, _Light(), direct=True, trace=_shortage("1", 22, tmp_path)).outcome == "published"
+    assert [pos for _a, _m, pos in mi.open_room_rows(tmp_path, "1")] == [21]  # the giant alone, addressed
+    shared.append(chat, shared.msg("2026-09-03T00:20:00+00:00", "a new owner question", client_message_id="m10"),
+                  shared.msg("2026-09-03T00:21:00+00:00", "a new short reply", direction="out", task_id="t10"))
+    llm = _Light()
+    run = _run(tmp_path, llm, direct=True, trace=_shortage("1", 24, tmp_path))
+    assert run.outcome == "published" and len(llm.prompts) == 1, run
+    assert "a new owner question" in llm.prompts[0] and "x" * 1_000 not in llm.prompts[0]
+    addresses = _addresses(tmp_path)
+    assert _drafts(tmp_path)[-1]["covers"]["rows"] == [addresses[pos]["row_sha256"] for pos in (23, 24)]
+    # The island alone stays open and unpaid: the helper cannot read it, the mind can (the other side).
+    assert [pos for _a, _m, pos in mi.open_room_rows(tmp_path, "1")] == [21]
+    llm = _Light()
+    assert _run(tmp_path, llm, direct=True, trace=_shortage("1", 24, tmp_path)).outcome == "nothing"
+    assert llm.prompts == []
+
+
 # --- the draft and its publication -------------------------------------------------------------------
 
 def test_a_page_draft_survives_an_unrelated_record_of_its_room(tmp_path, monkeypatch, light):
