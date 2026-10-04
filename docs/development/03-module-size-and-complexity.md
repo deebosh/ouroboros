@@ -236,8 +236,8 @@ router contract requires `predecessor_task_id` (`""` = fresh; omission or
 Main receives only a defensive provider projection of the predecessor authority
 — never a raw head/tail slice, an invented summary, or a mutation of the
 canonical result (the contract and the projection rules: ARCHITECTURE §1
-"CLI / Headless Boundary"). The authored continuation narrative is written at
-the result owner together with its exact `get_task_result(include_authority=True)`
+"CLI / Headless Boundary"). A legacy authored continuation narrative is read at
+the result owner with its exact `get_task_result(include_authority=True)`
 source; the projection thresholds only the closed raw keys `result` and
 `final_answer`, at `context_budget.PREDECESSOR_RESULT_INLINE_CHARS`.
 
