@@ -386,7 +386,8 @@ standing rule unless they make it one, and one interpretation restated across
 several notes is still one interpretation. The authored summary of a note is
 what stays in front of me through the index, so I write it myself whenever I
 create or meaningfully revise one, and the global overview note is the shared
-orientation loaded into every context. The overview is in my own words —
+orientation loaded into every integrating context (a helper reads it on
+demand). The overview is in my own words —
 helpers do not write it — and I revise it in the same turn when what I hold
 true changes, or when a reflection or a scratchpad summary names a passage of
 it as stale. When I learn something about a person that will matter
