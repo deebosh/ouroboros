@@ -1,4 +1,5 @@
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
+import { tx } from './i18n.js';
 import { bindMarkdownTables, destroyChatMarkdown, enhanceChatMarkdown, mountChatMarkdown, renderChatMarkdown } from './chat_markdown.js';
 import { renderPageHeader } from './page_header.js';
 import { PAGE_ICONS } from './page_icons.js';
@@ -178,6 +179,8 @@ export {
 };
 
 const PROJECT_ROW_TYPES = new Set(['project_started', 'project_handoff', 'project_completion_summary']);
+// Host sentences relayed as written: shown in the install language by their exact text (`tx`, docs/DESIGN.md "Language").
+const HOST_SENTENCE_ROWS = new Set(['legacy_memory_notice']);
 // Host placement: custody warns; settled reviews show results.
 const CARD_ROW_PHASES = new Map([['timeline', 'warn'], ['reviews', 'result']]);
 const CHAT_STORAGE_KEY = 'ouro_chat';
@@ -2300,7 +2303,7 @@ export function createChatInstance({
             : role === 'system' && systemType === 'skill_review'
                 ? renderSkillReviewDisclosure(text, opts.skillReview || null)
                 : role === 'system' && systemType !== 'skill_review' && markdown !== true
-                    ? escapeHtml(text)
+                    ? escapeHtml(HOST_SENTENCE_ROWS.has(systemType) ? tx(text) : text)
                     : renderChatMarkdown(text);
         const timeFmt = formatMsgTime(ts);
         const timeHtml = timeFmt ? `<div class="msg-time" title="${escapeHtmlAttr(timeFmt.full)}">${escapeHtml(timeFmt.short)}</div>` : '';

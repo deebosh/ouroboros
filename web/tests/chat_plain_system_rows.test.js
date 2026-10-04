@@ -9,6 +9,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 
 import { createChatInstance } from '../modules/chat.js';
+import { applyPayload, flushMisses, setMissTransport } from '../modules/i18n.js';
 
 // Source pins below match across line breaks; normalize CRLF so a Windows
 // checkout (core.autocrlf) reads the same bytes the regexes were written for.
@@ -653,7 +654,7 @@ test('render arm order and enhancement guard are pinned in source', () => {
         chatSource.indexOf('const timeFmt =', chatSource.indexOf("const rendered = role === 'user'")),
     );
     assert.match(ternary, /renderSkillReviewDisclosure\(text, opts\.skillReview \|\| null\)/);
-    assert.match(ternary, /role === 'system' && systemType !== 'skill_review' && markdown !== true\n\s+\? escapeHtml\(text\)/);
+    assert.match(ternary, /role === 'system' && systemType !== 'skill_review' && markdown !== true\n\s+\? escapeHtml\(HOST_SENTENCE_ROWS\.has\(systemType\) \? tx\(text\) : text\)/);
     assert.match(chatSource, /: renderChatMarkdown\(text\);/);
     // The enhancement pass skips exactly the plain-system case.
     assert.match(
@@ -713,5 +714,78 @@ test('a host notice concludes a replayed card and keeps its markdown', async () 
     } finally {
         instance?.destroy();
         restoreDom(prior);
+    }
+});
+
+// The one-time legacy-memory notice is a host sentence relayed as written (owner answer 2=A:
+// "route it through localization"): a non-English install shows it through the translation
+// memory by its exact text (`tx`, docs/DESIGN.md "Language"), a sentence the memory lacks stays
+// English and is reported for the generator, and every other plain System row keeps its text.
+const LEGACY_NOTICE = '🧠 Memory: what Ouroboros remembered before this update is kept in its previous format — '
+    + '3 pieces over 2 periods (2026-08-01 to 2026-09-05). It works as it is and is folded into the new format '
+    + 'gradually, part by part. You can ask Ouroboros to keep folding it; it will tell you how much is left.';
+const LEGACY_NOTICE_RU = '🧠 Память: то, что Уроборос помнил до обновления, хранится в прежнем формате.';
+
+test('the legacy-memory notice reads in the install language; other plain system rows keep theirs', async () => {
+    const sent = [];
+    setMissTransport((payload) => { sent.push(payload); return null; });
+    const render = (row) => {
+        const { prior, mount } = installDom();
+        let instance;
+        try {
+            const made = makeInstance(mount);
+            instance = made.instance;
+            made.handlers.get('chat')(row);
+            return findBubble('system').innerHTML;
+        } finally {
+            instance?.destroy();
+            restoreDom(prior);
+        }
+    };
+    const notice = {
+        chat_id: 2, role: 'system', system_type: 'legacy_memory_notice', markdown: false,
+        content: LEGACY_NOTICE, ts: '2026-10-04T20:00:00Z',
+    };
+    const plainKey = PLAIN_ROW.content.replace(/\s+/g, ' ').trim();
+    try {
+        applyPayload({ language: '', english: true, entries: {} });
+        assert.match(render(notice), /Memory: what Ouroboros remembered before this update/);
+        applyPayload({
+            language: 'ru', english: false,
+            entries: { [LEGACY_NOTICE]: { text: LEGACY_NOTICE_RU }, [plainKey]: { text: 'Запуск › Готово' } },
+        });
+        const translated = render(notice);
+        assert.match(translated, /Память: то, что Уроборос помнил до обновления/);
+        assert.doesNotMatch(translated, /Memory: what Ouroboros remembered/);
+        // The same row replayed from /api/chat/history reads the same way.
+        const historyRow = { text: LEGACY_NOTICE, role: 'system', ts: notice.ts, is_progress: false,
+            system_type: 'legacy_memory_notice', markdown: false };
+        const { prior, mount } = installDom(async (url) => (String(url).startsWith('/api/chat/history')
+            ? { ok: true, json: async () => ({ messages: [historyRow] }) }
+            : { ok: true, json: async () => ({ active_direct_turns: [] }) }));
+        let replayed;
+        try {
+            ({ instance: replayed } = makeInstance(mount));
+            await settle();
+            await settle();
+            assert.match(findBubble('system').innerHTML, /Память: то, что Уроборос помнил до обновления/);
+        } finally {
+            replayed?.destroy();
+            restoreDom(prior);
+        }
+        // Not every System row: a plain Project row stays as the host wrote it.
+        assert.match(render(PLAIN_ROW), /Launch › Ship · Completed/);
+        assert.doesNotMatch(render(PLAIN_ROW), /Запуск/);
+        applyPayload({ language: 'ru', english: false, entries: {} });
+        assert.match(render(notice), /Memory: what Ouroboros remembered before this update/);
+        sent.length = 0;
+        await flushMisses();
+        // The bubble's own chrome (time, copy) reports its codes too; the notice is one text key.
+        const reported = sent.flatMap((payload) => payload.items).filter((item) => !item.key.startsWith('code:'));
+        assert.deepEqual(reported.map((item) => item.key), [LEGACY_NOTICE]);
+        assert.equal(reported[0].context.role, 'host-text');
+    } finally {
+        applyPayload({ language: '', english: true, entries: {} });
+        setMissTransport(() => null);
     }
 });
