@@ -4,13 +4,16 @@ import json
 import pytest
 
 from ouroboros import config, llm_attempt, usage_accounting as ua
+from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS as HEADROOM, OWNER_NANO_TARGET_TOKENS as NANO
 from ouroboros.request_wire_recovery import current_wire_candidate
 from tests.test_processing_transport import transport as _transport
 
 transport = _transport
 
 
-@pytest.mark.parametrize("input_tokens,cap", [(60826, 21094), (73728, 8192)])
+# The allowance follows the owner's Nano target (SSOT, pinned in test_context_budget_ssot): room under it, then the
+# exact headroom boundary; one token more is refused below.
+@pytest.mark.parametrize("input_tokens,cap", [(60826, NANO - 60826), (NANO - HEADROOM, HEADROOM)])
 def test_nano_actual_custom_tools_are_measured_before_output_seal(transport, monkeypatch, input_tokens, cap):
     _root, client, sent = transport
     monkeypatch.setattr(config, "get_context_mode", lambda: "nano")
@@ -42,7 +45,7 @@ def test_exact_nano_insufficient_headroom_returns_preparation_facts_without_send
     _, client, sent = transport
     monkeypatch.setattr(config, "get_context_mode", lambda: "nano")
     monkeypatch.setattr(llm_attempt, "_prepared_input_measurement", lambda *_: {
-        "input_tokens": 73729, "input_is_exact": True,
+        "input_tokens": NANO - HEADROOM + 1, "input_is_exact": True,
         "tokenizer_template_provenance": {"source": "test"},
         "route_capacity_tokens": 131072, "route_capacity_confirmed": True})
     with pytest.raises(ua.PhysicalAttemptPreparationFailed) as failure:
