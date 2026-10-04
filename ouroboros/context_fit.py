@@ -839,11 +839,11 @@ def _view_projections(core: ContextCore, governance: Mapping[str, str], user_con
     from ouroboros import memory_floor
     from ouroboros.memory_view import snapshot_from_json
     from ouroboros.tool_policy import select_tool_schemas
-
+    sent = {mode: select_tool_schemas(tool_schemas or [], context_mode=mode) for mode in form}  # what each mode sends
     fixed = {mode: _request_tokens(_system_blocks(core, governance[form[mode]]), user_content_json)
-             + tool_schema_tokens(list(select_tool_schemas(tool_schemas or [], context_mode=mode).schemas)) for mode in form}
-    views, start = memory_floor.mode_views(
-        snapshot_from_json(core.memory_view_json), preferred=preferred, fixed_tokens_by_mode=fixed, start=start,
+             + tool_schema_tokens(list(sent[mode].schemas)) for mode in form}
+    views, start = memory_floor.mode_views(snapshot_from_json(core.memory_view_json), preferred=preferred, start=start,
+        fixed_tokens_by_mode=fixed, tool_names=None if tool_schemas is None else {m: sent[m].chosen for m in form},
         window_tokens=window_tokens, known_window=known_window, output_reserve=output_reserve, ratio=ratio)
     return {mode: (_system_blocks(core, governance[form[mode]], story, room), receipt)
             for mode, (story, room, receipt) in views.items()}, start

@@ -213,15 +213,60 @@ def test_the_physical_floor_block_appears_exactly_when_a_step_past_f1_ran_or_the
     lowered = note(mv.FULL_VIEW, mode="low", lowered_from="max")
     assert lowered == ("### Physical floor\nThis window (500000 tokens) cannot hold Max with even the shortest view "
                        "of my memory; this task started in Low.")
-    nano = note(mv.FloorLevel((("F7", ("x",)),)), mode="nano")
+    meta = ("compact_context", "list_available_tools", "enable_tools")  # the schemas an owner's Nano sends
+    nano = note(mv.FloorLevel((("F7", ("x",)),)), mode="nano", tool_names=meta)
     assert nano.endswith("\n(memory_read is reachable through enable_tools)")
-    assert "enable_tools" not in note(mv.FloorLevel((("F7", ("x",)),)), mode="low")
+    assert "enable_tools" not in note(mv.FloorLevel((("F7", ("x",)),)), mode="low", tool_names=meta)
     # Placed at the end of this room, or of the live rooms when the view has no room.
     level = mf.fit_memory_view(snapshot, _window(0))
     assert mv.render_room(snapshot, level, floor_note=note(level)).endswith(note(level))
     roomless = syn.snapshot(role="consciousness", story=syn.pointers(20, 4), live=[syn.live_room(0)])
     text = mv.render_room(roomless, mv.FULL_VIEW, floor_note="### Physical floor\nx")
     assert text.index("## Live rooms") < text.index("### Physical floor") and text.endswith("x")
+
+
+def test_the_nano_floor_names_the_path_to_memory_read_that_its_request_sends():
+    """The path line is a fact of the request's schemas, never of a role: enable_tools when the
+    request sends it; list_available_tools and the parent when it sends neither that nor
+    memory_read; nothing when it sends memory_read or its schemas are not known."""
+    level = mv.FloorLevel((("F7", ("x",)),))
+
+    def note(names, mode="nano"):
+        return mf.floor_note(level, window_tokens=128_000, mode=mode, tool_names=names)
+
+    unknown = note(None)
+    assert unknown.startswith("### Physical floor\n") and "enable_tools" not in unknown and "parent" not in unknown
+    assert note(("compact_context", "list_available_tools", "enable_tools")) == (
+        unknown + "\n(memory_read is reachable through enable_tools)")
+    listing = note(("list_available_tools",))
+    path = listing[len(unknown) + 1:]
+    assert listing.startswith(unknown + "\n") and "enable_tools" not in listing
+    assert path == ("(memory_read is not among this request's tools; list_available_tools shows what this task "
+                    "can call, and my parent task can read any address I name to it)")
+    bare = note(())  # a request that sends neither names only the parent
+    assert bare == (unknown + "\n(memory_read is not among this request's tools; my parent task can read any "
+                    "address I name to it)")
+    for carried in (("memory_read",), ("memory_read", "enable_tools", "list_available_tools")):
+        assert note(carried) == unknown, carried  # the request sends memory_read itself: no path to name
+    for mode in ("max", "low"):  # outside Nano the request sends its permitted schemas: no path line
+        assert note(("list_available_tools",), mode=mode) == note(None, mode=mode), mode
+
+
+def test_the_shortest_view_counts_the_longest_path_line():
+    snapshot = _rich()
+    taken = {}
+    for step, ident, _whole, _short in mf.floor_elements(snapshot):
+        taken.setdefault(step, []).append(ident)
+    level = mv.FloorLevel(tuple((step, tuple(ids)) for step, ids in taken.items()))
+
+    def shortest(names):
+        note = mf.floor_note(level, window_tokens=128_000, mode="nano", lowered_from="max", tool_names=names)
+        return mf.view_tokens(mv.render_story(snapshot, level)) + mf.view_tokens(
+            mv.render_room(snapshot, level, floor_note=note))
+
+    totals = {names: shortest(names) for names in (None, (), ("enable_tools",), ("list_available_tools",))}
+    assert totals[("list_available_tools",)] > totals[("enable_tools",)] > totals[None]
+    assert mf.minimal_view_tokens(snapshot, window_tokens=128_000) == max(totals.values())
 
 
 def test_an_owner_target_takes_only_its_steps_and_names_the_mode_budget():

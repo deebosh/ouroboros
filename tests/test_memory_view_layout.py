@@ -205,6 +205,55 @@ def test_the_tool_schemas_count_in_the_floor_of_every_mode(tmp_path):
             == loaded.projection("nano").memory_facts["floor"]["physical_allowance_tokens"])  # none is a Nano schema
 
 
+@pytest.mark.parametrize("actor,owner", [("child", "max"), ("child", "nano"), ("root", "max")])
+def test_a_nano_floor_names_only_the_path_its_own_request_sends(tmp_path, monkeypatch, actor, owner):
+    """The real path: the schemas come from the task's registry under the owner's mode, as the agent
+    passes them (``initial_tool_schemas``), and the plan's Nano projection is the request. A Nano
+    the window chose for the owner's Max sends a child list_available_tools alone: its floor names
+    that and the parent, never enable_tools. The owner's Nano sends the child enable_tools, and a
+    root always: their floor says memory_read is reachable through it."""
+    from types import SimpleNamespace
+
+    from ouroboros import context
+    from ouroboros.contracts.task_constraint import TaskConstraint
+    from ouroboros.memory_floor import minimal_view_tokens
+    from ouroboros.memory_view import snapshot_from_json
+    from ouroboros.tool_policy import initial_tool_schemas, select_tool_schemas
+    from ouroboros.tools.registry import ToolRegistry
+
+    monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", owner)
+    env, memory, _rooms = world(tmp_path)
+    task = {"type": "task", "text": "hi", **(MAIN if actor == "root" else {
+        "id": "kid", "chat_id": 1, "delegation_role": "subagent", "parent_task_id": "bound", "root_task_id": "bound",
+        "configured_subagent": {"id": "h", "route": {"kind": "api_model"}}})}
+    (tmp_path / "registry").mkdir()
+    registry = ToolRegistry(repo_dir=tmp_path / "registry", drive_root=tmp_path / "registry")
+    if actor == "child":
+        registry._ctx.task_constraint = TaskConstraint(mode="local_readonly_subagent")
+    schemas = initial_tool_schemas(registry, context_mode=owner)
+    core = context._capture_context_core(env, memory, task, None, None)
+
+    def plan(window):
+        evidence = SimpleNamespace(route_fp="r", status="asserted", stale=False, window_tokens=window)
+        return context._build_context_fit_plan(env, core, task, preferred_mode=owner, tool_schemas=schemas,
+                                               route_resolver=lambda *_a, **_kw: ({"model": "m", "provider": "p"}, evidence))
+
+    roomy = plan(10_000_000)  # Nano's fixed part and reserve, read off a roomy plan; then a window only Nano fits
+    window = (10_000_000 - roomy.projection("nano").memory_facts["floor"]["physical_allowance_tokens"]
+              + minimal_view_tokens(snapshot_from_json(core.memory_view_json), window_tokens=10_000_000) + 50)
+    built = plan(window)
+    assert built.initial_mode == "nano"
+    floor = section(built.messages_for("nano")[0]["content"][2]["text"], "### Physical floor")
+    sent = select_tool_schemas(schemas, context_mode="nano").chosen
+    assert "memory_read" not in sent and ("enable_tools" in floor) == ("enable_tools" in sent), (sent, floor)
+    if (actor, owner) == ("child", "max"):
+        assert sent == ("list_available_tools",)
+        assert floor.rstrip().endswith("list_available_tools shows what this task can call, and my parent task can "
+                                       "read any address I name to it)")
+    else:
+        assert "enable_tools" in sent and floor.rstrip().endswith("(memory_read is reachable through enable_tools)")
+
+
 def test_the_task_trace_keeps_the_view_fact_of_its_request(tmp_path, monkeypatch):
     import ouroboros.loop as loop
     from ouroboros.memory_inventory import VIEW_TRACE_KEY

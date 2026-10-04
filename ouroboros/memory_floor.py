@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ouroboros import context_budget
 from ouroboros.chat_chain import parse_address
@@ -50,6 +50,8 @@ _SHOWN = (("F2", "{} of my replies"), ("F7", "{} lines of people in this room"),
           ("F6", "{} lines of people in other rooms"), ("F4", "{} records of this room's page"),
           ("F5", "{} pages or parts of my story"), ("F3", "the retold records of {} rooms (one line per room)"),
           ("F1", "{} task fact lines"), ("F1b", "{} other open rooms"))
+# One name set per line ``memory_read_path`` can print: the shortest view takes the longest.
+_PATH_CASES = ((), ("enable_tools",), ("list_available_tools",))
 
 
 def view_tokens(text: str) -> int:
@@ -137,10 +139,29 @@ def fit_memory_view(snapshot: mv.MemoryViewSnapshot, allowances: Mapping[str, Op
     return mv.FloorLevel(tuple((step, tuple(taken[step])) for step in LADDER if step in taken), by_budget=by_budget)
 
 
+def memory_read_path(tool_names: Optional[Iterable[str]]) -> str:
+    """How this request reaches ``memory_read``, read from the names of the schemas it sends.
+
+    Nothing when it sends ``memory_read`` or its schemas are not known (``None``: no claim);
+    ``enable_tools`` when it sends that; otherwise the parent, who can read an address for me,
+    and ``list_available_tools`` when it sends that. A fact of the request, never of a role.
+    """
+    if tool_names is None:
+        return ""
+    names = set(tool_names)
+    if "memory_read" in names:
+        return ""
+    if "enable_tools" in names:
+        return "(memory_read is reachable through enable_tools)"
+    listing = "list_available_tools shows what this task can call, and " if "list_available_tools" in names else ""
+    return f"(memory_read is not among this request's tools; {listing}my parent task can read any address I name to it)"
+
+
 def floor_note(level: mv.FloorLevel, *, window_tokens: Optional[int], mode: str, target_tokens: Optional[int] = None,
-               lowered_from: Optional[str] = None) -> str:
+               lowered_from: Optional[str] = None, tool_names: Optional[Iterable[str]] = None) -> str:
     """``### Physical floor``: a fact and a possibility for the mind, exactly when a step past F1/F1b ran
-    or the window lowered the task's starting mode; never an instruction or a threshold."""
+    or the window lowered the task's starting mode; never an instruction or a threshold. In Nano it
+    closes with how this request reaches ``memory_read`` (``tool_names``: the schemas it sends)."""
     counts = dict(level.steps)
     asked = set(counts) - set(_COLLAPSING)
     if not asked and not lowered_from:
@@ -159,9 +180,8 @@ def floor_note(level: mv.FloorLevel, *, window_tokens: Optional[int], mode: str,
     if lowered_from:
         lines.append(f"This window ({window_tokens} tokens) cannot hold {lowered_from.capitalize()} with even the "
                      f"shortest view of my memory; this task started in {name}.")
-    if mode == "nano":
-        lines.append("(memory_read is reachable through enable_tools)")
-    return "\n".join(lines)
+    path = memory_read_path(tool_names) if mode == "nano" else ""
+    return "\n".join(lines + [path] if path else lines)
 
 
 def view_facts(snapshot: mv.MemoryViewSnapshot, level: mv.FloorLevel, *, window_tokens: Optional[int], mode: str,
@@ -190,19 +210,22 @@ def view_facts(snapshot: mv.MemoryViewSnapshot, level: mv.FloorLevel, *, window_
 
 def render_view_for_mode(snapshot: mv.MemoryViewSnapshot, *, mode: str, owner_mode: str, window_tokens: Optional[int],
                          known_window: bool, output_reserve: Optional[int], ratio: float, non_memory_tokens: int,
-                         lowered_from: Optional[str] = None) -> Tuple[str, str, Dict[str, Any]]:
+                         lowered_from: Optional[str] = None,
+                         tool_names: Optional[Iterable[str]] = None) -> Tuple[str, str, Dict[str, Any]]:
     """``(story text, room text, facts)`` of one mode's projection, the floor decided once.
 
     The window counts only when known and fresh (``known_window``). An owner target binds
     only the mode the owner selected: task-local Low and a mode the window lowered have
-    none. The reply reserve is the mode's (Nano keeps its own headroom).
+    none. The reply reserve is the mode's (Nano keeps its own headroom). ``tool_names`` are
+    the schemas this mode's request sends, which the floor note reads (``memory_read_path``).
     """
     target, reserve = context_budget.context_mode_limits(mode, owner_mode, output_reserve)
     window = int(window_tokens) if known_window and window_tokens else None
     allowances = floor_allowances(window_tokens=window, output_reserve_tokens=reserve, non_memory_tokens=non_memory_tokens,
                                   target_tokens=target, calibration_ratio=ratio)
     level = fit_memory_view(snapshot, allowances)
-    note = floor_note(level, window_tokens=window, mode=mode, target_tokens=target, lowered_from=lowered_from)
+    note = floor_note(level, window_tokens=window, mode=mode, target_tokens=target, lowered_from=lowered_from,
+                      tool_names=tool_names)
     return (mv.render_story(snapshot, level), mv.render_room(snapshot, level, floor_note=note),
             view_facts(snapshot, level, window_tokens=window, mode=mode, allowances=allowances, target_tokens=target,
                        lowered_from=lowered_from))
@@ -234,7 +257,8 @@ def minimal_view_tokens(snapshot: mv.MemoryViewSnapshot, *, window_tokens: Optio
     for step, ident, _whole, _short in floor_elements(snapshot):  # grouped in ladder order
         taken.setdefault(step, []).append(ident)
     level = mv.FloorLevel(tuple((step, tuple(ids)) for step, ids in taken.items()))
-    note = floor_note(level, window_tokens=window_tokens, mode="nano", lowered_from="max")
+    note = max((floor_note(level, window_tokens=window_tokens, mode="nano", lowered_from="max", tool_names=names)
+                for names in _PATH_CASES), key=view_tokens)  # an upper bound, whatever schemas it sends
     return view_tokens(mv.render_story(snapshot, level)) + view_tokens(mv.render_room(snapshot, level, floor_note=note))
 
 
@@ -260,15 +284,17 @@ def physical_mode(preferred: str, fixed_tokens_by_mode: Mapping[str, int], minim
 
 
 def mode_views(snapshot: mv.MemoryViewSnapshot, *, preferred: str, fixed_tokens_by_mode: Mapping[str, int],
-               window_tokens: Optional[int], known_window: bool, output_reserve: Optional[int],
-               ratio: float, start: Optional[str] = None) -> Tuple[Dict[str, Tuple[str, str, Dict[str, Any]]], str]:
+               window_tokens: Optional[int], known_window: bool, output_reserve: Optional[int], ratio: float,
+               start: Optional[str] = None, tool_names: Optional[Mapping[str, Iterable[str]]] = None,
+               ) -> Tuple[Dict[str, Tuple[str, str, Dict[str, Any]]], str]:
     """Every mode's ``(story text, room text, view receipt)`` and the mode the task starts in.
 
     The starting mode is ``physical_mode`` of the owner's ``preferred`` one, or ``start`` (the
     mode a task already runs in, on a new route) when that is lower: a route switch never raises
     a mode, and only the owner's mode carries a target. The projection of a mode this window
     chose names the change in its ``### Physical floor`` (and its fact, ``mode_switch``), never
-    in the runtime facts, which are captured before any mode is chosen.
+    in the runtime facts, which are captured before any mode is chosen. ``tool_names`` maps a
+    mode to the schemas its request sends (``None``: not known, so its floor claims no path).
     """
     window = int(window_tokens) if known_window and window_tokens else None
     physical = physical_mode(preferred, fixed_tokens_by_mode, minimal_view_tokens(snapshot, window_tokens=window),
@@ -281,6 +307,7 @@ def mode_views(snapshot: mv.MemoryViewSnapshot, *, preferred: str, fixed_tokens_
         story, room, facts = render_view_for_mode(
             snapshot, mode=mode, owner_mode=preferred, window_tokens=window, known_window=known_window,
             output_reserve=output_reserve, ratio=ratio, non_memory_tokens=fixed_tokens_by_mode[mode],
-            lowered_from=preferred if mode == begin == physical != preferred else None)
+            lowered_from=preferred if mode == begin == physical != preferred else None,
+            tool_names=(tool_names or {}).get(mode))
         views[mode] = (story, room, view_receipt(snapshot, story, room, facts))
     return views, begin

@@ -161,12 +161,18 @@ def test_an_owner_low_target_takes_only_its_steps_and_task_local_low_has_none():
 
 def test_an_owner_nano_target_bounds_with_nanos_own_reserve_and_names_enable_tools():
     snapshot = syn.actor("project")
-    _story, room, facts = mf.render_view_for_mode(
-        snapshot, mode="nano", owner_mode="nano", window_tokens=1_050_000, known_window=True, output_reserve=65_536,
-        ratio=1.0, non_memory_tokens=syn.FIXED["project"]["nano"])
+    def owner_nano(names):
+        return mf.render_view_for_mode(
+            snapshot, mode="nano", owner_mode="nano", window_tokens=1_050_000, known_window=True, output_reserve=65_536,
+            ratio=1.0, non_memory_tokens=syn.FIXED["project"]["nano"], tool_names=names)
+
+    _story, room, facts = owner_nano(("compact_context", "list_available_tools", "enable_tools"))
     assert facts["floor"]["target_tokens"] == cb.OWNER_NANO_TARGET_TOKENS
     assert set(facts["floor"]["steps"]) <= set(mf.MODE_TARGET_STEPS)
     assert room.endswith("(memory_read is reachable through enable_tools)")
+    # The line follows the schemas the request sends: none known, no claim; list_available_tools alone, no enable_tools.
+    assert owner_nano(None)[1] == room[:room.rindex("\n")]
+    assert "enable_tools" not in owner_nano(("list_available_tools",))[1]
     lowered = mf.render_view_for_mode(  # Nano the window chose for the owner's Max: Nano's reserve, no Nano budget
         snapshot, mode="nano", owner_mode="max", window_tokens=1_050_000, known_window=True, output_reserve=65_536,
         ratio=1.0, non_memory_tokens=syn.FIXED["project"]["nano"])[2]
