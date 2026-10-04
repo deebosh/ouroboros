@@ -229,6 +229,10 @@ def test_artifacts_upload_even_on_failure_and_never_a_lane_settings_file():
         assert "settings" not in path and not path.endswith("/*") and "data" not in path.split("/"), path
         assert "**" not in path or path == "lanes/*/traces/**", path
     assert upload["with"]["if-no-files-found"] in ("warn", "ignore")
+    # Diagnostics only: a failed upload never reddens the job, the stand's own step still does.
+    assert upload.get("continue-on-error") is True
+    stand = next(step for step in steps if "devtools.e2e_live.run_live_lanes" in str(step.get("run", "")))
+    assert "continue-on-error" not in stand, stand
     summary = next(step for step in steps if "GITHUB_STEP_SUMMARY" in str(step.get("run", ""))
                    and SKIP_LINE not in str(step.get("run", "")))
     assert summary["if"] == "always() && env.HAS_E2E_LIVE_KEY == 'true'"

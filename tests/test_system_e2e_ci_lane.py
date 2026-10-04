@@ -175,6 +175,11 @@ def test_the_scheduled_lane_uploads_its_servers_traces_and_never_a_settings_file
     upload = uploads[0]
     assert steps.index(upload) == len(steps) - 1      # after both scenario passes
     assert upload["if"] == "always()"
+    # Diagnostics only: a failed upload never reddens the job (the release bar needs it);
+    # both scenario passes still decide it.
+    assert upload.get("continue-on-error") is True
+    passes = [step for step in steps if "python -m pytest" in str(step.get("run", ""))]
+    assert len(passes) == 2 and not any("continue-on-error" in step for step in passes), passes
     paid = next(step for step in jobs["e2e-live"]["steps"]
                 if str(step.get("uses", "")).startswith("actions/upload-artifact@"))
     assert upload["uses"] == paid["uses"]             # one pinned action for both lanes

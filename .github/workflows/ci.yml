@@ -644,8 +644,11 @@ jobs:
       # those): bare pytest makes its session root `ouroboros-pytest-*` in the
       # runner's default temp directory, /tmp. Journals and task results only;
       # a settings file is never uploaded (the lane is keyless; the rule holds).
+      # Diagnostics only, like test-evidence: a failed upload never reddens the
+      # job, so the two scenario passes alone decide it and the release bar.
       - name: Upload the scenario servers' traces (journals, task results)
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: system-e2e-traces
@@ -825,8 +828,11 @@ jobs:
               with open(path, "a", encoding="utf-8") as fh:
                   fh.write(text)
           PY
+      # Diagnostics only: a failed upload never reddens the job; the stand's exit
+      # is the verdict.
       - name: Upload run artifacts (manifest, lane results, screenshots, traces)
         if: always() && env.HAS_E2E_LIVE_KEY == 'true'
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: e2e-live-run
