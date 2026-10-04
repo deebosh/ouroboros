@@ -1330,9 +1330,13 @@ def compact_tool_history_llm(
             start, end = group[0].unit.start, group[-1].unit.end
             unit = _unit_from_slice(messages, start, end, trace_refs_by_tool_call_id=trace_refs,
                                     measurement_density=effective_request.measurement_density)
-            # A re-folded earlier capsule (after a provider refusal) keeps counting its generations.
+            # A re-folded earlier capsule (after a provider refusal) keeps counting its generations and
+            # keeps the original provenance union: every member's lineage hashes and references.
             unit = replace(unit, generation=max(item.unit.generation for item in group),
+                           lineage_hashes=_unique_strings([*unit.lineage_hashes, *(
+                               digest for item in group for digest in item.unit.lineage_hashes)]),
                            source_refs=_unique_refs([*unit.source_refs, *(
+                               ref for item in group for ref in item.unit.source_refs), *(
                                {"checkpoint_ref": checkpoint_ref, "unit_id": item.unit.unit_id,
                                 "raw_sha256": item.unit.raw_sha256} for item in group)]))
             text = "\n\n".join(

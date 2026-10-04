@@ -149,9 +149,12 @@ def test_only_a_provider_refusal_refolds_earlier_capsules(real_main_reclaim, mon
     assert {part.root_id for part in run.calls} == ({raw.unit_id, earlier.unit_id} if refused else {raw.unit_id})
     assert (context.messages[2] != capsule) is refused
     if refused:  # one host record for the uninterrupted range, in transcript order, one generation up
-        record = context.messages[2]["content"][0]["text"]
-        assert len(context.messages) == 3 and cc._capsule_metadata(context.messages[2])[1]["generation"] == 2
+        record, meta = context.messages[2]["content"][0]["text"], cc._capsule_metadata(context.messages[2])[1]
+        assert len(context.messages) == 3 and meta["generation"] == 2
         assert record.index(f"Source unit {earlier.unit_id}") < record.index(f"Source unit {raw.unit_id}")
+        old = cc._capsule_metadata(capsule)[1]  # the earlier capsule's original provenance survives the re-fold
+        assert set(old["source_hashes"]) < set(meta["source_hashes"])
+        assert all(ref in meta["source_refs"] for ref in old["source_refs"])
     assert run.calls and run.events[-1]["deficit_tokens"] == 0
     assert run.events[-1]["reclaim_goal_tokens"] == minimum_goal
 
