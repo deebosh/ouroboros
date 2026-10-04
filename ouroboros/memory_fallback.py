@@ -610,25 +610,27 @@ def run_fallback_draft(env: Any, task: Mapping[str, Any], llm: Any, drive_logs: 
     store = ChronicleStore(root)
     if not store.log_path.exists() or not store.activation():
         return FallbackRun("not_activated")  # the writer reads the chronicle, it never creates it
-    binding, fitted = light_binding(), []
-
-    def fit() -> Tuple[Optional[int], Callable[[str], int]]:
-        if not fitted:
-            fitted.append(_light_fit(binding))
-        return fitted[0]
-
-    chosen = select_unit(root, store, shortage_from_trace(trace), allow_legacy=not task.get("_is_direct_chat"),
-                         binding=binding, fit=fit)
-    if chosen is None:
-        return FallbackRun("nothing")
-    unit, draft = chosen
     from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 
+    # The unit is chosen under the lock: a choice made outside it could pay again for an input
+    # another root refused, or sealed, while this one was choosing.
     lock_path = root / "memory" / "chronicle" / ".fallback.lock"
     fd = acquire_exclusive_file_lock(lock_path, timeout_sec=0, owner_aware_stale=True)
     if fd is None:
-        return FallbackRun("busy", unit, input_tokens=draft.input_tokens)
+        return FallbackRun("busy")
     try:
+        binding, fitted = light_binding(), []
+
+        def fit() -> Tuple[Optional[int], Callable[[str], int]]:
+            if not fitted:
+                fitted.append(_light_fit(binding))
+            return fitted[0]
+
+        chosen = select_unit(root, store, shortage_from_trace(trace), allow_legacy=not task.get("_is_direct_chat"),
+                             binding=binding, fit=fit)
+        if chosen is None:
+            return FallbackRun("nothing")
+        unit, draft = chosen
         from ouroboros import consolidator
 
         text, usage = consolidator._call_consolidation_llm(llm, draft.prompt, LABEL, reasoning_effort="low")

@@ -464,6 +464,30 @@ def test_a_busy_writer_lock_skips_the_call_and_a_live_owner_never_goes_stale(tmp
     assert not lock.exists()
 
 
+def test_the_unit_is_chosen_under_the_writer_lock(tmp_path, monkeypatch, light):
+    rooms = shared.world(tmp_path)
+    alpha_unit, beta_unit = f"legacy-b01-r{rooms['alpha']}", f"legacy-b01-r{rooms['beta']}"
+    _consciousness(monkeypatch, False)
+    real_select, nested = mf.select_unit, []
+
+    def racing_select(*args, **kwargs):
+        if not nested:  # another root's post-phase arrives while this one is choosing
+            other = _Light("not json at all")
+            nested.append((_run(tmp_path, other), other))
+        return real_select(*args, **kwargs)
+
+    monkeypatch.setattr(mf, "select_unit", racing_select)
+    llm = _Light("still not json")
+    run = _run(tmp_path, llm)
+    [(other_run, other_llm)] = nested
+    assert other_run.outcome == "busy" and other_llm.prompts == []
+    assert (run.unit.record_id, run.outcome, run.kind) == (alpha_unit, "refused", "invalid") and len(llm.prompts) == 1
+    # After the lock is released the next root reads the receipt: beta is paid for, never alpha twice.
+    monkeypatch.setattr(mf, "select_unit", real_select)
+    again = _Light()
+    assert _run(tmp_path, again).unit.record_id == beta_unit and len(again.prompts) == 1
+
+
 def test_the_writer_never_nominates_knowledge_or_touches_the_old_dialogue_files(tmp_path, monkeypatch, light):
     from ouroboros import consolidator, knowledge
 
