@@ -260,23 +260,26 @@ def physical_mode(preferred: str, fixed_tokens_by_mode: Mapping[str, int], minim
 
 def mode_views(snapshot: mv.MemoryViewSnapshot, *, preferred: str, fixed_tokens_by_mode: Mapping[str, int],
                window_tokens: Optional[int], known_window: bool, output_reserve: Optional[int],
-               ratio: float) -> Tuple[Dict[str, Tuple[str, str, Dict[str, Any]]], str]:
+               ratio: float, start: Optional[str] = None) -> Tuple[Dict[str, Tuple[str, str, Dict[str, Any]]], str]:
     """Every mode's ``(story text, room text, view receipt)`` and the mode the task starts in.
 
-    The starting mode is ``physical_mode`` of the preferred one; the projection of a mode the
-    window chose names the change in its ``### Physical floor`` (and its fact, ``mode_switch``),
-    never in the runtime facts, which are captured before any mode is chosen.
+    The starting mode is ``physical_mode`` of the owner's ``preferred`` one, or ``start`` (the
+    mode a task already runs in, on a new route) when that is lower: a route switch never raises
+    a mode, and only the owner's mode carries a target. The projection of a mode this window
+    chose names the change in its ``### Physical floor`` (and its fact, ``mode_switch``), never
+    in the runtime facts, which are captured before any mode is chosen.
     """
     window = int(window_tokens) if known_window and window_tokens else None
-    start = physical_mode(preferred, fixed_tokens_by_mode, minimal_view_tokens(snapshot, window_tokens=window),
-                          window_tokens=window, known_window=known_window, calibration_ratio=ratio,
-                          reserve_by_mode={mode: context_budget.context_mode_limits(mode, preferred, output_reserve)[1]
-                                           for mode in MODES})
+    physical = physical_mode(preferred, fixed_tokens_by_mode, minimal_view_tokens(snapshot, window_tokens=window),
+                             window_tokens=window, known_window=known_window, calibration_ratio=ratio,
+                             reserve_by_mode={mode: context_budget.context_mode_limits(mode, preferred, output_reserve)[1]
+                                              for mode in MODES})
+    begin = start if start in MODES and MODES.index(start) > MODES.index(physical) else physical
     views = {}
     for mode in MODES:
         story, room, facts = render_view_for_mode(
             snapshot, mode=mode, owner_mode=preferred, window_tokens=window, known_window=known_window,
             output_reserve=output_reserve, ratio=ratio, non_memory_tokens=fixed_tokens_by_mode[mode],
-            lowered_from=preferred if mode == start != preferred else None)
+            lowered_from=preferred if mode == begin == physical != preferred else None)
         views[mode] = (story, room, view_receipt(snapshot, story, room, facts))
-    return views, start
+    return views, begin

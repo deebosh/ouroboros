@@ -397,3 +397,47 @@ def test_a_nano_the_window_chose_is_measured_against_the_window_alone(monkeypatc
     assert window.measurement.response_reserve_tokens == owner.measurement.response_reserve_tokens == cb.NANO_MIN_HEADROOM_TOKENS
     assert window.measurement.target_total_tokens is None and window.action == "send"
     assert owner.measurement.target_total_tokens == cb.OWNER_NANO_TARGET_TOKENS and owner.action == "reclaim_once"
+
+
+def test_a_route_switch_keeps_the_owners_mode_and_starts_from_the_tasks_own(tmp_path, monkeypatch):
+    """A rebind on the task's current mode keeps the plan's owner mode: a Low the window or an overflow chose
+    gets no Low budget (D-32), the same window renders the same bytes, and no second checkpoint is sent."""
+    import json
+    from types import SimpleNamespace
+
+    import ouroboros.context
+    from ouroboros.loop_model_call import _main_context_profile, _rebind_context_fit_plan
+    from ouroboros.tools.registry import ToolRegistry
+
+    core, plan = _built(tmp_path / "w", monkeypatch)
+    need = _needs(core, plan)
+    lowered, roomy, owner_low = plan(need["max"] - 50), plan(10_000_000), plan(10_000_000, preferred="low")
+    assert lowered.initial_mode == "low" and roomy.initial_mode == "max" and owner_low.initial_mode == "low"
+    for name, built, window in (("lowered", lowered, need["max"] - 50), ("task_local", roomy, 10_000_000),
+                                ("owner_low", owner_low, 10_000_000)):
+        root = tmp_path / name
+        root.mkdir()
+        registry = ToolRegistry(repo_dir=root, drive_root=root)
+        evidence = SimpleNamespace(route_fp="r2", status="asserted", stale=False, window_tokens=window)
+        monkeypatch.setattr(ouroboros.context, "_context_fit_route",
+                            lambda *_a, _e=evidence, **_kw: ({"model": "m2", "provider": "p"}, _e))
+        messages = built.messages_for("low")
+        rebound, active = _rebind_context_fit_plan(built, registry, messages, model="m2", use_local=False,
+                                                   start_mode="low", tool_schemas=[])
+        floor = rebound.projection("low").memory_facts["floor"]
+        assert active == rebound.initial_mode == "low" and rebound.preferred_mode == built.preferred_mode, name
+        logs = root / "logs" / "events.jsonl"
+        kinds = [json.loads(line).get("checkpoint_kind") for line in logs.read_text(encoding="utf-8").splitlines()]
+        assert "context_fit_physical_mode" not in kinds and "context_fit_route_rebound" in kinds
+        if name == "owner_low":  # the owner's Low keeps its budget across the switch
+            assert floor["target_tokens"] == cb.OWNER_LOW_TARGET_TOKENS
+            assert _main_context_profile(rebound, "low") == "owner_low"
+            continue
+        assert floor["target_tokens"] is None and floor["by_budget"] == 0, name
+        assert "mode budget" not in rebound.projection("low").system_content_json
+        assert _main_context_profile(rebound, "low") == "task_local_low"
+        if name == "lowered":  # the same window: the same bytes, the mode line kept
+            assert rebound.low_projection.system_content_json == built.low_projection.system_content_json
+            assert floor["mode_switch"] == {"from": "max", "to": "low"}
+        else:  # an overflow's Low on a window that holds Max: not this window's doing
+            assert floor["mode_switch"] is None and floor["steps"] == {}

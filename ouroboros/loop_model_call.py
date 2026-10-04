@@ -434,7 +434,7 @@ def _run_cross_model_fallback_chain(
         retry_call.context_fit_plan, retry_call.active_context_mode = _loop()._rebind_context_fit_plan(
             retry_call.context_fit_plan, tools, retry_call.messages,
             model=retry_call.active_model, use_local=retry_call.active_use_local,
-            preferred_mode=retry_call.active_context_mode, tool_schemas=tool_schemas,
+            start_mode=retry_call.active_context_mode, tool_schemas=tool_schemas,
             model_role=role, model_route={}, credential_profile_id=account)
         msg, _cost, active_context_mode = _loop()._call_round_model(retry_call)
         if msg is not None and deferred_candidate is not None:
@@ -545,11 +545,12 @@ def _rebind_context_fit_plan(
     *,
     model: str,
     use_local: bool,
-    preferred_mode: str,
+    preferred_mode: Optional[str] = None,  # the owner's mode; None keeps the plan's
     tool_schemas: List[Dict[str, Any]],
     model_role: str = "",
     model_route: Optional[Dict[str, Any]] = None,
     credential_profile_id: Optional[str] = None,
+    start_mode: Optional[str] = None,  # the mode the task runs in: a new route may lower it, never raise it
 ) -> Tuple[Any, str]:
     if plan is None or not all(
         hasattr(plan, name) for name in ("max_projection", "low_projection", "core_sha256")
@@ -587,7 +588,8 @@ def _rebind_context_fit_plan(
     known_window = is_known(evidence, require_fresh=True)
     window_tokens = int(getattr(evidence, "window_tokens", 0) or 0)
     output_reserve = main_output_reserve_tokens(use_local=bool(route.get("use_local", use_local)))
-    preferred = preferred_mode if preferred_mode in {"low", "max", "nano"} else "max"
+    preferred = preferred_mode or getattr(plan, "preferred_mode", "")
+    preferred = preferred if preferred in {"low", "max", "nano"} else "max"
     rebound = replace(
         plan,
         preferred_mode=preferred,
@@ -606,7 +608,7 @@ def _rebind_context_fit_plan(
         evidence_source=str(getattr(evidence, "source", "") or ""),
     ).reproject_for_route(  # the memory view re-rendered for this route's window, from the same capture
         window_tokens=window_tokens, known_window=known_window, ratio=ratio, output_reserve=output_reserve,
-        tool_schemas=tool_schemas)
+        tool_schemas=tool_schemas, start_mode=start_mode)
     mode = rebound.initial_mode
     projected_prompt_tokens = rebound.projected_tokens_with_tools(mode, tool_schemas)
     messages[:] = rebound.reproject_transcript(messages, mode)
@@ -616,8 +618,9 @@ def _rebind_context_fit_plan(
     tools._ctx.active_context_mode = mode
     _adopt_view_facts(tools._ctx, rebound, mode)
     try:
-        _emit_physical_mode(getattr(tools._ctx, "event_queue", None), str(getattr(tools._ctx, "task_id", "") or ""),
-                            tools._ctx.drive_logs(), rebound, mode)
+        if mode != start_mode:  # a task that already ran in this mode was told so before
+            _emit_physical_mode(getattr(tools._ctx, "event_queue", None), str(getattr(tools._ctx, "task_id", "") or ""),
+                                tools._ctx.drive_logs(), rebound, mode)
         _loop()._emit_checkpoint_event(
             getattr(tools._ctx, "event_queue", None),
             str(getattr(tools._ctx, "task_id", "") or ""),
@@ -654,14 +657,19 @@ def _adopt_view_facts(tool_ctx: Any, plan: Any, mode: str) -> None:
 
 
 def _emit_physical_mode(event_queue: Any, task_id: str, drive_logs: Any, plan: Any, mode: str) -> None:
-    """The known window lowered the mode this plan starts in (P3 §2.6 step 4): one owner-visible checkpoint."""
-    preferred = str(getattr(plan, "preferred_mode", "") or "")
-    if not preferred or mode == preferred or mode != str(getattr(plan, "initial_mode", "") or ""):
+    """The known window lowered the mode this plan starts in (P3 §2.6 step 4): one owner-visible checkpoint.
+
+    The sent projection's own fact says so (``mode_switch``); a lower mode a task kept from before
+    (task-local Low after an overflow, an earlier route's choice) is not this window's doing.
+    """
+    projection = plan.projection(mode) if hasattr(plan, "projection") else None
+    switch = ((getattr(projection, "memory_facts", None) or {}).get("floor") or {}).get("mode_switch")
+    if not switch or mode != str(getattr(plan, "initial_mode", "") or ""):
         return
     _loop()._emit_checkpoint_event(event_queue, task_id, drive_logs, {
         "checkpoint_kind": "context_fit_physical_mode",
         "route_fp": str(getattr(plan, "route_fp", "") or ""),
-        "preferred_mode": preferred,
+        "preferred_mode": str(switch.get("from") or ""),
         "effective_mode": mode,
         "window_tokens": int(getattr(plan, "window_tokens", 0) or 0),
         "owner_visible": True,
@@ -936,7 +944,7 @@ def _dispatch_round_model(
         # the prior account's capacity before another physical call is prepared.
         ctx.context_fit_plan, ctx.active_context_mode = _loop()._rebind_context_fit_plan(
             ctx.context_fit_plan, ctx.tools, ctx.messages, model=ctx.active_model,
-            use_local=ctx.active_use_local, preferred_mode=ctx.active_context_mode,
+            use_local=ctx.active_use_local, start_mode=ctx.active_context_mode,
             tool_schemas=ctx.tool_schemas, model_role=role, model_route=observed,
             credential_profile_id=(waiter.overrides.get(role, {}).get("model_account_override") if waiter else None))
     emit_model_substitution(ctx.accumulated_usage, task_id=ctx.task_id,
@@ -977,7 +985,7 @@ def _reprepare_waiting_main(ctx: _RoundModelCallContext, kwargs: dict):
     ctx.messages[:] = prepared
     ctx.context_fit_plan, ctx.active_context_mode = _loop()._rebind_context_fit_plan(
         ctx.context_fit_plan, ctx.tools, ctx.messages, model=model, use_local=use_local,
-        preferred_mode=ctx.active_context_mode, tool_schemas=ctx.tool_schemas,
+        start_mode=ctx.active_context_mode, tool_schemas=ctx.tool_schemas,
         model_role=role, model_route=observed or {},
         credential_profile_id=kwargs.get("model_account_override"))
     ctx.active_model, ctx.active_use_local = model, use_local

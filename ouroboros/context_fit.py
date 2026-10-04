@@ -256,20 +256,20 @@ class ContextFitPlan:
     core: Optional["ContextCore"] = None  # the capture a new route re-renders the memory view from
 
     def reproject_for_route(self, *, window_tokens: int, known_window: bool, ratio: float, output_reserve: int,
-                            tool_schemas: Optional[List[Dict[str, Any]]]) -> "ContextFitPlan":
+                            tool_schemas: Optional[List[Dict[str, Any]]], start_mode: Optional[str] = None) -> "ContextFitPlan":
         """This plan on another route's window: each mode's view, fit and starting mode measured anew.
 
-        The view is re-rendered from ``core.memory_view_json`` (the chronicle and the chat are not
-        read again; books and task stay as captured), starting from ``preferred_mode``, which the
-        window may lower (P3 §2.6 step 4). Without a core the texts stay and are only re-measured.
+        The view is re-rendered from ``core.memory_view_json`` (chronicle and chat not read again), from
+        ``start_mode`` (the task's mode; default ``preferred_mode``), which the window may lower (P3 §2.6
+        step 4); the owner's ``preferred_mode`` alone carries a target. Without a core texts are re-measured.
         """
         from dataclasses import replace
 
-        contents, start, books = {}, self.preferred_mode, ("max", "low")
+        contents, start, books = {}, start_mode or self.preferred_mode, ("max", "low")
         if self.core is not None:
             contents, start = _view_projections(
                 self.core, {form: json.loads(self.projection(form).system_content_json)[0]["text"] for form in books},
-                self.user_content_json, preferred=self.preferred_mode, tool_schemas=tool_schemas,
+                self.user_content_json, preferred=self.preferred_mode, start=start_mode, tool_schemas=tool_schemas,
                 window_tokens=window_tokens, known_window=known_window, output_reserve=output_reserve, ratio=ratio)
 
         def project(projection: Optional[ContextFitProjection]) -> Optional[ContextFitProjection]:
@@ -825,8 +825,8 @@ def _request_tokens(system_content: List[Dict[str, Any]], user_content_json: str
 
 
 def _view_projections(core: ContextCore, governance: Mapping[str, str], user_content_json: str, *, preferred: str,
-                      tool_schemas: Optional[List[Dict[str, Any]]], window_tokens: int, known_window: bool,
-                      output_reserve: int, ratio: float) -> Tuple[Dict[str, Tuple[List[Dict[str, Any]], Dict]], str]:
+                      tool_schemas: Optional[List[Dict[str, Any]]], window_tokens: int, known_window: bool, output_reserve: int,
+                      ratio: float, start: Optional[str] = None) -> Tuple[Dict[str, Tuple[List[Dict[str, Any]], Dict]], str]:
     """Each mode's ``(system content, view receipt)`` and the mode the task starts in.
 
     ``governance`` is block A by book form. A mode's fixed part is its request without my memory
@@ -835,7 +835,7 @@ def _view_projections(core: ContextCore, governance: Mapping[str, str], user_con
     """
     form = {mode: "low" if core.compact_reference_docs or mode == "nano" else mode for mode in ("max", "low", "nano")}
     if not core.memory_view_json:
-        return {mode: (_system_blocks(core, governance[form[mode]]), {}) for mode in form}, preferred
+        return {mode: (_system_blocks(core, governance[form[mode]]), {}) for mode in form}, start or preferred
     from ouroboros import memory_floor
     from ouroboros.memory_view import snapshot_from_json
     from ouroboros.tool_policy import select_tool_schemas
@@ -843,7 +843,7 @@ def _view_projections(core: ContextCore, governance: Mapping[str, str], user_con
     fixed = {mode: _request_tokens(_system_blocks(core, governance[form[mode]]), user_content_json)
              + tool_schema_tokens(list(select_tool_schemas(tool_schemas or [], context_mode=mode).schemas)) for mode in form}
     views, start = memory_floor.mode_views(
-        snapshot_from_json(core.memory_view_json), preferred=preferred, fixed_tokens_by_mode=fixed,
+        snapshot_from_json(core.memory_view_json), preferred=preferred, fixed_tokens_by_mode=fixed, start=start,
         window_tokens=window_tokens, known_window=known_window, output_reserve=output_reserve, ratio=ratio)
     return {mode: (_system_blocks(core, governance[form[mode]], story, room), receipt)
             for mode, (story, room, receipt) in views.items()}, start
