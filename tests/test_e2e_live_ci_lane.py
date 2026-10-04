@@ -172,11 +172,23 @@ def test_the_stand_runs_with_the_operator_flag_set_on_a_clean_seed_of_the_checko
     assert any("playwright install --with-deps chromium" in str(step.get("run", "")) for step in steps)
 
 
-# The stand's fixed waits around one awaited SM1 task (devtools/e2e_live/scenarios.py):
-# LaneContext.wait_task's grace past the deadline (300), the cancel wait after a
-# timeout (300), the durable-row wait (180), and the two event waits of run_sm1
-# (scope_review_complete and llm_usage, 90 each).
-STAND_FIXED_WAITS_SEC = 300 + 300 + 180 + 90 + 90
+# The stand's fixed waits around one awaited SM1 task, each bounded on its own.
+# devtools/e2e_live/scenarios.py: the task POST (60); LaneContext.wait_task's
+# grace past the deadline (300), the cancel POST after a timeout
+# (IsolatedServer.cancel_task, 300: it answers once the task is torn down) and
+# the wait after it (300), the durable-row wait (180); the two event waits of
+# run_sm1 (scope_review_complete and llm_usage, 90 each); the palette check's
+# two page loads after the restart (goto and ready selector, 60 + 60 each,
+# devtools/e2e_live/ui_probe.py).
+# devtools/benchmarks/common/server_runner.py: the health wait wait_for_absorb
+# runs once it sees the absorb (180); the server stop at teardown (15 + 5).
+# devtools/e2e_live/run_live_lanes.py: the /api/state read after the absorb
+# (10) and the orphan scan at teardown (30).
+# Sub-minute per-call bounds (a poll's overshoot past its deadline, the
+# computed-style reads, screenshots, the browser launch) ride the provisioning
+# margin below.
+STAND_FIXED_WAITS_SEC = (60 + 300 + 300 + 300 + 180 + 90 + 90 + 2 * (60 + 60)
+                         + 180 + (15 + 5) + 10 + 30)
 # Checkout with history, the Python env, node 22, Chromium with its apt deps,
 # and the summary and upload steps after the stand.
 PROVISION_MARGIN_SEC = 15 * 60

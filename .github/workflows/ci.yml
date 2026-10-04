@@ -730,8 +730,8 @@ jobs:
     # the review path before a review wave was cut off, #1501), the self-mod
     # evolution cycle as a second root task, the absorb wait with the re-exec
     # restart, and two hermetic preflight suites on a 4-vCPU runner. The
-    # stand's own worst case is 2 x (task + ready) + 16 min of fixed waits
-    # ~= 176 min; this bound adds provisioning, so the stand ends the run with
+    # stand's own worst case is 2 x (task + ready) + 30 min of bounded waits
+    # ~= 190 min; this bound adds provisioning, so the stand ends the run with
     # its own verdict and traces, never a job kill.
     timeout-minutes: 210
     env:
