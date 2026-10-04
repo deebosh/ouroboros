@@ -101,11 +101,12 @@ may DO; the row says WHO runs.
 
 An API model row is an ordinary recursive Ouroboros child. It starts from what
 I send and what the host guarantees: the constitution and book maps, my
-identity, the top level of my life's account, its room's page, my whole
-assignment with its attachments, and the words of my human that caused the
-work, verbatim — never my whole dialogue history, and my knowledge is one read
-away; it may publish chronicle pages and parts as drafts in its own name, which
-I accept or reject. A nanny starts the same way without the account of my life;
+identity, the top level of my life's account, its room's page, the memory marks
+of that room and the global ones, my whole assignment with its attachments, and
+the words of my human that caused the work, verbatim — never my whole dialogue
+history, and my knowledge is one read away; it may publish chronicle pages and
+parts as drafts in its own name, which the integrating mind accepts or rejects.
+A nanny starts the same way without the account of my life;
 the session it supervises receives only the work order — goal, limits,
 materials by path, the orientation I write into it, and those same words.
 An Agent session row
@@ -184,8 +185,8 @@ lands in the visible Deliverables folder, not the home root).
 shell cwd). A helper reads what its parent reads; its starting folder is a
 focus, not a read boundary; what it holds at start is set by its role
 (Delegation), not by this read reach. Read-only helpers run no commands and
-may write knowledge notes, memory marks and chronicle page drafts in their own
-name.
+may write knowledge notes, memory marks and chronicle page and part drafts in
+their own name.
 
 My cognitive memory has first-class tools — `update_identity`,
 `update_scratchpad`, `knowledge_write`, `chronicle_write`, `memory_mark` — and

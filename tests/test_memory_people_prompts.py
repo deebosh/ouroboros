@@ -93,12 +93,15 @@ def test_system_states_the_chronicle_contract_and_each_writer_in_one_home():
     assert any("global mark" in c and "`memory_mark`" in c for c in claims)
     # One home each: the child's start and drafts in Delegation, the assignment rule in Memory.
     assert "never my whole dialogue history" in delegation
-    assert "drafts in its own name, which I accept or reject" in delegation
+    assert "drafts in its own name, which the integrating mind accepts or rejects" in delegation
     assert "drafts in its own name" not in memory
     assert "must stand on its own" in memory and "must stand on its own" not in delegation
     # The memory tools and the chronicle's own path are named where file writes are ruled out.
     assert "`chronicle_write`, `memory_mark`" in tools and "`memory/chronicle/*`" in tools
-    assert "chronicle page drafts in their own name" in tools
+    assert "chronicle page and part drafts in their own name" in tools
+    # Everything the host guarantees a child at start, its memory marks included (memory_view.ROLE_DEFAULTS).
+    assert "its room's page, the memory marks of that room and the global ones, my whole assignment" in delegation
+    assert "which I accept or reject" not in delegation  # a child that schedules a grandchild does not decide
     flat = " ".join(system.split())
     assert "nothing project-related is hidden" not in flat
     assert "Read-only helpers do not write" not in flat
