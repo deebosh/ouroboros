@@ -30,8 +30,8 @@ def input_source_selection_receipt(task: Mapping[str, Any]) -> dict[str, Any]:
             "this child's own retained progress, tool and event history",
         ],
         "omitted_automatic": [
-            "shared autobiography: identity, WORLD, the top level of the life account and the parent's room page "
-            "(with the words that started its project)",
+            "shared autobiography: identity, WORLD, the top level of the life account, the parent's room page "
+            "(with the words that started its project) and the memory marks of that room and the global ones",
             "the owner's words that caused this work (shared children receive them verbatim; include them in "
             "context if this case needs them)",
             "shared review history, health narratives, update letters, registry and installed-skill summaries",
@@ -68,7 +68,8 @@ def assignment_instructions(ctx: Any) -> str:
     """Host-authored complete normalized contract for every direct delegate start.
 
     The owner's words that caused the work follow the contract: a root's own
-    corpus, a child's inherited words, or the host's absence marker.
+    corpus, a child's inherited words, or the host's absence marker; a declared
+    contract keeps its parent's selection and carries none.
     """
 
     contract = getattr(ctx, "task_contract", None)
@@ -82,9 +83,12 @@ def assignment_instructions(ctx: Any) -> str:
         contract = build_task_contract({"task_contract": contract})
     if not contract:
         return ""
+    from ouroboros.contracts.task_contract import task_input_sources
     from ouroboros.owner_words import owner_words_text
 
-    words = owner_words_text(ctx, audience="session")
+    # A declared run's receipt names the words among omitted inputs, for the sessions it starts too.
+    declared = task_input_sources({"task_contract": contract}) == "declared"
+    words = "" if declared else owner_words_text(ctx, audience="session")
     return (
         "HOST TASK CONTRACT AUTHORITY (complete normalized JSON; exact strings are authority):\n"
         + json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -96,10 +100,15 @@ def _owner_words_section(task: Mapping[str, Any]) -> str:
     """The owner's words carried into this task by value; "" for a task scheduled without them.
 
     Both the payload (nested ``metadata``) and the flat task-metadata/record shapes
-    give the same bytes, so a source-range check never sees a digest mismatch.
+    give the same bytes, so a source-range check never sees a digest mismatch. A
+    declared task carries the field too, but its receipt names the words among the
+    omitted inputs, so its work order holds none (P5 §9 p. 4).
     """
+    from ouroboros.contracts.task_contract import task_input_sources
     from ouroboros.owner_words import render_owner_words, task_governing_words
 
+    if task_input_sources(task) == "declared":
+        return ""
     return render_owner_words(*task_governing_words(task), audience="session",
                               root_task_id=str(task.get("root_task_id") or ""))
 

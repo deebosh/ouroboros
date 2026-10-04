@@ -4,7 +4,9 @@ A task scheduled with the words carries them right after PARENT CONTEXT / REFERE
 a task scheduled before the field keeps the exact bytes and fingerprint it had, so a
 nanny that started before the update still recovers. The payload, the flat task
 metadata and the stored record render one work order. A direct delegate start appends
-the same section after the host contract. Every rule is checked in both directions.
+the same section after the host contract. A declared task's work order and direct start
+carry none: its receipt names them among the omitted inputs. Every rule is checked in
+both directions.
 """
 from __future__ import annotations
 
@@ -139,6 +141,29 @@ def test_a_direct_start_appends_the_words_after_the_host_contract(tmp_path):
         "\n\nNo words of my human are recorded for this work (host marker: initiator=consciousness).")
     root.task_contract, root.task_metadata = {}, {"origin_message_ref": root.task_metadata["origin_message_ref"]}
     assert assignment_instructions(root) == ""  # no contract: no assignment block, words or not
+
+
+def test_a_declared_work_order_holds_no_words_and_its_receipt_names_them(tmp_path):
+    """P5 §9 p. 4: a declared child keeps its parent's selection; the words ride its task, unread."""
+    marker = "HOST TASK CONTRACT AUTHORITY (complete normalized JSON; exact strings are authority):\n"
+    root = _root(tmp_path)
+    _event, _stored, declared = _schedule(root, input_sources="declared")
+    assert declared["metadata"][ow.FIELD]  # the words ride with every child
+    rendered = compile_external_work_order(declared)
+    receipt = rendered.split("INPUT SOURCE SELECTION\n", 1)[1].split("\n\nOBJECTIVE\n", 1)[0]
+    assert "the owner's words that caused this work" in receipt
+    assert "the memory marks of that room and the global ones" in receipt  # marks a shared child loads
+    assert SESSION_HEADING not in rendered and ASKED not in rendered and LATER not in rendered
+    bare = {**declared, "metadata": {key: value for key, value in declared["metadata"].items() if key != ow.FIELD}}
+    assert compile_external_work_order(bare) == rendered  # the carried field changes nothing here
+    child = _child(tmp_path, declared)
+    assert compile_external_work_order(_source_task_from_context(child, declared["id"])) == rendered  # flat
+    direct = assignment_instructions(child)
+    assert direct.startswith(marker) and json.loads(direct[len(marker):])["input_sources"] == "declared"
+    # The other side: a shared sibling's work order and direct start carry the words.
+    _e, _s, shared = _schedule(root, objective="Collect the Q4 figures")
+    assert SESSION_HEADING in compile_external_work_order(shared) and ASKED in compile_external_work_order(shared)
+    assert assignment_instructions(_child(tmp_path, shared)).split("\n\n", 1)[1].startswith(SESSION_HEADING)
 
 
 def test_the_authority_fingerprint_does_not_move_with_the_words(tmp_path):

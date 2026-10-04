@@ -52,10 +52,10 @@ def _root(tmp_path, *, metadata=None, owner_said=True):
     return ctx
 
 
-def _schedule(ctx, objective="Collect the Q3 figures"):
+def _schedule(ctx, objective="Collect the Q3 figures", **extra):
     """One real schedule: the tool's event, its requested record and the supervisor's payload."""
     result = _schedule_task(ctx, subagent_id="api-builder", objective=objective,
-                            expected_output="figures", memory_mode="empty")
+                            expected_output="figures", memory_mode="empty", **extra)
     assert not result.startswith("⚠️"), result
     event = ctx.event_queue.get_nowait()
     stored = load_task_result(ctx.budget_drive_root or ctx.drive_root, event["task_id"])
