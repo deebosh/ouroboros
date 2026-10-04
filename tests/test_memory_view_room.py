@@ -151,6 +151,25 @@ def test_the_working_sources_line_lists_exactly_what_the_spec_loads():
     assert words not in mv.working_sources_line(child, absent)
 
 
+
+def test_before_activation_the_role_line_names_no_memory_item_as_loaded():
+    """§2.10: the line cannot disagree with the view; until the import the view holds none of my memory."""
+    child = dataclasses.replace(mv.ROLE_DEFAULTS["child"], room_id="1")
+    items = ("the top level of your story", "the page of your parent's room Project Alpha",
+             "the words that started that work", "the memory marks of that room and global ones")
+    pending = mv.MemoryViewSnapshot(spec=child, store_status={"state": "import_pending", "reason": "another importer"},
+                                    frontier={}, room={"room_id": "1", "label": "Project Alpha"}, owner_words="W")
+    loaded, missing = mv.working_sources_line(child, pending).split("Loaded above: ", 1)[1].split(" Not loaded: ", 1)
+    assert not any(item in loaded for item in items)
+    assert all(item in missing for item in items) and "(my memory is not activated yet: another importer)" in missing
+    assert "the words of my human that caused this work" in loaded  # drawn from the task's rows, not the chronicle
+    view = mv.render_story(pending) + mv.render_room(pending)
+    assert "## My story — unavailable now (another importer)" in view and "## Marks I keep in view" not in view
+    # Once active, the same items are loaded and nothing is said about activation.
+    active = dataclasses.replace(pending, store_status={"state": "active"})
+    loaded, missing = mv.working_sources_line(child, active).split("Loaded above: ", 1)[1].split(" Not loaded: ", 1)
+    assert all(item in loaded for item in items) and "not activated" not in missing
+
 # --- the live part on a richer installation ------------------------------------------------------
 #
 # Main, two Projects (alpha, beta) and a transport chat; two legacy rows before the frontier and

@@ -960,27 +960,33 @@ def working_sources_line(spec: ViewSpec, snapshot: Optional[MemoryViewSnapshot] 
 
     The list cannot disagree with the view: every loaded item is a field of ``spec``,
     and what a field leaves out is named as not loaded, with the readers that reach it.
+    Before my memory is activated the view holds none of the memory items: they are named
+    as not loaded, with the reason.
     """
     room = snapshot.room if snapshot is not None and isinstance(snapshot.room, dict) else {}
     where = str(room.get("label") or (f"chat {spec.room_id}" if spec.room_id is not None else ""))
     loaded = ["the Constitution and system prompt", "the navigation of both books", "your identity"]
-    missing = []
-    (loaded if spec.story else missing).append("the top level of your story")
+    missing, memory = [], []
+    (memory if spec.story else missing).append("the top level of your story")
     if spec.room_id is not None and spec.room_page:
-        loaded.append(f"the page of your parent's room {where}")
+        memory.append(f"the page of your parent's room {where}")
     if spec.room_id is not None and spec.room_lanes:
-        loaded.append(f"the open conversation of {where}")
+        memory.append(f"the open conversation of {where}")
     else:
         missing.append("raw conversations")
     if spec.room_id is not None and spec.origin_words and (snapshot is None or room.get("origins") != []):
-        loaded.append("the words that started that work")
+        memory.append("the words that started that work")
     if spec.marks != "none":
-        loaded.append("the memory marks of that room and global ones" if spec.marks == "room_and_global"
+        memory.append("the memory marks of that room and global ones" if spec.marks == "room_and_global"
                       else "all memory marks")
     if spec.live_rooms != "none":
-        loaded.append("one line per other live room")
+        memory.append("one line per other live room")
     else:
         missing.append("other rooms' pages")
+    if snapshot is not None and not snapshot.active and memory:
+        missing.append(f"{', '.join(memory)} (my memory is not activated yet: {snapshot.store_status.get('reason')})")
+    else:
+        loaded += memory
     (loaded if spec.knowledge else missing).append("knowledge (overview, index, patterns)")
     if spec.owner_words and (snapshot is None or snapshot.owner_words):  # named only when the block was drawn
         loaded.append("the words of my human that caused this work")
