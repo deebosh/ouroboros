@@ -100,7 +100,11 @@ process chooses the protocol before it opens the file.
 - `name` (the probe's name tier: Drive, FUSE, NFS without kernel locks):
   SQLite opens with `unix-none`/`win32-none` (no locking of its own) and EVERY
   access, reads included, runs inside the existing name-protocol money lock
-  (`usage_ledger._named_lock`, owner-aware stale handling).
+  (`usage_ledger._named_lock`, owner-aware stale handling). On Windows a probe
+  refused while a holder deletes the name, or refused persistently (an
+  unreadable lock file, a restricted directory), counts as contention: an
+  owned pre-send wait continues until the task's own controls end it, an
+  unowned one raises after its bound.
 
 The probe's refusals that mean the filesystem takes no kernel locks at all
 are exactly `EOPNOTSUPP`/`ENOTSUP`/`ENOSYS` (on Windows `ERROR_INVALID_FUNCTION`
