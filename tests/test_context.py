@@ -478,7 +478,7 @@ def test_health_invariants_come_first_in_dynamic_context(tmp_path):
         task={"id": "task-a", "type": "task", "text": "hello"},
     )
 
-    dynamic_text = messages[0]["content"][2]["text"]
+    dynamic_text = messages[0]["content"][-1]["text"]
     # Knowledge and my rooms lead the changing block; the runtime sections follow, health first.
     assert dynamic_text.startswith("## Shared understanding")
     assert dynamic_text.index("## This room (Main)") < dynamic_text.index("## Health Invariants")
@@ -541,7 +541,7 @@ def test_health_invariants_come_first_in_a_consciousness_wake_context(tmp_path):
               "metadata": {"initiator": "consciousness", "usage_category": "consciousness"}},
     )
 
-    dynamic_text = messages[0]["content"][2]["text"]
+    dynamic_text = messages[0]["content"][-1]["text"]
     assert dynamic_text.startswith("## Shared understanding")
     assert "\n## This room (Main) — head " in dynamic_text  # a wake reads Main as its room, as the Main turn does
     assert dynamic_text.index("## Health Invariants") < dynamic_text.index("## Scratchpad")

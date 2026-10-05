@@ -167,14 +167,14 @@ def test_reference_doc_sections_preserve_max_and_orient_both_books_in_low():
     dev = "## Dev A\n\nDEVBODY\n"
 
     def _render(mode, include_dev):
-        parts = cl.reference_doc_sections(
+        parts, development = cl.reference_doc_sections(
             None,
             context_mode=mode,
             include_development=include_dev,
             architecture_text=arch,
             development_text=dev,
         )
-        return "\n\n".join(parts)
+        return "\n\n".join([*parts, development])
 
     max_no_dev = _render("max", False)
     assert "ARCHBODY" in max_no_dev  # ARCH full in max even without dev context

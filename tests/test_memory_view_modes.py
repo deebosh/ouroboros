@@ -272,7 +272,7 @@ def test_the_lowered_mode_is_a_line_of_the_rooms_physical_floor_never_of_the_run
     need = _needs(core, plan)
     for window, mode in ((need["max"] - 50, "low"), (need["max"] + 50, "max")):
         built = plan(window)
-        block_c = built.messages_for(built.initial_mode)[0]["content"][2]["text"]
+        block_c = built.messages_for(built.initial_mode)[0]["content"][-1]["text"]
         line = (f"This window ({window} tokens) cannot hold Max with even the shortest view of my memory; "
                 f"this task started in {mode.capitalize()}.")
         assert (line in section(block_c, "## This room (Main)")) == (mode == "low"), mode
