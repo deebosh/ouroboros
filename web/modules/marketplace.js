@@ -450,9 +450,10 @@ export function initMarketplace(pane, controlsHost = null) {
         results: [],
         installedMap: new Map(),
         installedUnavailable: true,
-        // An installed read some refresh asked for stays owed until one lands, so a
-        // superseding search (which does not ask) still reads it.
-        installedStale: false,
+        // Installed reads asked for (owed) and the newest one a landed read covers (read):
+        // a superseding search, which does not ask, still reads while owed > read.
+        installedOwed: 0,
+        installedRead: 0,
         enrichmentUnavailable: false,
         catalogLoaded: false,
         cursor: '',
@@ -513,8 +514,9 @@ export function initMarketplace(pane, controlsHost = null) {
         const myToken = ++refreshToken;
         // Typing searches the registry only; the installed state it already
         // knows is kept, and an owed, unknown or unavailable one is read again.
-        if (readInstalled) state.installedStale = true;
-        const withInstalled = state.installedStale || state.installedUnavailable;
+        if (readInstalled) state.installedOwed += 1;
+        const owedAtStart = state.installedOwed;
+        const withInstalled = state.installedOwed > state.installedRead || state.installedUnavailable;
         try {
             const [catalog, installed] = await Promise.all([
                 runSearch(state, { signal: myController.signal }).then(data => ({ data }), error => ({ error })),
@@ -526,7 +528,7 @@ export function initMarketplace(pane, controlsHost = null) {
                 state.enrichmentUnavailable = installed.available && !installed.enrichmentAvailable;
                 if (installed.available) {
                     state.installedMap = installed.map;
-                    state.installedStale = false;
+                    state.installedRead = Math.max(state.installedRead, owedAtStart);
                 }
             }
             state.installedMap.pendingBySlug = getPendingBySlug();
@@ -577,7 +579,7 @@ export function initMarketplace(pane, controlsHost = null) {
 
     function scheduleRefresh(immediate, options = {}) {
         if (destroyed) return;
-        if (options.installed !== false) state.installedStale = true;  // survives a replaced timer
+        if (options.installed !== false) state.installedOwed += 1;  // survives a replaced timer
         if (debounceTimer) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => refresh(options), immediate ? 0 : 300);
     }

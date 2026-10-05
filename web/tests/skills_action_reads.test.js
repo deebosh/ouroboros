@@ -360,3 +360,39 @@ test('a post-action installed read that a ClawHub keystroke supersedes is still 
     await flush();
     assert.deepEqual(counts, { search: 3, installed: 2 }, 'once read, keystrokes search only again');
 });
+
+test('an older ClawHub refresh landing after an action cannot settle the read the action owes', async () => {
+    const nodes = Object.fromEntries(['#mp-query', '#mp-only-official', '[data-mp-search]', '#mp-results', '#mp-pagination', '#mp-status']
+        .map(selector => [selector, node()]));
+    const pane = { ...node(), querySelector: selector => nodes[selector] };
+    const counts = { search: 0, installed: 0 };
+    const timers = new Map();
+    let nextTimer = 0;
+    let heldSearch = null;
+    const flush = async () => { const due = [...timers.values()]; timers.clear(); await Promise.all(due.map(callback => callback())); };
+    const context = vm.createContext({
+        AbortController, URLSearchParams,
+        setTimeout: (callback) => { timers.set(++nextTimer, callback); return nextTimer; },
+        clearTimeout: (id) => { timers.delete(id); },
+        paneTemplate: () => '', getPendingBySlug: () => new Map(), getPending: () => undefined, setPending() {},
+        document: { getElementById: id => nodes[`#${id}`] },
+        startLifecyclePoller: () => () => {},
+        runSearch: async () => { counts.search += 1; if (heldSearch) await heldSearch.promise; return { results: [{ slug: 'demo' }] }; },
+        loadInstalled: async () => { counts.installed += 1; return { available: true, map: new Map(), enrichmentAvailable: true }; },
+        renderResults() {}, renderPagination() {}, isRateLimitError: () => false,
+    });
+    vm.runInContext(source('marketplace', 'function installErrorCopy(', '\nconst safeExternalUrl')
+        + source('marketplace', 'function showStatus(', '\nasync function loadInstalled')
+        + source('marketplace', 'export function initMarketplace('), context);
+    await context.initMarketplace(pane);
+    heldSearch = deferred();
+    const older = pane._marketplaceRefresh();      // refresh A reads the pre-action installed list, its search is held
+    await nextTurn();
+    assert.deepEqual(counts, { search: 2, installed: 2 });
+    nodes['[data-mp-search]'].handlers.click();     // an action-like refresh owes a newer installed read ...
+    nodes['#mp-query'].handlers.input({ target: { value: 'de' } });  // ... and a keystroke replaces its timer
+    heldSearch.resolve(); heldSearch = null;
+    await older;                                    // A lands with a matching token
+    await flush();
+    assert.deepEqual(counts, { search: 3, installed: 3 }, 'the keystroke refresh still makes the owed read');
+});
