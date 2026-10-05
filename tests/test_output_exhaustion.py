@@ -1,4 +1,4 @@
-"""Output exhaustion: an EMPTY reply that ended on its output limit (owner decision 2026-10-05, Q2=A).
+"""Output exhaustion: an EMPTY reply that ended on its output limit before any text or tool call.
 
 The finish reason is read once, by presence of the key (``_usage_response.response_finish_reason``):
 usage first (the OpenAI-compatible, Claudexor, local and GigaChat lanes write it there), then the

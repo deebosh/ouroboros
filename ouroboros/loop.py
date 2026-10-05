@@ -314,7 +314,7 @@ def _provider_unavailable_result(
 
 def _output_exhausted_notice(facts: Any) -> str:
     """The one host fact the next ordinary round reads after a reply that ended on its
-    output limit before any visible text or tool call (owner decision 2026-10-05, Q2=A).
+    output limit before any visible text or tool call; no retry, no provider terminal.
 
     Names only what that attempt's own records carry (``_usage_response.output_exhaustion_facts``):
     the allowance its receipt shows was sent and the reasoning tokens its provider reported.
