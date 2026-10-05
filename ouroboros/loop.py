@@ -643,11 +643,8 @@ def run_llm_loop(
                 # candidate's (the walk keeps its kind): no wait, no provider terminal. One host fact,
                 # then the next ordinary round decides under the existing round, time and money
                 # limits. A round still holding an unresolved attempt may start no new generation,
-                # so it keeps the recovery below (provider_no_call_source decides).
-                if transport_wait is not None:  # the provider answered, so a wait episode ends
-                    transport_wait = _reconcile_transport_wait(
-                        transport_wait, tools._ctx, msg_present=False, error_kind="llm_output_exhausted",
-                        drive_logs=drive_logs, task_id=task_id, model=active_model, emit_progress=emit_progress)
+                # so it keeps the recovery below (provider_no_call_source decides). The provider
+                # answered, so the recovery above already ended any wait episode.
                 _append_or_merge_user_message(
                     messages, _output_exhausted_notice(accumulated_usage.get("_last_llm_output_exhausted")))
                 pending_no_tool_budget = True  # an unfinished no-tool round keeps the same budget tail (#1223)
