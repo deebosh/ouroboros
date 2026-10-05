@@ -37,6 +37,7 @@ from ouroboros.tools.registry import ToolContext
 from ouroboros.memory import Memory
 from ouroboros.context import build_llm_messages
 from ouroboros.loop import run_llm_loop
+from ouroboros.observability import task_timing_scope
 from ouroboros.config import EFFORT_SCALE, resolve_effort  # noqa: F401 -- the agent module keeps its historical import surface for the dispatch leaf
 from ouroboros.agent_startup_checks import (
     persist_early_origin_stub as _persist_early_origin_stub_impl,  # noqa: F401 -- the agent module keeps its historical import surface for the dispatch leaf
@@ -833,6 +834,7 @@ class OuroborosAgent:
 
         return emit_task_progress
 
+    @task_timing_scope()
     def handle_task(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Run one task under the root/subtree monetary attribution scope."""
         # A reused worker agent still carries the PREVIOUS task's chat binding;

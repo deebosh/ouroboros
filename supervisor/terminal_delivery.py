@@ -311,7 +311,7 @@ def register_pending_delivery(drive_root: Any, event: Dict[str, Any]) -> bool:
                     f"terminal-delivery registry pending row for {did} is malformed"
                 )
             return None
-        pending[did] = {**{k: v for k, v in event.items() if k != "type"},
+        pending[did] = {**{k: v for k, v in event.items() if k not in ("type", "_finalization_timing")},
                         "registered_at": utc_now_iso()}
         if len(pending) > _PENDING_CAP:
             for stale in list(pending)[: len(pending) - _PENDING_CAP]:

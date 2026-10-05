@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from contextlib import nullcontext
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
+from ouroboros.observability import timed_phase
 from ouroboros.headless import (
     ARTIFACT_STATUS_FAILED,
     ARTIFACT_STATUS_FINALIZING,
@@ -1196,6 +1197,7 @@ def wait_for_effective_tasks(
     return out
 
 
+@timed_phase("child_lookup")
 def find_child_tasks(
     drive_root: pathlib.Path,
     *,

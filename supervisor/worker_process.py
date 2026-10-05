@@ -16,6 +16,7 @@ import logging
 import json
 import pathlib
 from typing import Any
+from ouroboros.observability import stamp_finalization_enqueue
 from ouroboros.utils import utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -440,7 +441,7 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
                         # File publication must not enter the model's crash-retry rail.
                         log.exception("Terminal file preparation failed for %s", task.get("id"))
                     e2["_files_prepared_attempt"] = int(task.get("_attempt") or 1)
-                out_q.put(e2)
+                out_q.put(stamp_finalization_enqueue(e2))
         except Exception as _e:
             _log_worker_crash(wid, _drive, "handle_task", _e, _tb.format_exc())
             return

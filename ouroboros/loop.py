@@ -21,6 +21,7 @@ from ouroboros.config import adaptive_quorum, get_context_mode, get_light_model,
 from ouroboros.review_cycles import REASON_REVIEW_CYCLES_EXHAUSTED  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_BYPASS_REASONS, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE, REASON_DELIVERY_CONTROL_DEGRADED, REASON_OWNER_REQUESTED_FINALIZATION, RESULT_INFRA_FAILED, extract_final_answer, latest_agent_defined_verification, latest_unreconciled_failed_verification, latest_unreconciled_masked_verification, reviewable_effect_projection, should_nudge_verification, turn_has_reviewable_effects  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 from ouroboros.observability import new_execution_id  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
+from ouroboros.observability import task_timing_scope, timed_phase
 from ouroboros.tool_policy import CAPABILITY_OMISSION_HEADER, format_capability_omissions, initial_tool_schemas, list_non_core_tools  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.llm_claudexor import ModelTurnState
@@ -426,6 +427,7 @@ def _initial_round_route(ctx: Any, llm: LLMClient, initial_effort: str) -> tuple
     return model, initial_effort, use_local, preferred_mode, active_context_mode, context_fit_plan
 
 
+@task_timing_scope(reuse=True)
 def run_llm_loop(
     messages: List[Dict[str, Any]],
     tools: ToolRegistry,
@@ -714,8 +716,9 @@ def run_llm_loop(
         # A budget-pause HOLD ended by control rejoins the model-wait rails; else re-raise with evidence.
         return _loop_exit_after_exception(exc, limit_ctx, exit_ctx, llm_trace, transport_wait)
     finally:
-        _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id, detail="loop_exit")
-        _cleanup_loop_resources(stateful_executor, exit_ctx)
+        with timed_phase("cleanup"):
+            _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id, detail="loop_exit")
+            _cleanup_loop_resources(stateful_executor, exit_ctx)
 
 # Cohesive leaves own the implementations below. Keep the full re-export
 # surface: production callers and tests address these historical loop bindings,
