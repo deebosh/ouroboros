@@ -3,7 +3,6 @@
 import asyncio
 import base64  # noqa: F401
 import json
-import logging
 import subprocess
 import os
 import pathlib
@@ -29,6 +28,7 @@ from ouroboros.server_auth import (
 from ouroboros.server_entrypoint import bound_service_socket, find_free_port, parse_server_args, write_port_file
 from ouroboros.launcher_bootstrap import automatic_launch_allowed
 from ouroboros.server_web import NoCacheStaticFiles, make_index_page, resolve_web_dir
+from ouroboros.process_logging import configure_process_logging
 from ouroboros.task_finalization import host_operation_reply_kwargs
 from ouroboros import usage_store  # the boot import of the retired journal (run_startup_phase below)
 from ouroboros.gateway import collect_routes
@@ -114,35 +114,14 @@ if not os.environ.get("OUROBOROS_AGENT_PYTHON"):
     if isinstance(_agent_python, str) and _agent_python:
         os.environ["OUROBOROS_AGENT_PYTHON"] = _agent_python
 
-_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+# Logging is configured in main(), not at import: a spawn/forkserver worker re-imports
+# this module as ``__mp_main__`` and configures itself in ``worker_main``
+# (ouroboros/process_logging.py), so importing the server never attaches handlers.
 _pytest_default_real_data_dir = (
     "pytest" in sys.modules
     and not os.environ.get("OUROBOROS_DATA_DIR")
     and DATA_DIR == pathlib.Path.home() / "Ouroboros" / "data"
 )
-if _pytest_default_real_data_dir or __name__ == "__mp_main__":
-    # A spawn/forkserver worker re-imports this module as ``__mp_main__``: it gets a stream
-    # handler only, so two processes never rotate ``server.log`` against each other.
-    logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, handlers=[logging.StreamHandler()])
-else:
-    _log_dir = DATA_DIR / "logs"
-    _log_dir.mkdir(parents=True, exist_ok=True)
-    from logging.handlers import RotatingFileHandler
-    _file_handler = RotatingFileHandler(
-        _log_dir / "server.log", maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8",
-    )
-    _file_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
-    logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, handlers=[_file_handler, logging.StreamHandler()])
-
-
-from ouroboros.observability import SecretRedactingLogFilter as _SecretRedactingLogFilter
-
-for _handler in logging.getLogger().handlers:
-    _handler.addFilter(_SecretRedactingLogFilter())
-# httpx logs each request URL at INFO; polling transports put credentials in
-# the URL path, so even redacted lines are noise at this level.
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 RESTART_EXIT_CODE = 42
 PANIC_EXIT_CODE = 99
@@ -1391,6 +1370,7 @@ async def lifespan(app):
             host=DEFAULT_HOST_SERVICE_HOST,
             port=host_port,
             log_level="warning",
+            log_config=None,  # uvicorn loggers propagate to the root handlers
         )
         host_service_server = _embedded_uvicorn_server(host_service_config)
         host_service_task = asyncio.create_task(
@@ -1652,6 +1632,9 @@ def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
         pass
 
 def main() -> int:
+    # The server process is the single writer of logs/server.log; a test run on the
+    # real default data root keeps the stream handler only.
+    configure_process_logging(drive_logs=None if _pytest_default_real_data_dir else DATA_DIR / "logs")
     if not automatic_launch_allowed(os.environ.get("OUROBOROS_LAUNCH_INTENT", "owner"), DATA_DIR, log):
         return 0
     # A benchmark-owned child may receive an integrity pin from its parent.
@@ -1690,6 +1673,7 @@ def main() -> int:
         host=args.host,
         port=actual_port,
         log_level="warning",
+        log_config=None,  # uvicorn loggers propagate to the root handlers
         ws_ping_interval=20,
         ws_ping_timeout=20,
         # Leave time for terminal custody inside the launcher stop budget (#1142).

@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import pathlib
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from starlette.requests import Request
 from starlette.responses import Response
@@ -383,6 +383,7 @@ def _annotate_terminal_task_truth(
     historical_terminals: Optional[dict] = None,
     deferred_lineage: Optional[set] = None,
     evidence_anchors: Optional[dict] = None,
+    evidence_scope: Optional[Callable[[str], bool]] = None,
 ) -> None:
     """Project task truth AFTER quotas, paying only for represented/current tasks.
 
@@ -410,7 +411,10 @@ def _annotate_terminal_task_truth(
             task_id = str(message.get("task_id") or "")
             if not task_id or message.get("system_type") == "project_question_pointer":
                 continue
-            represented.setdefault(task_id, str(message.get("ts") or ""))
+            # A room may show a row its task does not live in (Main pins a Project's
+            # notice and lifecycle rows); tool evidence follows the task's own route.
+            if evidence_scope is None or evidence_scope(task_id):
+                represented.setdefault(task_id, str(message.get("ts") or ""))
             if type(message.get("tool_calls")) is int:
                 tool_counts[task_id] = max(tool_counts.get(task_id, 0), message["tool_calls"])
             progress, summary = bool(message.get("is_progress")), message.get("system_type") == "task_summary"
@@ -1481,6 +1485,8 @@ def _assemble_history_response(
         historical_terminals=historical_terminals,
         deferred_lineage=deferred_lineage,
         evidence_anchors=evidence_anchors,
+        evidence_scope=lambda task_id: task_id not in bindings_by_task or row_matches_thread.evidence_matches(
+            bindings_by_task[task_id], {"task_id": task_id}),
     )
     for source in ("chat", "progress"):
         before[source] = max([before[source], *(entry["_history_end"] for entry in selections[source][0] or ()

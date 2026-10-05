@@ -461,13 +461,18 @@ def test_logical_input_binding_survives_preparation_but_rejects_changed_input(ev
 def test_real_driver_recovery_binds_timeout_capsule_and_clock(evidence_root, tmp_path, asynchronous, body_error, nano):
     from ouroboros.send_clock import MainSendClock, SendClockPolicy
 
-    target = {**_target(), **({"context_mode": "nano"} if nano else {})}
+    target = _target()
     source = _value_payload("nested", target, "ultra")
     if nano:
-        source["max_tokens"] = 200000  # Forces real allowance reduction before sealing.
+        source["max_tokens"] = 200000  # Forces real allowance reduction before sealing (the 128K window below).
     source["timeout"] = 123
     source["messages"][0]["_context_capsule"] = {"kind": "host-only"}
     original, sent = copy.deepcopy(source), []
+    # A rendered Nano reaches the send only through the bound Main context (no keyword on the call chain).
+    physical = ua.PhysicalAttemptContext(
+        profile="owner_nano", rendered_mode="nano", measurement_basis="cold_estimate", route_fp="r", round_id="x:round:1",
+        target_total_tokens=85_000, capacity_total_tokens=128_000, context_target_miss=False, automatic_pass_used=False,
+    ) if nano else None
 
     def send(**candidate):
         sent.append(copy.deepcopy(candidate))
@@ -478,7 +483,8 @@ def test_real_driver_recovery_binds_timeout_capsule_and_clock(evidence_root, tmp
         return _Response()
 
     client = LLMClient(api_key="unused")
-    with ua.usage_scope(ua.UsageScope(drive_root=tmp_path, task_id="binding")), MainSendClock(SendClockPolicy("UTC")).bound():
+    with ua.usage_scope(ua.UsageScope(drive_root=tmp_path, task_id="binding")), MainSendClock(SendClockPolicy("UTC")).bound(), \
+            ua.bind_physical_attempt_context(physical):
         if asynchronous:
             async def async_send(**candidate):
                 return send(**candidate)
@@ -490,7 +496,8 @@ def test_real_driver_recovery_binds_timeout_capsule_and_clock(evidence_root, tmp
     assert all(candidate["timeout"] == 123 for candidate in sent)
     assert all("_context_capsule" not in candidate["messages"][0] for candidate in sent)
     if nano:
-        assert all(candidate["max_tokens"] < original["max_tokens"] for candidate in sent)
+        assert all(8_192 <= candidate["max_tokens"] < original["max_tokens"] for candidate in sent)
+        assert len({candidate["max_tokens"] for candidate in sent}) == 1  # every rung: one rule on one source
 
 
 @pytest.mark.parametrize("control", ["budget", "stop"])

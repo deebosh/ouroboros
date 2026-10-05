@@ -798,7 +798,8 @@ and what enforces each.
   precedence in the shared context_budget classifiers, without requiring the input
   alone to exceed the window); quota/auth/billing, hard bad-request and
   request-too-large are non-retryable as-is (exact category, recovery hint); a typed
-  408/429/5xx or a proven pre-dispatch failure may retry; a dispatched request with no
+  408/429/5xx or a proven pre-dispatch failure may retry; an empty reply that ended on the
+  output limit is output exhaustion, never resent as is; a dispatched request with no
   terminal outcome is never resent as is; only an eligible unknown permits a NEW generation. Who may
   repeat after a typed transport death, how often, on whose row, what ends the round:
   ARCHITECTURE §6 "Context fitting, retry, and compaction"

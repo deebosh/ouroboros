@@ -11,30 +11,24 @@ from __future__ import annotations
 
 import copy
 import logging
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from ouroboros.context_budget import context_overflow_message
+from ouroboros.context_budget import (  # the typed overflow lives with the overflow vocabulary
+    LocalContextTooLargeError,
+    context_overflow_message,
+    estimate_message_chars as _estimate_message_chars,  # beside its proxy constant; the historical private name
+)
 from ouroboros.llm_attempt import (
     _attempt_request,
     _candidate_before_dispatch,
     _execute_candidate,
-
     _finalized_physical_candidate,
     _is_structured_context_overflow_exception,
 )
-from ouroboros.usage_accounting import PhysicalAttemptCapture, UsageAccountingError
+from ouroboros.usage_accounting import PhysicalAttemptCapture, UsageAccountingError, current_physical_attempt_context
 
 # The moved warnings keep the logger identity they were emitted under.
 log = logging.getLogger("ouroboros.llm")
-
-
-class LocalContextTooLargeError(RuntimeError):
-    """Raised when a local model cannot fit context without silent truncation."""
-
-
-# Lives beside its proxy constant; the historical private name stays importable.
-
-from ouroboros.context_budget import estimate_message_chars as _estimate_message_chars
 
 
 def _split_markdown_sections(text: str) -> Tuple[str, List[Tuple[str, str]]]:
@@ -198,10 +192,13 @@ class _LocalLaneMixin:
     def _build_local_candidate(
         self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]],
         max_tokens: int, tool_choice: str, timeout: Optional[float] = None,
-        processing_preference: Optional[str] = None,
-        context_mode: Optional[str] = None,
+        processing_preference: Optional[str] = None, *, compact: bool = True,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Prepare the complete local payload for sizing and actual dispatch."""
+        """Prepare the complete local payload for sizing and actual dispatch.
+
+        ``compact=False`` leaves the approximate markdown compactor out: a rendered Nano
+        measures the whole candidate on the serving instance first (``_chat_local``).
+        """
         messages = self._normalize_system_message_placement(messages)
         clean_messages = self._strip_openrouter_roundtrip_metadata(
             self._copy_messages_with_cache_policy(
@@ -217,7 +214,7 @@ class _LocalLaneMixin:
                 if isinstance(block, dict) and str(block.get("type") or "") in ("image_url", "image"):
                     content[idx] = {"type": "text", "text": "[image omitted: model has no vision]"}
         ctx_len, local_max = local_context_limits(max_tokens)
-        if ctx_len > 0:
+        if ctx_len > 0 and compact:
             clean_messages = self._prepare_messages_for_local_context(clean_messages, ctx_len, local_max)
         for msg in clean_messages:
             content = msg.get("content")
@@ -243,53 +240,81 @@ class _LocalLaneMixin:
         preference = resolve_processing_preference(override=processing_preference)
         target = {"provider": "local", "resolved_model": "local-model", "usage_model": "local-model",
                   "processing_preference": preference, "context_window_tokens": evidence.get("context_window"),
-                  "context_window_confirmed": evidence.get("confirmed") is True,
-                  "context_mode": context_mode}
+                  "context_window_confirmed": evidence.get("confirmed") is True}
         return target, kwargs
 
-    def _finalize_local_candidate(self, target: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _finalize_local_candidate(
+        self, target: Dict[str, Any], payload: Dict[str, Any], *, compactor: Optional[Callable[[], Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         """Measure on the serving instance, then bind the output allowance before send.
 
-        This explicit stage may perform bounded, non-generating loopback I/O.
-        The payload builder and shared context arithmetic remain pure.
+        This explicit stage may perform bounded, non-generating loopback I/O. The payload
+        builder and shared context arithmetic remain pure. ``compactor`` (a rendered Nano
+        whose ``payload`` skipped the approximate compactor) builds today's compacted
+        candidate on demand, measured once as today: when the instance cannot count the
+        whole candidate, or after an exact shortfall; a second shortfall is the typed
+        refusal. Low, Max and an exact fit never reach it.
         """
         from ouroboros.local_model import get_manager
 
-        manager = get_manager()
-        measure = getattr(manager, "measure_prepared_input", None)
+        measure = getattr(get_manager(), "measure_prepared_input", None)
         # Bind the provider-clean physical payload before measuring. Host-only
         # metadata must not affect the measured input or candidate hash.
         candidate = _finalized_physical_candidate(target, payload, "chat.completions")
-        if callable(measure):
-            evidence = measure(candidate)
-            if isinstance(evidence, dict) and evidence.get("supported"):
-                target["local_input_measurement"] = evidence
-                # Rebuild from the original prepared source so the exact
-                # measured input and output cap are sealed together.
-                candidate = _finalized_physical_candidate(target, payload, "chat.completions")
-        return candidate
+        evidence = measure(candidate) if callable(measure) else None
+        if not (isinstance(evidence, dict) and evidence.get("supported")):
+            return candidate if compactor is None else self._finalize_local_candidate(target, compactor())
+        target["local_input_measurement"] = evidence
+        try:
+            # Rebuild from the original prepared source so the exact measured
+            # input and output cap are sealed together.
+            return _finalized_physical_candidate(target, payload, "chat.completions")
+        except LocalContextTooLargeError as error:
+            if compactor is None:
+                raise
+            shortfall = error
+        try:
+            compacted = compactor()
+        except LocalContextTooLargeError as error:  # nothing left to compact: the exact refusal's own facts stand
+            error.refused_candidate = shortfall.refused_candidate
+            raise error from shortfall
+        return self._finalize_local_candidate(target, compacted)
 
     def _chat_local(
         self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]],
         max_tokens: int, tool_choice: str, timeout: Optional[float] = None,
         processing_preference: Optional[str] = None,
-        context_mode: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Send exactly the previously prepared complete local candidate."""
         client = self._get_local_client()
-        local_target, candidate = self._build_local_candidate(
-            messages, tools, max_tokens, tool_choice, timeout, processing_preference, context_mode)
+        # A rendered Nano (the bound Main context) is measured exactly BEFORE the
+        # approximate compactor when the serving instance can count; Low, Max and
+        # an instance without that support take today's compacted path unchanged.
+        exact_first = getattr(current_physical_attempt_context(), "rendered_mode", None) == "nano"
+
+        def build(compact: bool) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+            return self._build_local_candidate(
+                messages, tools, max_tokens, tool_choice, timeout, processing_preference, compact=compact)
+
+        local_target, candidate = build(compact=not exact_first)
         # The shared finalizer removes SDK transport options from the measured
         # and sealed payload. Preserve the builder's positive caller override
         # separately for the actual send, including chat_async's local thread.
         transport_kwargs = {"timeout": candidate["timeout"]} if "timeout" in candidate else {}
         local_target["requested_reasoning_effort"] = reasoning_effort
-        from ouroboros.send_clock import stamp_clock_note
+        from ouroboros.send_clock import split_clock_note, stamp_clock_note
 
         # ONE clock line per call, sampled before both finalizations: the serving
         # instance measures exactly the bytes that are then sealed and sent.
-        candidate = self._finalize_local_candidate(local_target, stamp_clock_note(candidate))
+        candidate = stamp_clock_note(candidate)
+
+        def compacted() -> Dict[str, Any]:  # today's compacted candidate, carrying this call's one clock line
+            note, _rest = split_clock_note(candidate)
+            built = build(compact=True)[1]
+            return {**built, "messages": [*built["messages"], *([{"role": "user", "content": note}] if note else [])]}
+
+        candidate = self._finalize_local_candidate(local_target, candidate, compactor=compacted if exact_first else None)
         clean_tools = candidate.get("tools")
         # ONE physical attempt per call. Re-sending here spent the caller's
         # physical-attempt budget without the caller authorising it, so a

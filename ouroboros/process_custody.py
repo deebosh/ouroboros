@@ -74,10 +74,11 @@ def adopt_session_id(value: str) -> None:
     next reap tick. The worker entrypoint calls this with the server's id.
 
     The id is passed as a spawn ARGUMENT, never via ambient env: an env var
-    would survive ``server_control.restart_current_process`` (which re-execs
-    with ``os.environ.copy()``), making a freshly restarted server adopt the
-    dead generation's id and treat leftover processes as same-session
-    survivors — the inverse leak. A spawn arg cannot survive an exec.
+    would survive ``server_control.restart_current_process`` (which hands the
+    server over with ``os.environ.copy()``: exec on POSIX, spawn on Windows),
+    making a freshly restarted server adopt the dead generation's id and treat
+    leftover processes as same-session survivors — the inverse leak. A spawn
+    arg survives neither transfer.
     """
     global _SESSION_ID
     v = str(value or "").strip()

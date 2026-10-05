@@ -333,3 +333,33 @@ def test_a_carrier_that_is_the_tasks_only_terminal_row_keeps_the_whole_terminal_
     assert carrier["task_terminal_status"] == "completed"
     for key in ("review_projection", "outcome_axes", "reason_code", "cancel_origin", "model_execution"):
         assert key in carrier and carrier[key] == summary[key], key
+
+
+@pytest.mark.parametrize("direction,row_type", [("out", "main_notice"), ("system", "project_handoff")])
+def test_a_row_main_pins_for_a_project_task_does_not_mint_its_card_in_main(tmp_path, direction, row_type):
+    # Main shows a Project root's notice and lifecycle rows by a pinning exemption; the task
+    # lives in its Project room, so its tool evidence (and the card it mints) stays there (#1505).
+    from ouroboros.projects_registry import bind_task_to_project, create_project
+
+    project = create_project(tmp_path, "room", name="Project room")
+    bind_task_to_project(tmp_path, "root", project["id"], origin={"absent": "system"})
+    _write(tmp_path / "logs/chat.jsonl", [
+        {"direction": direction, "type": row_type, "task_id": "root", "text": "Pinned", "ts": TS, "chat_id": 1},
+        {"direction": "out", "task_id": "root", "text": "Project answer", "ts": TS, "chat_id": project["chat_id"]}])
+    _write(tmp_path / "logs/tools.jsonl", [_tool("root")])
+    _write(tmp_path / "task_results/root.json", [{"_schema_version": 1, "task_id": "root", "status": "completed",
+                                                  "chat_id": project["chat_id"]}])
+    main = _room_read(tmp_path, 1)["messages"]
+    assert [(row["task_id"], row["system_type"]) for row in main] == [("root", row_type)], main
+    room = _room_read(tmp_path, project["chat_id"])["messages"]
+    carriers = [row for row in room if row.get("system_type") == "task_evidence"]
+    assert [row["task_id"] for row in carriers] == ["root"], "the Project room keeps its task's tools"
+    assert carriers[0]["tool_evidence"]["observations"][0]["key"] == "tool:root:root-call"
+
+
+def test_a_main_rooted_tasks_own_main_notice_still_carries_its_tools(tmp_path):
+    _write(tmp_path / "logs/chat.jsonl", [{"direction": "out", "type": "main_notice", "task_id": "root",
+                                           "text": "Owner action", "ts": TS, "chat_id": 1}])
+    _write(tmp_path / "logs/tools.jsonl", [_tool("root")])
+    rows = _room_read(tmp_path, 1)["messages"]
+    assert [(row["task_id"], row["system_type"]) for row in rows] == [("root", "main_notice"), ("root", "task_evidence")]

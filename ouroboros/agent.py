@@ -109,6 +109,7 @@ def _task_exception_terminal(env: Any, task: Dict[str, Any], exc: Exception, dri
     usage.update(execution_status="infra_failed", reason_code="task_exception",
                  terminal_origin=TERMINAL_ORIGIN_HOST_NOTICE)
     text = f"⚠️ Error during processing: {type(exc).__name__}: {exc}"
+    log.error("Task %s failed with an unexpected exception", task.get("id"), exc_info=exc)
     append_jsonl(drive_logs / "events.jsonl", {
         "ts": utc_now_iso(), "type": "task_error", "task_id": task.get("id"),
         "error": repr(exc), "traceback": truncate_for_log(traceback.format_exc(), 2000),
@@ -991,6 +992,7 @@ class OuroborosAgent:
                     raise
                 except Exception as e:
                     tb = traceback.format_exc()
+                    log.error("Deep self-review failed for task %s", task.get("id"), exc_info=e)
                     append_jsonl(drive_logs / "events.jsonl", {
                         "ts": utc_now_iso(), "type": "task_error",
                         "task_id": task.get("id"), "error": repr(e),

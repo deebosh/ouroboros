@@ -377,11 +377,11 @@ def test_density_reducers_use_newest_route_or_model_but_densest_review_witness(
     chars = 400_000
     record_token_density(
         tmp_path, "m/one", prompt_chars=chars, prompt_tokens=180_000, route_fp="route-a",
-        basis="bounded_proxy",
+        basis=ce.MAIN_DENSITY_BASIS,
     )
     record_token_density(
         tmp_path, "m/one", prompt_chars=chars, prompt_tokens=110_000, route_fp="route-a",
-        basis="bounded_proxy",
+        basis=ce.MAIN_DENSITY_BASIS,
     )
 
     assert resolve_main_token_density(tmp_path, "route-a", "m/one") == (
@@ -566,7 +566,7 @@ def test_density_retention_preserves_fresh_high_witness_without_refreshing_its_t
         record_token_density(
             tmp_path, "m/one", prompt_chars=400_000,
             prompt_tokens=int(density * 100_000), route_fp=f"route-low-{index}",
-            basis="bounded_proxy",
+            basis=ce.MAIN_DENSITY_BASIS,
         )
     stored = json.loads((tmp_path / "state" / "capability_evidence.json").read_text())
     pairs = stored["token_density"]["m/one"]["pairs"]
@@ -649,7 +649,7 @@ def test_cold_density_never_demotes_the_main_loop_context_fit(tmp_path, monkeypa
     # Only a MEASURED density for that exact model may raise it.
     record_token_density(
         tmp_path, "anthropic/claude-fable-5", prompt_chars=4_000_000, prompt_tokens=1_580_000,
-        basis="bounded_proxy",
+        basis=ce.MAIN_DENSITY_BASIS,
     )
     assert context_fit._route_calibration_ratio(tmp_path, "fp", "openai/gpt-5.5") == 1.0
     assert context_fit._route_calibration_ratio(
