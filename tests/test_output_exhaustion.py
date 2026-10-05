@@ -348,3 +348,17 @@ def test_exhaustion_ends_an_active_transport_wait_episode(tmp_path, loop_env, no
     assert waits[0][0] == "entered"
     assert waits[-1] == ("ended", "error_kind_changed:llm_output_exhausted")
     assert len(_host_facts(llm.requests[-1]["messages"])) == 1
+
+
+def test_an_owner_terminal_names_output_exhaustion_not_a_provider_failure():
+    """A terminal composed after an exhausted reply that did NOT take the next-round branch
+    (an unresolved attempt fences it, or a configured-route candidate exhausted) names the
+    length limit; any other kind keeps its own words and an unknown one stays generic."""
+    exhausted = loop_transport.provider_failure_hint(
+        {"_last_llm_error": "x", "_last_llm_error_kind": "llm_output_exhausted"})
+    assert "reached its length limit before any visible output" in exhausted
+    assert "a provider failure" not in exhausted
+    empty = loop_transport.provider_failure_hint({"_last_llm_error": "x", "_last_llm_error_kind": "llm_empty_response"})
+    assert "classified the failure as an empty response." in empty
+    unknown = loop_transport.provider_failure_hint({"_last_llm_error": "x", "_last_llm_error_kind": "not_a_kind"})
+    assert "classified the failure as a provider failure." in unknown
