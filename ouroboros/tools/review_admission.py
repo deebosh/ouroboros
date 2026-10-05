@@ -641,7 +641,7 @@ def commit_gate_paid_seats(triad_prepared, triad_exited, scope_rows) -> list:
     return seats
 
 
-def admit_commit_gate_wave(ctx, seats) -> str | None:
+def admit_commit_gate_wave(ctx, seats, wave_id: str = "") -> str | None:
     """All-or-nothing money admission of one commit-gate wave (owner decision
     2026-09-05): every paid seat's reservation upper bound must fit TOGETHER,
     against every fence ``reserve_attempt`` enforces (the global TOTAL_BUDGET
@@ -655,8 +655,8 @@ def admit_commit_gate_wave(ctx, seats) -> str | None:
     from ouroboros.tools.review_helpers import review_wave_binding_fence, review_wave_budget_gate
 
     # Each seat is priced under the usage scope its substrate will SEND under
-    # (surface category + slot), so its bound reads the seat's own observed
-    # cache split — never the caller's warm transcript split.
+    # (surface category, slot and the cycle's wave), so its bound reads the
+    # seat's own observed cache split — never the caller's warm transcript split.
     admission = review_wave_budget_gate(
         ctx, surface="commit_gate",
         models=[seat["model"] for seat in seats],
@@ -664,6 +664,7 @@ def admit_commit_gate_wave(ctx, seats) -> str | None:
         max_completion_tokens=[seat["max_completion_tokens"] for seat in seats],
         categories=[review_usage_category(seat["surface"]) for seat in seats],
         slot_ids=[seat["slot_id"] for seat in seats],
+        wave_id=wave_id,
         extra={"seats": [f"{seat['surface']}:{seat['slot_id']}" for seat in seats]},
     )
     if admission is None:

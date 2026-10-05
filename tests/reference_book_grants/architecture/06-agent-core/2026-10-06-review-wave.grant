@@ -1,2 +1,2 @@
-157
-The review usage sentence names where a reviewer send's wave comes from: the caller, the paid-cycle retry_key, or a fresh id per round (#1544).
+278
+The review usage sentence names where a reviewer send's wave comes from (the caller, the paid-cycle retry_key, or a fresh id per round) and that a wave alone keeps a row with the generic reconciliation (#1544).

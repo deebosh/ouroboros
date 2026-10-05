@@ -224,6 +224,7 @@ def review_wave_budget_gate(
     categories: str | list = "",
     slot_ids: str | list = "",
     processing_preferences: str | list = "",
+    wave_id: str = "",
 ) -> Optional[dict]:
     """Shared review-wave budget admission (v6.69.0).
 
@@ -233,7 +234,7 @@ def review_wave_budget_gate(
     (``surface="commit_gate"``: scope seats first, then the triad, each seat
     priced with its own pack size and output reservation — ``prompt_chars`` /
     ``max_completion_tokens`` take one value per slot, and ``categories`` /
-    ``slot_ids`` name the usage scope each seat will SEND under, so its bound
+    ``slot_ids`` / ``wave_id`` name the usage scope each seat will SEND under, so its bound
     reads the seat's own observed cache split rather than the caller's), against
     every fence ``reserve_attempt`` enforces — the global TOTAL_BUDGET remainder
     (the scope's ``global_limit_usd``) and the task's root fence — the event naming
@@ -260,6 +261,7 @@ def review_wave_budget_gate(
             categories=categories,
             slot_ids=slot_ids,
             processing_preferences=processing_preferences,
+            wave_id=wave_id,
         )
         unpriced = int(admission.get("unpriced_slots") or 0)
         base = {

@@ -303,6 +303,7 @@ def review_wave_admission(
     categories: str | Sequence[str] = "",
     slot_ids: str | Sequence[str] = "",
     processing_preferences: str | Sequence[str] = "",
+    wave_id: str = "",
 ) -> Dict[str, Any]:
     """Read-only whole-wave admission through each slot's reservation math.
 
@@ -396,6 +397,7 @@ def review_wave_admission(
                 seat_scope = replace(
                     base_scope, category=str(seat_categories[index]),
                     review_slot_id=str(seat_slot_ids[index] or ""),
+                    review_wave_id=str(wave_id or base_scope.review_wave_id or ""),  # the round it sends under
                 )
             with ua.usage_scope(seat_scope):
                 bound = ua._reservation_cost(
