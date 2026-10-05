@@ -13,12 +13,15 @@ import copy
 import logging
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ouroboros.context_budget import context_overflow_message
+from ouroboros.context_budget import (  # the typed overflow lives with the overflow vocabulary; this name stays importable here
+    LocalContextTooLargeError,  # noqa: F401
+    context_overflow_message,
+    estimate_message_chars as _estimate_message_chars,  # beside its proxy constant; the historical private name
+)
 from ouroboros.llm_attempt import (
     _attempt_request,
     _candidate_before_dispatch,
     _execute_candidate,
-
     _finalized_physical_candidate,
     _is_structured_context_overflow_exception,
 )
@@ -26,15 +29,6 @@ from ouroboros.usage_accounting import PhysicalAttemptCapture, UsageAccountingEr
 
 # The moved warnings keep the logger identity they were emitted under.
 log = logging.getLogger("ouroboros.llm")
-
-
-class LocalContextTooLargeError(RuntimeError):
-    """Raised when a local model cannot fit context without silent truncation."""
-
-
-# Lives beside its proxy constant; the historical private name stays importable.
-
-from ouroboros.context_budget import estimate_message_chars as _estimate_message_chars
 
 
 def _split_markdown_sections(text: str) -> Tuple[str, List[Tuple[str, str]]]:

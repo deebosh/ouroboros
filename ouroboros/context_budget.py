@@ -32,9 +32,13 @@ from typing import Any, Dict, Literal, Optional, Tuple
 # owner's choice of 2026-09-29.
 OWNER_LOW_TARGET_TOKENS = 250_000
 
-# Nano's owner-selected total window and free input headroom. The send boundary
-# chooses the largest output allowance up to the caller's existing ceiling;
-# the headroom is a minimum, never a fixed generation cap.
+# Nano's owner-selected target sizes what goes INTO the request (the memory view
+# floor, the book form, the schema selection, the task-input pointer, the one
+# deficit-triggered reclaim). It stands in for the route window only when that
+# window is unknown. NANO_MIN_HEADROOM_TOKENS is the minimum the input fit leaves
+# for the reply and the reply floor R of ``reply_allowance_tokens``; the reply
+# itself follows the known window up to the caller's ceiling (owner decisions
+# 2026-10-05: Q1=A reply follows the window, Q3=A slack W/8 on approximate counts).
 OWNER_NANO_TARGET_TOKENS = 85_000
 NANO_MIN_HEADROOM_TOKENS = 8_192
 
@@ -83,10 +87,55 @@ def context_mode_limits(mode: str, owner_mode: str, output_reserve_tokens: int) 
     """``(owner target, reply reserve)`` of a rendered mode.
 
     A target binds only the mode the owner selected: task-local Low and a mode the
-    window lowered keep the window alone. Nano keeps its own headroom either way.
+    window lowered keep the window alone. Nano's reserve is the reply floor R of
+    ``reply_allowance_tokens`` (its headroom, never above the caller's ceiling), so
+    the memory floor and the mode selection use the same R as the send.
     """
     target = {"low": OWNER_LOW_TARGET_TOKENS, "nano": OWNER_NANO_TARGET_TOKENS}.get(mode) if mode == owner_mode else None
-    return target, NANO_MIN_HEADROOM_TOKENS if mode == "nano" else output_reserve_tokens
+    return target, min(NANO_MIN_HEADROOM_TOKENS, output_reserve_tokens) if mode == "nano" else output_reserve_tokens
+
+
+def _reply_floor(caller_max_tokens: int, nano: bool) -> Tuple[int, int]:
+    """``(C, R)``: the caller's ceiling and the reply floor of the rendered mode."""
+    ceiling = max(0, int(caller_max_tokens))
+    return ceiling, min(NANO_MIN_HEADROOM_TOKENS, ceiling) if nano else ceiling
+
+
+def reply_allowance_tokens(
+    *, caller_max_tokens: int, nano: bool, owner_nano: bool, input_tokens: int,
+    raw_input_tokens: Optional[int] = None, window_tokens: Optional[int] = None, exact: bool = False,
+) -> int:
+    """The one reply allowance of a prepared Main candidate (the wire ``max_tokens``).
+
+    ``C`` is the caller's ceiling, ``R`` the reply floor (``NANO_MIN_HEADROOM_TOKENS``
+    in a rendered Nano, ``C`` in Low and Max, so those always get ``C``). Under a known
+    window ``W`` the reply gets what the window leaves after the input: an
+    approximate count admits by the larger of the calibrated and the raw estimate
+    and leaves a slack of ``W / RECLAIM_LOW_WATER_DIVISOR`` for estimate error; an
+    exact count (the local server's tokenizer) needs no slack and may raise an
+    over-cautious estimate. Without a window the owner's Nano target stands in for
+    it. Continuous in the input, never below ``R``, never above ``C``: a ceiling below
+    the floor (a local lane's 2,048 or quarter window) is never raised.
+    """
+    ceiling, floor = _reply_floor(caller_max_tokens, nano)
+    if window_tokens is not None and int(window_tokens) > 0:
+        window = int(window_tokens)
+        measured = int(input_tokens) if exact else max(int(input_tokens), int(raw_input_tokens or input_tokens))
+        slack = 0 if exact else math.ceil(window / RECLAIM_LOW_WATER_DIVISOR)
+        return min(ceiling, max(floor, window - measured - slack))
+    if owner_nano:
+        return min(ceiling, max(floor, OWNER_NANO_TARGET_TOKENS - int(input_tokens)))
+    return ceiling
+
+
+def exact_reply_shortfall(*, caller_max_tokens: int, nano: bool, input_tokens: int, window_tokens: Optional[int]) -> bool:
+    """An exactly counted input leaves less than the reply floor under a known window.
+
+    The typed local overflow (``LocalContextTooLargeError``) before any send; an
+    estimate never establishes it.
+    """
+    _ceiling, floor = _reply_floor(caller_max_tokens, nano)
+    return window_tokens is not None and int(window_tokens) > 0 and int(window_tokens) - int(input_tokens) < floor
 
 
 def request_context_budget(
@@ -226,6 +275,20 @@ class ContextReclaimReceipt:
 
 class SummarizerContextOverflow(RuntimeError):
     """Typed permission to split one summarizer batch or source."""
+
+
+class LocalContextTooLargeError(RuntimeError):
+    """Raised when a local model cannot fit context without silent truncation.
+
+    A pre-dispatch exact shortfall (``exact_reply_shortfall``) raises it with
+    ``refused_candidate``: the JSON-safe facts of THE candidate it refused (model,
+    provider, the allowance it would have sent, the canonical candidate identity
+    and its physical context), which the one strict-shrink retry compares with
+    instead of an earlier round's capture. The historical home ``llm_local``
+    re-exports the name.
+    """
+
+    refused_candidate: Optional[Dict[str, Any]] = None
 
 
 class _UnsafeVisual(ValueError):
