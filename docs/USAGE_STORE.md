@@ -67,6 +67,9 @@ network-bound runs inside it.
 - Recovery that raced a settlement passes `expected_revision`; the UPDATE
   matches it in its WHERE, and zero rows updated leaves the settlement
   authoritative.
+- `Txn.record_recovery` updates only custody metadata and the row revision; money
+  and late-receipt rights stay unchanged. Definitive terminal/gone observations
+  suppress HTTP probes; retained receipts still settle.
 - One-shot kinds compare identity, not payload: a subscription session's later
   model or token observation replays the stored row.
 - Nonfinite money is refused before anything is written.
@@ -79,8 +82,9 @@ only the short display wait, then reports the fact unavailable — never zero.
 test pins its call sites. The consciousness allowance selects its roots and
 window rows through the `(category, ts_last)` and root indexes. Terminal
 maintenance takes recovery candidates from the open-set index and projection
-candidates from `dirty_owners` (acknowledging an owner after its projection is
-the duty's step).
+candidates from `Txn.dirty_owners()`. After an addressed projection succeeds or
+is equal, `ack_dirty_owner(owner_id, revision)` removes only that revision; a
+new receipt, failure, missing result or live ownership keeps the debt.
 
 ## 5. Lock tiers
 
@@ -121,8 +125,8 @@ import itself; a caller arriving while it runs waits only its own budget.
    before it refuses the import. For every attempt id the LAST row is stored
    (open rows included); compacted `usage_baseline_group` rows become weighted
    aggregates; bindings are the `BindingIndex` fold of every row; summaries
-   are the reducer over the imported rows; `dirty_owners` holds every owner
-   with a non-final row; one-shot identities are stored.
+   are the reducer over the imported rows; `dirty_owners` holds owners whose stored cost projection is missing or differs
+   from the imported summaries; one-shot identities are stored.
 3. An install whose pre-ledger import never completed imports its `llm_usage`
    events and `state.json` totals in the same job (source hashes, archived
    copies under `archive/usage_import/`, the watermark).
@@ -164,5 +168,5 @@ orphan accusation.
   the store relies on the mount's own write and rename semantics.
 - Two hosts sharing one data directory are not a supported configuration (the
   name lock is per host).
-- Until the maintenance duty acknowledges owners, every owner dirtied since the
-  import is compared on each pass; the equality memo skips unchanged ones.
+- Result-only edits do not dirty money: ordinary receipts maintain projection debt;
+  a result-only accounting repair belongs to explicit repair/import.

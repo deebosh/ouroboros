@@ -376,12 +376,15 @@ class Txn:
         return found
 
     def dirty_owner_ids(self) -> List[str]:
+        return [owner for owner, _revision in self.dirty_owners()]
+
+    def dirty_owners(self) -> List[Tuple[str, int]]:
         """The owners whose stored cost projection may be behind
         (``dirty_owners``) that own a non-review attempt or imported aggregate
         (review-attributed rows never made an owner a candidate). Each owner's
         check is an indexed lookup of its own rows."""
-        return [record["owner_id"] for record in self.conn.execute(
-            "SELECT owner_id FROM dirty_owners AS d WHERE EXISTS (SELECT 1 FROM attempts AS a "
+        return [(record["owner_id"], record["revision"]) for record in self.conn.execute(
+            "SELECT owner_id, revision FROM dirty_owners AS d WHERE EXISTS (SELECT 1 FROM attempts AS a "
             "WHERE (a.task_id = d.owner_id OR a.root_task_id = d.owner_id) "
             "AND COALESCE(a.kind, 'attempt') IN ('attempt', 'usage_baseline_group') "
             "AND COALESCE(a.review_skill, '') = '' AND COALESCE(a.review_wave_id, '') = '' "
@@ -428,6 +431,26 @@ class Txn:
         return exceeds_limit(self.totals(root_task_id, billing_group_id), limit, bound, dispatch=dispatch)
 
     # -- writes
+    def ack_dirty_owner(self, owner_id: str, revision: int) -> bool:
+        """A concurrent receipt with a later revision keeps its projection debt."""
+        if not self.writable or self.committed:
+            raise UsageAccountingError("usage store transaction is not writable")
+        return self.conn.execute("DELETE FROM dirty_owners WHERE owner_id=? AND revision=?",
+                                 (owner_id, revision)).rowcount == 1
+
+    def record_recovery(self, attempt_id: str, recovery: dict, *, expected_revision: int) -> bool:
+        """Record custody evidence without changing money or the late-receipt right.
+
+        The row revision also fences observations: a receipt that won the race
+        remains authoritative. Summary buckets and dirty owners do not change.
+        """
+        if not self.writable or self.committed:
+            raise UsageAccountingError("usage store transaction is not writable")
+        return self.conn.execute(
+            "UPDATE attempts SET extra=json_set(extra, '$.recovery', json(?)), revision=revision+1 "
+            f"WHERE attempt_id=? AND revision=? AND {_OPEN_PREDICATE}",
+            (_json(recovery), str(attempt_id), expected_revision)).rowcount == 1
+
     def write(self, row: Dict[str, Any], previous: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Insert a new attempt (``previous=None``) or replace ``previous`` by its
         next row, maintaining every summary, binding, dirty owner, one-shot
@@ -846,9 +869,11 @@ def _build(tmp: pathlib.Path, tier: str, records: Sequence[Dict[str, Any]], prov
         bound = [(scope, key, _json(durable_literals(binding))) for scope, index in (
             ("root", bindings.roots), ("group", bindings.groups)) for key, binding in index.items()]
         conn.executemany("INSERT INTO bindings (scope, key, binding) VALUES (?, ?, ?)", bound)
-        # Owners with an open or unknown-cost row owe a projection refresh.
-        owners = sorted({key for (scope, key), bucket in buckets.items()
-                         if scope in {"task", "root"} and key and bucket.non_final})
+        # The visible one-time import also seeds stale completed projections.
+        from ouroboros.terminal_cost_reconciliation import imported_projection_debt
+
+        owners = list(imported_projection_debt(tmp.parent.parent, buckets,
+                                               degraded=bool(provenance.get("quarantine_present"))))
         conn.executemany("INSERT INTO dirty_owners (owner_id, revision) VALUES (?, ?)",
                          [(owner, last_seq) for owner in owners])
         counts = {"attempts": len(last), "summaries": sum(1 for bucket in buckets.values() if bucket.rows),

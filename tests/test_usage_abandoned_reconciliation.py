@@ -22,7 +22,7 @@ def env(tmp_path, monkeypatch):
     from supervisor import queue
 
     live = set()
-    monkeypatch.setattr(queue, "task_has_live_ownership", lambda task_id: task_id in live)
+    monkeypatch.setattr(queue, "task_has_live_ownership", lambda task_id, **_kw: task_id in live)
     monkeypatch.setattr(queue, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(claudexor_daemon, "read_owned_gateway", lambda: pytest.fail("native cleanup needs no daemon"))
     depth = [0]
@@ -400,8 +400,8 @@ def test_projection_retry_keeps_live_post_task_and_review_guards(env, monkeypatc
 
 
 @pytest.mark.parametrize("integrity_degraded", [False, True])
-def test_projection_uses_one_indexed_breakdown_for_distinct_owners(env, monkeypatch, integrity_degraded):
-    from ouroboros import task_results
+def test_projection_uses_addressed_summaries_for_distinct_owners(env, monkeypatch, integrity_degraded):
+    from ouroboros import task_results, usage_store
     from ouroboros.usage_ledger import QUARANTINE_REL
     from supervisor import events_task_done
 
@@ -427,20 +427,22 @@ def test_projection_uses_one_indexed_breakdown_for_distinct_owners(env, monkeypa
     if integrity_degraded:
         (env.root / QUARANTINE_REL).write_text("fixture quarantine evidence\n", encoding="utf-8")
     reads, aggregations = [], []
-    read_task, breakdown = task_results.load_task_result, usage.usage_breakdown
+    read_task, bucket = task_results.load_task_result, usage_store.Txn.bucket
     monkeypatch.setattr(task_results, "load_task_result",
                         lambda root, task_id, **kw: reads.append(task_id) or read_task(root, task_id, **kw))
 
-    def aggregate(root, **kwargs):
-        aggregations.append(kwargs)
-        return breakdown(root, **kwargs)
+    def aggregate(txn, scope, key=""):
+        aggregations.append((scope, key))
+        return bucket(txn, scope, key)
 
-    monkeypatch.setattr(usage, "usage_breakdown", aggregate)
+    monkeypatch.setattr(usage_store.Txn, "bucket", aggregate)
     maintenance._reconcile_abandoned_usage(env.root)
-    assert aggregations == [{"include_owners": True}], "one bulk view, no per-owner filters"
-    # Recovery eligibility is cached across attempts; projection independently
-    # re-reads those two open owners after recovery, never reusing permission.
-    assert sorted(reads) == sorted([*owners, "child-1", "child-2"])
+    # Recovery transactions also maintain summaries. Projection itself reads
+    # only its two address scopes, never any owner/axis enumeration.
+    assert all(scope in {"task", "root"} for scope, _key in aggregations[-9:])
+    assert len(aggregations[-9:]) == 9
+    # Recovery and projection share one result parse per owner in the pass.
+    assert sorted(reads) == sorted(owners)
     for task_id in owners:
         stored = load_task_result(env.root, task_id)
         expected = events_task_done._authoritative_terminal_cost(task_id, stored, stored, {}, env.root)
@@ -455,24 +457,25 @@ def test_projection_uses_one_indexed_breakdown_for_distinct_owners(env, monkeypa
     assert load_task_result(env.root, "root-1")["accounted_upper_bound_usd_with_children"] is None
 
 
-def test_bulk_projection_failure_defers_without_fake_zero_or_per_owner_fallback(env, monkeypatch):
+def test_addressed_projection_failure_defers_without_fake_zero(env, monkeypatch):
     _terminal(env)
     _terminal(env, "root")
     reservation = _attempt(env)
-    breakdown = usage.usage_breakdown
+    from supervisor import events_task_done
+    probe = events_task_done._terminal_cost_probe
     calls = []
 
-    def unavailable(root, **kwargs):
-        calls.append(kwargs)
+    def unavailable(root, task_id, current):
+        calls.append(task_id)
         raise TimeoutError("fixture ledger projection unavailable")
 
-    monkeypatch.setattr(usage, "usage_breakdown", unavailable)
+    monkeypatch.setattr(events_task_done, "_terminal_cost_probe", unavailable)
     maintenance._reconcile_abandoned_usage(env.root)
     assert is_abandoned_settlement(_final(env, reservation))
-    assert calls == [{"include_owners": True}] and not _events(env)
+    assert calls == ["child", "root"] and not _events(env)
     assert "accounted_upper_bound_usd" not in load_task_result(env.root, "child")
     before = ledger_rows(env.root)
-    monkeypatch.setattr(usage, "usage_breakdown", breakdown)
+    monkeypatch.setattr(events_task_done, "_terminal_cost_probe", probe)
     maintenance._reconcile_abandoned_usage(env.root)
     assert ledger_rows(env.root) == before
     assert load_task_result(env.root, "child")["accounted_upper_bound_usd"] == 1.25

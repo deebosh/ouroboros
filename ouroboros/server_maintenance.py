@@ -49,6 +49,8 @@ def orphan_reconcile_write_guard(task_id: str, *, stop_event: Any = None):
     the settlement probe must prove absence; a process with no supervisor (no-provider boot) dispatches nothing."""
     from supervisor import queue
 
+    if queue.INITIALIZED:
+        queue.task_settlement_liveness(task_id)  # Prepare durable reads before the mutation interlock.
     with queue._queue_lock:
         yield not _stop_requested(stop_event) and (not queue.INITIALIZED or queue.task_settlement_liveness(task_id) is False)
 

@@ -1134,9 +1134,10 @@ def settle_attempt(
     *,
     cost_usd: Optional[float] = None,
     cost_final: bool = False,
+    expected_revision: Optional[int] = None,
 ) -> None:
     fields = _settlement_fields(reservation, usage, cost_usd, cost_final)
-    _transition(reservation, "settled", **fields)
+    _transition(reservation, "settled", _expected_revision=expected_revision, **fields)
     stash_task_cache_split(
         (_CURRENT_SCOPE.get() or UsageScope()).task_id, reservation.model,
         int(fields.get("cached_tokens") or 0), provider=reservation.provider,

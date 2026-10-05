@@ -610,7 +610,7 @@ def test_ordinary_money_paths_never_read_every_attempt(root, monkeypatch):
 
     monkeypatch.setattr(usage_store, "read_usage_records", lambda *_a, **_k: pytest.fail("bulk read"))
     monkeypatch.setattr(usage_store.Txn, "attempts", forbidden_scan)
-    monkeypatch.setattr(queue, "task_has_live_ownership", lambda _task_id: False)
+    monkeypatch.setattr(queue, "task_has_live_ownership", lambda _task_id, **_kw: False)
     sent = ua.execute_physical_attempt(request(root, reservation_usd=.1), lambda: {"usage": {}},
                                        extractor=lambda _r: ({}, .1, True))
     assert sent == {"usage": {}}
@@ -640,6 +640,17 @@ def _unrelated_history(root, attempts):
                  {**base, "state": "settled", "cost_usd": "0.001", "cost_final": True, "prompt_tokens": 3}]
     write_journal(root, rows)
     usage_store.migrate_from_journal(root)
+    # Finish the import's projection obligations before measuring ordinary
+    # work. Missing results are real debt, not unrelated completed history.
+    from ouroboros.task_results import write_task_result
+    from supervisor.events_task_done import _refresh_terminal_task_cost
+    with usage_store.read(root) as txn:
+        owners = txn.dirty_owners()
+    for owner, revision in owners:
+        write_task_result(root, owner, "completed", result="Historical result")
+        assert _refresh_terminal_task_cost(root, owner)
+        with usage_store.hold(root) as txn:
+            assert txn.ack_dirty_owner(owner, revision)
     usage_store.forget(root)
 
 
