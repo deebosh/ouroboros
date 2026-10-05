@@ -243,3 +243,93 @@ def test_shared_replay_rereads_a_source_that_changes_inside_the_request(tmp_path
     evidence = replay_evidence_for_tasks(tmp_path, ["first", "second"])
     assert list(evidence) == ["first", "second"]
     assert evidence["second"]["observations"][0]["key"] == "tool:second:second-call"
+
+
+def _read_wide(root):
+    return json.loads(history._assemble_history_response(root, 1, 10, 10, None))
+
+
+def _archived_tools_for(root, tasks):
+    """Speech for every task while its tool rows live only in archives: each task needs backfill."""
+    _write(root / "logs/chat.jsonl", [{"direction": "out", "task_id": task, "text": f"{task} spoke", "ts": TS, "chat_id": 1}
+                                      for task in tasks])
+    _write(root / "logs/tools.jsonl", [_tool("other")])
+    _write(root / "archive/tools_01.jsonl", [_tool(task) for task in tasks])
+    _write(root / "archive/tools_00.jsonl", [_tool("older")])
+
+
+def _counting_listing(monkeypatch, redirect=None):
+    """Count real ``archive/`` enumerations per prefix; ``redirect`` swaps the directory the tools prefix lists."""
+    from ouroboros import jsonl_tail
+
+    listed = []
+    real = jsonl_tail.archive_segments
+
+    def counted(archive_dir, archive_prefix, gaps=None):
+        listed.append(archive_prefix)
+        return real(redirect if redirect is not None and archive_prefix == "tools" else archive_dir, archive_prefix, gaps)
+
+    monkeypatch.setattr(jsonl_tail, "archive_segments", counted)
+    return listed
+
+
+def test_one_history_request_lists_the_archive_directory_once(tmp_path, monkeypatch):
+    _archived_tools_for(tmp_path, ["a", "b"])
+    listed = _counting_listing(monkeypatch)
+    carriers = {row["task_id"]: row for row in _read_wide(tmp_path)["messages"] if row.get("system_type") == "task_evidence"}
+    assert set(carriers) == {"a", "b"}
+    coverage = {task: row["tool_evidence"]["coverage"] for task, row in carriers.items()}
+    assert all(facts["archives"] == 2 and facts["archives_available"] == 2 for facts in coverage.values()), "both backfilled"
+    assert {row["tool_evidence"]["observations"][0]["key"] for row in carriers.values()} == {"tool:a:a-call", "tool:b:b-call"}
+    assert listed.count("tools") == 1, "one request enumerates archive/ once for the tools prefix, not once per task"
+
+
+def test_shared_archive_listing_keeps_the_history_body_byte_identical(tmp_path, monkeypatch):
+    from ouroboros import tool_call_log
+    from ouroboros.tool_call_log import replay_evidence
+
+    _archived_tools_for(tmp_path, ["a", "b", "c"])
+    _write(tmp_path / "task_results/a.json", [{"_schema_version": 1, "task_id": "a", "status": "completed", "chat_id": 1}])
+    shared = history._assemble_history_response(tmp_path, 1, 10, 10, None)
+    # The per-task reader: every task lists and parses on its own (the pre-sharing shape).
+    monkeypatch.setattr(tool_call_log, "replay_evidence_for_tasks", lambda root, task_ids: {
+        task: replay_evidence(root, task) for task in dict.fromkeys(task_ids)})
+    assert shared == history._assemble_history_response(tmp_path, 1, 10, 10, None)
+    assert json.loads(shared)["messages"][-1]["tool_evidence"]["coverage"]["archives"] == 2
+
+
+def test_unreadable_archive_directory_reports_the_same_gap_on_every_carrier(tmp_path, monkeypatch):
+    _write(tmp_path / "logs/chat.jsonl", [{"direction": "out", "task_id": task, "text": f"{task} spoke", "ts": TS, "chat_id": 1}
+                                          for task in ("a", "b")])
+    _write(tmp_path / "logs/tools.jsonl", [_tool("a"), _tool("b")])
+    # Listing a regular file fails with an OSError that is not FileNotFoundError: the enumeration gap.
+    listed = _counting_listing(monkeypatch, redirect=tmp_path / "logs/tools.jsonl")
+    carriers = {row["task_id"]: row for row in _read_wide(tmp_path)["messages"] if row.get("system_type") == "task_evidence"}
+    assert set(carriers) == {"a", "b"}
+    for task, row in carriers.items():
+        coverage = row["tool_evidence"]["coverage"]
+        assert coverage["gaps"] == ["unreadable_source"] and coverage["archives_available"] == 0
+        assert row["tool_evidence"]["observations"][0]["key"] == f"tool:{task}:{task}-call"
+    assert listed.count("tools") == 1, "the one enumeration's gap is replayed to every task"
+
+
+def test_a_carrier_that_is_the_tasks_only_terminal_row_keeps_the_whole_terminal_truth(tmp_path):
+    # web/modules/chat.js settles a reloaded card from the LAST row carrying task_terminal_status; for a speech-plus-tools
+    # task with no summary or progress row in the window that row is the carrier, so it must carry what the summary path
+    # reads (axes, review projection, reason, cancel origin, cost), or the card replays as a plain Done.
+    truth = {"_schema_version": 1, "status": "completed", "chat_id": 1, "reason_code": "finished",
+             "accounted_upper_bound_usd": 1.25, "cost_final": True, "metadata": {"initiator": "consciousness"},
+             "review_projection": {"panels": []}, "model_execution": {"model": "m"}, "cancel_origin": {"by": "owner"}}
+    _write(tmp_path / "logs/chat.jsonl", [
+        {"direction": "out", "task_id": "bare", "text": "Speech only", "ts": TS, "chat_id": 1},
+        {"direction": "system", "type": "task_summary", "task_id": "summarized", "text": "", "ts": TS, "chat_id": 1}])
+    _write(tmp_path / "logs/tools.jsonl", [_tool("bare"), _tool("summarized")])
+    for task in ("bare", "summarized"):
+        _write(tmp_path / f"task_results/{task}.json", [{**truth, "task_id": task}])
+    rows = {row["task_id"]: row for row in _read_wide(tmp_path)["messages"]
+            if row.get("system_type") in {"task_evidence", "task_summary"}}
+    carrier, summary = rows["bare"], rows["summarized"]
+    assert carrier["system_type"] == "task_evidence" and summary["system_type"] == "task_summary"
+    assert carrier["task_terminal_status"] == "completed"
+    for key in ("review_projection", "outcome_axes", "reason_code", "cancel_origin", "model_execution"):
+        assert key in carrier and carrier[key] == summary[key], key
