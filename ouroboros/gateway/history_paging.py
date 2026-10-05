@@ -28,6 +28,9 @@ _READ_BYTES = 64 * 1024
 # Physical bound on the bytes one request parses per stream; the cursor resumes
 # where a read stopped, so it bounds latency, never what a room can reach.
 _READ_CEILING_BYTES = 16 * 1024 * 1024
+# The newest-arrival search every recent Project read pays for; a bound reached
+# first is carried on by the chain's cursors (``latest_before``/``quiet``).
+_ARRIVAL_SEARCH_BYTES = 512 * 1024
 _CHAIN_WITNESSES = 16
 # A projection that failed part-way: the rows after the failing one are missing
 # from the response, so neither its coverage nor its newest arrival is known.
@@ -206,13 +209,14 @@ class HistorySource(JsonlChainSnapshot):
             before = start
         return entries, before, gaps
 
-    def older(self, before, want, counts, lens=None):
+    def older(self, before, want, counts, lens=None, ceiling=None):
         """Consume one backward page of ``want`` counted rows; foreign/invalid bytes
         and ruled-out archives advance the position, the read ceiling ends it early."""
         if want <= 0:
             return [], before, set()
+        ceiling = _READ_CEILING_BYTES if ceiling is None else ceiling
         selected, gaps, counted, read = [], self._boundary_gaps(before), 0, 0
-        while before > 0 and read < _READ_CEILING_BYTES:
+        while before > 0 and read < ceiling:
             index = bisect_left(self.snapshot["ends"], before)
             base, _end = self.segment(index)
             if self._ruled_out(index, lens):
@@ -230,18 +234,20 @@ class HistorySource(JsonlChainSnapshot):
                 read += before - entry["history_position"]["offset"]
                 before = entry["history_position"]["offset"]
                 counted += bool(counts(entry))
-                if counted >= want or read >= _READ_CEILING_BYTES:
+                if counted >= want or read >= ceiling:
                     return list(reversed(selected)), before, gaps
             read += before - start
             before = start
         return list(reversed(selected)), before, gaps
 
-    def replay(self, lower, before):
+    def replay(self, lower, before, lens=None):
+        """Re-read one frozen page; the archives its first read ruled out stay unread
+        (same room view, immutable archives), so a replay costs what that read did."""
         gaps, rows = self._boundary_gaps(before), []
         for index in range(len(self.snapshot["entries"])):
             base, end = self.segment(index)
             start, end = max(base, lower), min(end, before)
-            if start < end:
+            if start < end and not self._ruled_out(index, lens):
                 rows.extend(self._entries(start, end, gaps))
         return rows, lower, gaps
 
@@ -289,7 +295,7 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
                 unfinished.append(source)
             page_ends[source] = continuation["before"][source] if continuation else reader.upper
             if continuation and continuation["kind"] == "page":
-                selections[source] = reader.replay(continuation["lower"][source], page_ends[source])
+                selections[source] = reader.replay(continuation["lower"][source], page_ends[source], lens)
             elif continuation:
                 selections[source] = reader.older(page_ends[source], quotas[quota], predicates[source], lens)
             else:
@@ -443,7 +449,7 @@ def latest_arrival(rows, page, data_dir, row_matches_thread, stored_chat_id, pro
     which cannot see what arrived after its frozen boundary.
 
     Card rows, a child's words and the owner's own messages can fill the recent
-    selection's quota. One older read of the room (``older``'s read ceiling)
+    selection's quota. One bounded older read of the room (``_ARRIVAL_SEARCH_BYTES``)
     then names the newest stored message before it — ``out_of_order``, since this
     read cannot place it relative to the bottom — or proves the chat holds none
     (absent); an unreadable row reached first leaves the arrival unknown. Its
@@ -492,7 +498,7 @@ def latest_arrival(rows, page, data_dir, row_matches_thread, stored_chat_id, pro
         message = _stored_message(row_matches_thread, stored_chat_id, child)
         try:
             entries, before, gaps = HistorySource(data_dir / "logs" / "chat.jsonl", "chat", end).older(
-                start, 1, message, page.get("lens"))
+                start, 1, message, page.get("lens"), min(_ARRIVAL_SEARCH_BYTES, _READ_CEILING_BYTES))
         except OSError:
             return {"latest_message": None}
         found = next(filter(message, entries), None)  # ``older`` stops at the newest one

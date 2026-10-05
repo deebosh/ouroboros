@@ -22,7 +22,8 @@ from typing import Any, Callable, Dict, NamedTuple, Optional
 _CHAT_ID = re.compile(rb'"chat_id":\s*"?(-?\d+)')
 _TASK_ID = re.compile(rb'"(?:task_id|parent_task_id|root_task_id)":\s*"([^"\\]+)"')
 _OWNER_ROW = re.compile(rb'"direction":\s*"in"')
-# Summaries are a few KB each; an install holds hundreds of archives per stream.
+# A summary holds a few hundred ids (up to a few hundred KB for an archive dense with the
+# owner's own rows); an install holds hundreds of archives per stream.
 _CACHE_LIMIT = 4096
 _cache: Dict[tuple, "SegmentSummary"] = {}
 _cache_lock = threading.Lock()

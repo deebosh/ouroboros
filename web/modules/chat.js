@@ -3297,7 +3297,6 @@ export function createChatInstance({
     const retainedHistoryIds = () => new Set([...recentHistoryIds,
         ...[...pageHistoryIds.values()].flatMap(ids => [...ids])]);
     function isHistoryPageProtected(descriptor) {
-        if (reading.pending && reading.target?.history?.pages?.[reading.target.history.focus]?.id === descriptor.id) return true;
         const ids = pageHistoryIds.get(descriptor.id) || new Set();
         if (historyStamps(messagesDiv).some(([id, node]) => ids.has(id) && historyNodeIsProtected(node, messagesDiv))) return true;
         return [...liveCardRecords.values()].some(record =>

@@ -553,6 +553,19 @@ def test_a_search_that_found_the_newest_message_is_not_continued(room, narrow_re
     assert not any("latest_message" in page["window"] for page in follow(room, recent["next_cursor"]))
 
 
+def test_the_arrival_search_keeps_its_own_bound_below_the_page_ceiling(room, narrow_recent, monkeypatch):
+    """Naming the newest arrival is paid on every recent read: it stops at its own small
+    bound and passes the fact on, while the pages themselves read to their quota."""
+    room.deliver("root answer", 5)
+    child_words(room, 8)
+    monkeypatch.setattr(history_paging, "_ARRIVAL_SEARCH_BYTES", 1)
+    recent = room.read(n_human="2")
+    assert recent["window"]["latest_message"] is None and recent["window"]["latest_before"] > 0
+    older = room.read(cursor=recent["next_cursor"])
+    assert len([text for text in texts(older) if text.startswith("child note")]) == 2, \
+        "the page ceiling, not the arrival bound, governs an ordinary older page"
+
+
 def test_a_cursor_carries_its_quiet_fact_as_a_boolean_and_older_cursors_still_read(room):
     import base64
 

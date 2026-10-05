@@ -124,3 +124,28 @@ def test_a_rewritten_archive_gets_a_fresh_summary(tmp_path):
     assert segment_summary(path, os.stat(path)).chat_ids == frozenset({5})
     write(path, [row(0, chat_id=6), row(1, chat_id=6)])
     assert segment_summary(path, os.stat(path)).chat_ids == frozenset({6})
+
+
+def test_a_replayed_page_skips_the_archives_its_first_read_ruled_out(tmp_path, monkeypatch):
+    """A page re-read by its frozen handle (a released page coming back) costs what its
+    first read did: the same room view rules the same archives out."""
+    from ouroboros.projects_registry import create_project
+
+    project = create_project(tmp_path, "replay", name="Replay")
+    chat = project["chat_id"]
+    own = tmp_path / "archive" / "chat_20260901T000000.jsonl"
+    write(own, [row(index, chat_id=chat) for index in range(3)])
+    foreign_archives(tmp_path, "20260902T00000", count=4)
+    write(tmp_path / "logs" / "chat.jsonl", [row(9, text="foreign live")])
+    status, first = request(tmp_path, chat_id=str(chat))
+    assert status == 200 and len(first["messages"]) == 3
+    parsed, entries = [], history_paging.HistorySource._entries
+    monkeypatch.setattr(history_paging.HistorySource, "_entries", lambda self, start, end, gaps: (
+        parsed.append((self.source, start, end)), entries(self, start, end, gaps))[1])
+    status, again = request(tmp_path, chat_id=str(chat), cursor=first["page_cursor"])
+    assert status == 200
+    assert [message["history_id"] for message in again["messages"]] == [
+        message["history_id"] for message in first["messages"]]
+    live_base = sum(path.stat().st_size for path in (tmp_path / "archive").glob("chat_*.jsonl"))
+    assert parsed and all(end <= own.stat().st_size or start >= live_base
+                          for source, start, end in parsed if source == "chat"), parsed

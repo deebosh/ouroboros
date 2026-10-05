@@ -17,7 +17,7 @@ const row = (n) => ({
 // Arrived last (the highest offset) but keeps the older time it was written at.
 const late = (n) => ({ ...row(n), text: `late answer ${n}`, ts: '2026-09-28T11:00:00.000Z' });
 
-function room(t, { onReadingLatest, initialScrollState = null } = {}) {
+function room(t, { onReadingLatest } = {}) {
     // `rows` is the durable state; a read answers with the state it STARTED on.
     // `older`, when set, is the one older page behind the recent window (`olderWindow`
     // and `olderCoverage` its facts); `pageFails` makes every page read (a saved place's too) fail.
@@ -59,7 +59,7 @@ function room(t, { onReadingLatest, initialScrollState = null } = {}) {
         updateUnreadBadge() {},
         stateSnapshots: { begin: () => ({ generation: 1, requestedAt: Date.now() }),
             gate() { return Promise.resolve(this.begin()); }, isCurrent: () => true, apply() {} },
-        chatId: 2, idPrefix: 'chat', mountEl: mount, asPanel: true, onReadingLatest, initialScrollState,
+        chatId: 2, idPrefix: 'chat', mountEl: mount, asPanel: true, onReadingLatest,
     });
     t.after(() => { instance.destroy(); restoreDom(prior); globalThis.WebSocket = priorSocket; });
     const messages = globalThis.document.byId.get('chat-messages');

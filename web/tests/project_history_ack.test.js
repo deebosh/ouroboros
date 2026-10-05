@@ -342,8 +342,8 @@ function navigationHarness({ pendingWork }) {
         const inst = {
             page: { hidden: false, isConnected: true, dataset: {} }, generation: 0, draft: 'Yes, after the tag',
             refreshes: 0, destroyed: false,
-            hasPendingWork: () => pendingWork, hasPaintedHistory: () => true, restoreScrollPosition() {},
-            getScrollState: () => null, cancelHistoryPaint() { this.generation += 1; },
+            hasPendingWork: () => pendingWork, hasPaintedHistory: () => true, showLatest() {},
+            cancelHistoryPaint() { this.generation += 1; },
             destroy() { this.destroyed = true; this.page.isConnected = false; },
             refreshHistory({ revision }) {
                 const own = ++this.refreshes && this.generation;
@@ -361,7 +361,7 @@ function navigationHarness({ pendingWork }) {
     const context = vm.createContext({
         navState: { activeProjectId: null, mobileDrawerOpen: false },
         projectInstances: new Map(), projectPaintRequests: new Map(), projectReveals: new Map(),
-        projectScrollStash: new Map(), lastProjectRows: [project], state: { projectSeenRevision: {} },
+        lastProjectRows: [project], state: { projectSeenRevision: {} },
         projectPanelTitle: {}, projectPanelBody: {}, ctx: {},
         showPage: async () => true, syncNavigationState() {}, createChatInstance: instance,
         markProjectViewed: async (id, revision) => { acked.push([id, revision]); },
