@@ -214,7 +214,8 @@ Upload the manifest, index, lane results, screenshots and each lane's
 `traces/` bundle even on failure, never a lane's `data/` tree; read a run
 with `gh run download <run-id> -n e2e-live-run`. The summary renders
 verdicts or the typed refusal/error without changing the stand's exit
-verdict. Browser PR proof and the keyless system-E2E schedule retain their
+verdict. Browser PR proof and the keyless system-E2E lane (manual dispatch and
+release tags) retain their
 separate existing CI owners; the latter uploads its scenario servers'
 `data/logs/`, `data/task_results/` and the journal segments rotated into
 `data/archive/*.jsonl` as `system-e2e-traces`. Both uploads are
