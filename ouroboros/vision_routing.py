@@ -3,7 +3,8 @@
 A model name is not evidence. Whether a route accepts image input is a fact about
 the exact resolved route (provider, endpoint, API surface, routing options and the
 available account identity), recorded only from a catalog Ouroboros already reads
-(OpenRouter ``/models``) and valid for 24 hours from that catalog's response. No
+(OpenRouter ``/models``; an OpenAI-compatible gateway's ``/models`` read by the
+task-start window probe) and valid for 24 hours from that catalog's response. No
 record means unknown, and unknown never withholds the owner's image: the route
 receives the pixels and answers for itself. A Claudexor route answers from its
 account's catalog (``provider_models.supports_vision``).
