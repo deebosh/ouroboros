@@ -3375,7 +3375,10 @@ export function createChatInstance({
             const admitted = descriptor.direction === 'latest' && acceptRecentWindow(descriptor, messages);
             const archived = descriptor.direction !== 'recent' && descriptor.direction !== 'latest';
             applyHistoryMessages(messages, { archived });
-            if (admitted) withStableViewport(() => releaseHistoryIds(oldRecentIds));
+            // The present re-anchors the chain: rows no page or window owns any more
+            // (windows kept while the reader was in older history) go with it.
+            if (admitted) withStableViewport(() => releaseHistoryIds(new Set([...oldRecentIds,
+                ...historyStamps(messagesDiv).map(([id]) => id)])));
             // An older page drawn can show, or name, the newest arrival without a scroll.
             if (admitted) readReceipt.settle();
             else if (archived) readReceipt.page(descriptor);

@@ -212,6 +212,31 @@ test('a refresh while the reader reads older history leaves the next press readi
     assert.deepEqual(f.calls.slice(4), [null, null], 'a reader following the newest message gets the re-anchored chain');
 });
 
+test('the return to the present lets go of the windows kept while reading, leaving no unnoted hole', async (t) => {
+    offScreen(t);
+    const span = (from, to, upper) => ({ v: 1, view: 'room', upper: { chat: upper, progress: 0 }, spans: {
+        chat: { from, to, chain: 'retained', gaps: [] }, progress: { from: 0, to: 0, chain: 'empty', gaps: [] } } });
+    const recent = (ids, from, upper) => ({ ...page(ids.map(id => row(`chat:${id}`, `Row ${id}`)), 'page:recent', `before:${from}`),
+        coverage: span(from, upper, upper) });
+    const f = fixture(t, recent([500, 540], 500, 600), (cursor) => {
+        const end = Number(cursor.split(':').at(-1));
+        return { ...page([row(`chat:${end - 50}`, `Row ${end - 50}`)], `page:${end}`, `before:${end - 100}`), coverage: span(end - 100, end, 1100) };
+    });
+    await f.refresh();
+    readUp(f);
+    // Two refreshes while reading; nothing between 800 and 1000 was ever loaded.
+    await f.refresh(recent([710, 750], 700, 800));
+    await f.refresh(recent([1010, 1050], 1000, 1100));
+    const shown = () => f.bubbles().map(node => node.dataset.historyId).filter(Boolean);
+    assert.deepEqual(shown(), ['chat:500', 'chat:540', 'chat:710', 'chat:750', 'chat:1010', 'chat:1050'],
+        'while reading, nothing the reader may scroll to is taken away');
+    globalThis.document.byId.get('chat-scroll-bottom').click();
+    for (let n = 0; n < 20; n += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(shown(), ['chat:1010', 'chat:1050'], 'back at the present, the kept windows go with the old chain');
+    await f.clickOlder();
+    assert.equal(f.calls.at(-1), 'before:1000', 'and the next press reads straight below the present');
+});
+
 test('a gap opening while the reader reads older history leaves the press reading older', async (t) => {
     offScreen(t);
     const span = (from, to, upper) => ({ v: 1, view: 'room', upper: { chat: upper, progress: 0 }, spans: {
