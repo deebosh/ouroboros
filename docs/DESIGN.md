@@ -733,8 +733,8 @@ Failed remains that task's result even after a different task succeeds.
 
 A room always opens at its newest message: Main and every Project, however long
 ago its last message was and however much other rooms wrote since. Returning to
-a room in the same app session opens it at its newest message too (owner
-decisions 2026-07-10 and 2026-10-05). Only an explicit navigation to one place
+a room in the same app session opens it at its newest message too, Main after a
+closed Project included (owner decisions 2026-07-10 and 2026-10-05). Only an explicit navigation to one place
 lands elsewhere: a question opened from its Main mirror, or the Project work
 pointer. A window merely shown again keeps the reader where they were.
 

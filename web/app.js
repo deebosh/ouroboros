@@ -344,6 +344,9 @@ function closeProjectPanel({ sync = true } = {}) {
         cancelProjectPaint(pid, inst);
     }
     if (sync) syncNavigationState();
+    // Leaving a Project for Main is a return to Main: its newest message (owner
+    // decision 2026-10-05). Another page shows Main later through `ouro:page-shown`.
+    if (activeId && state.activePage === 'chat') void mainChat?.showLatest?.();
 }
 
 async function openProjectPanel(project, { closeDrawer = true, openOnly = false, taskId = '', quizId = '' } = {}) {

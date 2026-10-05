@@ -375,6 +375,22 @@ function navigationHarness({ pendingWork }) {
     return { acked, built, held, project, context, api: context.api };
 }
 
+test('leaving a Project for Main returns Main to its newest message', async () => {
+    const h = navigationHarness({ pendingWork: false });
+    const main = { latestShown: 0, showLatest() { this.latestShown += 1; } };
+    Object.assign(h.context, { mainChat: main });
+    h.context.state.activePage = 'chat';
+    await h.api.open();
+    h.api.close();
+    assert.equal(main.latestShown, 1, 'the panel closed over Main: Main opens at its newest message');
+    h.api.close();
+    assert.equal(main.latestShown, 1, 'closing with no Project open moves nothing');
+    h.context.state.activePage = 'settings';
+    await h.api.open();
+    h.api.close();
+    assert.equal(main.latestShown, 1, 'on another page Main moves when Chat is shown again, not before');
+});
+
 for (const pendingWork of [true, false]) {
     test(`an ordinary reopen of a ${pendingWork ? 'retained pending-work' : 'rebuilt'} room decides its own read while an old question reveal is held`, async () => {
         const h = navigationHarness({ pendingWork });
