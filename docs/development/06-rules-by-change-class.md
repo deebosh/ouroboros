@@ -939,7 +939,7 @@ and what enforces each.
 
 #### Loop / State-Machine Changes
 
-- Changes to `loop.py` or other task state-machine logic include adversarial tests —
+- Changes to `loop.py` or other task state-machine logic include failure-path tests —
   malformed output, false-completion prevention, replay/log durability, failure modes —
   not just the happy path. Audit/checkpoint rounds never silently reuse the normal
   final-answer path unless that invariant is explicitly tested and documented.
@@ -1130,7 +1130,7 @@ and what enforces each.
   plus reason code, a truncation rail code preserved); turning a custody fact into a
   review, objective or execution verdict is the defect this rule prevents.
 
-Enforcement: the adversarial tests the first bullet mandates, plus
+Enforcement: the failure-path tests the first bullet mandates, plus
 `tests/test_child_result_disposition.py`, `tests/test_acceptance_fence.py`,
 `tests/test_v674_acceptance_dialogue.py`, and `tests/test_review_cycles.py`
 (cap migration).
