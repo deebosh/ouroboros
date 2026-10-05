@@ -593,9 +593,10 @@ def finish_unconfirmed_stops(drive_root: Any) -> Dict[str, Any]:
 def start_inherited_import(drive_root: Any) -> Optional[threading.Thread]:
     """Index inherited records on a background thread; None when the set already carries the mark.
 
-    The walk can take minutes on a cold disk, and inherited records carry no stop stamp, so
-    the ready path never waits on it. An exit before it lands leaves the mark unset: those
-    processes stay running until the next start indexes them and a later exit stops them."""
+    The walk can take minutes on a cold disk and no stop at this start waits on an inherited
+    record, so the ready path never waits on it; one that lands after a stop began is stored
+    stamped. An exit before it lands leaves the mark unset: those processes stay running until
+    the next start indexes them and a later exit stops them."""
     root = installation_root(drive_root)
     if _read_document(root).get("inherited_import"):
         return None

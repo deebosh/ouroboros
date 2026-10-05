@@ -662,20 +662,24 @@ def _prune_delegated_snapshots() -> None:
     custody rows and ``_iter_rows`` swallows its own OSError, so an unreadable log
     would replay as "no open runs", empty the keep-set and destroy every live
     snapshot with the child's only copy of its work. GC deletes only over PROVEN
-    settled && patch_disposed; an UNKNOWN custody state skips the prune, loudly."""
+    settled && patch_disposed; an UNKNOWN custody state skips the prune, loudly. So does an
+    owed obligations rebuild: a custody row that landed while its set could not be updated
+    is missing from the set until the next start merges it."""
     try:
         from ouroboros import delegate_custody as _delegate_custody
         from ouroboros import subagent_worktrees as _snap_worktrees
+        from ouroboros.obligations import REBUILD_MARK
         from supervisor.state import append_jsonl
 
-        if _delegate_custody.custody_log_unreadable(DATA_DIR):
-            log.warning(
-                "Delegated snapshot prune SKIPPED: custody event log exists but "
-                "cannot be read, so open snapshots are unknowable (fail-closed)")
+        reason = ("custody_log_unreadable" if _delegate_custody.custody_log_unreadable(DATA_DIR)
+                  else "obligations_rebuild_owed" if (DATA_DIR / "state" / "obligations" / REBUILD_MARK).exists()
+                  else "")
+        if reason:
+            log.warning("Delegated snapshot prune SKIPPED (%s): open snapshots are unknowable (fail-closed)", reason)
             if not append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
                 "ts": utc_now_iso(),
                 "type": "delegated_snapshot_prune_skipped",
-                "reason": "custody_log_unreadable",
+                "reason": reason,
             }):
                 # CR2-2: the log is unwritable too — the promised durable row
                 # could not land. Escalate loudly; the skip itself already

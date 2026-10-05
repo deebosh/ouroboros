@@ -212,6 +212,31 @@ def test_a_custody_row_lands_when_its_set_cannot_be_updated(tmp_path, monkeypatc
     assert mark.exists()
     rows = c.event_log_path(tmp_path).read_text(encoding="utf-8").splitlines()
     assert json.loads(rows[-1])["type"] == c.SETTLED
+    # The missed discharge stays open (the safe direction): the merge keeps the set's member and
+    # the reconcile sweep settles the run again; the mark is consumed.
+    assert prepare_startup_state(tmp_path)["imported"] is True and not mark.exists()
+    assert not o.members(tmp_path, "custody_open")["run:run"]["custody"]["settled"]
+
+
+def test_an_owed_rebuild_skips_the_snapshot_prune_until_the_set_is_whole(tmp_path, monkeypatch):
+    """A custody row can land while its set could not be updated, so the run is missing from the set
+    until the next start merges it: the snapshot prune skips loudly meanwhile, then prunes again."""
+    from ouroboros import server_maintenance, subagent_worktrees
+
+    monkeypatch.setattr(server_maintenance, "DATA_DIR", tmp_path)
+    pruned = []
+    monkeypatch.setattr(subagent_worktrees, "prune_execution_snapshots", lambda keep: pruned.append(keep) or {})
+    mark = tmp_path / "state" / "obligations" / o.REBUILD_MARK
+    mark.parent.mkdir(parents=True)
+    mark.write_text("custody: TimeoutError\n", encoding="utf-8")
+    server_maintenance._prune_delegated_snapshots()
+    assert pruned == []
+    rows = (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json.loads(rows[-1]) | {"ts": ""} == {"ts": "", "type": "delegated_snapshot_prune_skipped",
+                                                "reason": "obligations_rebuild_owed"}
+    mark.unlink()
+    server_maintenance._prune_delegated_snapshots()
+    assert len(pruned) == 1
 
 
 def test_first_import_classifies_once_and_stamps(tmp_path, monkeypatch):

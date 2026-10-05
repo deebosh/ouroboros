@@ -77,8 +77,9 @@ def publication(root, event):
 
     The append may invoke a result writer (result lock -> obligations lock).
     Never hold the obligations lock across that callback or await another owner.
-    A set update that fails (unreadable, contended, a disk error) never stops the row:
-    it owes a rebuild, which the next start merges from the retained chain.
+    A set update that fails (unreadable, contended, a disk error) never stops the row: it owes
+    a rebuild. The next start adds what the retained chain holds and the set lacks; a missed
+    discharge stays an open candidate until the reconcile sweep settles it again.
     """
     from ouroboros import delegate_custody as c
 
