@@ -33,8 +33,8 @@ from ouroboros.pricing import emit_llm_usage_event, estimate_cost_optional, infe
 from ouroboros.send_clock import main_send_scope
 from ouroboros.task_pacing import main_loop_wire_options
 from ouroboros.transport_custody import attempt_custody_event_fields, is_pre_dispatch_transport_failure, is_retryable_transport_death
-from ouroboros._usage_response import provider_cost_value as _provider_cost_value
-from ouroboros.usage_accounting import PhysicalAttemptContext, UsageAccountingError, bind_physical_attempt_context
+from ouroboros._usage_response import OUTPUT_LIMIT_FINISH_REASONS, output_exhaustion_facts, provider_cost_value as _provider_cost_value, response_finish_reason
+from ouroboros.usage_accounting import PhysicalAttemptContext, UsageAccountingError, bind_physical_attempt_context, last_physical_attempt_capture
 from ouroboros.utils import (
     append_jsonl,
     emit_cognitive_operation_event,
@@ -191,29 +191,34 @@ def transient_retry_max(default_retries: int) -> int:
     return max(int(default_retries), value)
 
 
-def _empty_response_log_msg(usage: Dict[str, Any], is_provider_glitch: bool) -> str:
+def _empty_response_log_msg(usage: Dict[str, Any], is_provider_glitch: bool, exhausted: bool = False) -> str:
     """Honest message for an empty/incomplete LLM response: a transient provider
     body-error (OpenRouter 429/5xx inside an HTTP 200, surfaced as usage
     ``provider_error``) that a same-model reroute could not escape is named as
-    itself, not as a blank finish_reason=null glitch. Pure: the error KIND is owned
-    by the caller's typed assignment (``_cooldown_kind_for_empty_response``)."""
+    itself, not as a blank finish_reason=null glitch, and an output-exhausted reply
+    as itself. Pure: the error KIND is owned by the caller's typed assignment."""
     provider_error = usage.get("provider_error") if isinstance(usage, dict) else None
     if isinstance(provider_error, dict):
         return f"Provider returned a body error (code={provider_error.get('code')}): {provider_error.get('message')}"
     if is_provider_glitch:
         return "Provider returned incomplete response (finish_reason=null)"
+    if exhausted:
+        return "LLM reply ended on its output limit before any visible text or tool call"
     return "LLM returned empty response (no content, no tool_calls)"
 
 
 def _classify_empty_response(usage: Dict[str, Any], msg: Dict[str, Any]) -> Tuple[str, bool, bool]:
     """Classify an empty / no-tool-call response → (event_type, is_provider_glitch,
-    permanent_body_error). A TYPED non-transient body error (WA1 kind
-    ``provider_error``: auth / quota / bad_request) is PERMANENT — a same-model
-    reroute already failed in the transport, so retrying here only burns the
-    transient budget. Only rate_limit / provider_transient body errors and a bare
-    ``finish_reason=null`` glitch are retryable."""
-    finish_reason = msg.get("finish_reason") or msg.get("stop_reason")
-    if str(finish_reason or "").strip().lower() in _STRUCTURED_CONTEXT_OVERFLOW_CODES:
+    permanent), reading the finish once (``response_finish_reason``). Structured
+    overflow and a TYPED non-transient body error (WA1 kind ``provider_error``: auth /
+    quota / bad_request) are PERMANENT — a same-model reroute already failed in the
+    transport, so retrying here only burns the transient budget. So is output
+    exhaustion, an empty reply without a body error that ended on its output limit:
+    the same request ends the same way. It stays an ``llm_empty_response`` (the only
+    permanent one; its kind is ``llm_output_exhausted``). Only rate_limit /
+    provider_transient body errors and a missing or null finish (a glitch) retry."""
+    finish = str(response_finish_reason(usage, msg)[1] or "").strip().lower()
+    if finish in _STRUCTURED_CONTEXT_OVERFLOW_CODES:
         return "remote_context_overflow", False, True
     body_err = usage.get("provider_error") if isinstance(usage, dict) else None
     if isinstance(body_err, dict) and any(
@@ -221,16 +226,13 @@ def _classify_empty_response(usage: Dict[str, Any], msg: Dict[str, Any]) -> Tupl
         for key in ("code", "type")
     ):
         return "remote_context_overflow", False, True
-    is_provider_glitch = finish_reason is None
-    body_kind = str((body_err or {}).get("kind") or "") if isinstance(body_err, dict) else ""
-    permanent_body_error = bool(body_err) and body_kind not in ("rate_limit", "provider_transient")
-    if permanent_body_error:
-        event_type = "provider_body_error"
-    elif is_provider_glitch:
-        event_type = "provider_incomplete_response"
-    else:
-        event_type = "llm_empty_response"
-    return event_type, is_provider_glitch, permanent_body_error
+    if not body_err and finish in OUTPUT_LIMIT_FINISH_REASONS:
+        return "llm_empty_response", False, True
+    is_provider_glitch = not finish
+    transient_body = isinstance(body_err, dict) and body_err.get("kind") in ("rate_limit", "provider_transient")
+    permanent = bool(body_err) and not transient_body
+    event_type = "provider_body_error" if permanent else "provider_incomplete_response" if is_provider_glitch else "llm_empty_response"
+    return event_type, is_provider_glitch, permanent
 
 
 def _attempt_loop_budget(max_retries: int, attempt_cap: Optional[int]) -> int:
@@ -250,12 +252,13 @@ def _record_and_emit_empty_response(
 ) -> tuple:
     """Classify an empty / no-tool-call response, log + emit its events, and stamp
     accumulated_usage (last error / execution_status / reason_code / F1 cooldown kind).
-    Returns ``(event_type, is_provider_glitch, permanent_body_error)`` for the caller's
-    retry decision. Extracted from call_llm_with_retry to keep that loop readable."""
-    finish_reason = msg.get("finish_reason") or msg.get("stop_reason")
+    Returns ``(event_type, is_provider_glitch, permanent)`` for the caller's retry
+    decision. Extracted from call_llm_with_retry to keep that loop readable."""
+    finish_reason = response_finish_reason(usage, msg)[1]
     body_error = usage.get("provider_error") if isinstance(usage, dict) and isinstance(usage.get("provider_error"), dict) else {}
-    event_type, is_provider_glitch, permanent_body_error = _classify_empty_response(usage, msg)
-    log_msg = _empty_response_log_msg(usage, is_provider_glitch)
+    event_type, is_provider_glitch, permanent = _classify_empty_response(usage, msg)
+    exhausted = event_type == "llm_empty_response" and permanent  # the classifier's output exhaustion
+    log_msg = _empty_response_log_msg(usage, is_provider_glitch, exhausted)
     log.warning("%s, attempt %d/%d", log_msg, attempt + 1, transient_budget)
     _emit_empty_response_events(
         event_type, event_queue=event_queue, drive_logs=drive_logs,
@@ -275,18 +278,22 @@ def _record_and_emit_empty_response(
     if event_type == "remote_context_overflow":
         status, reason, kind = "infra_failed", "llm_api_error", "context_overflow"
     else:
-        status = "infra_failed" if (is_provider_glitch and not permanent_body_error) else "failed"
+        status = "infra_failed" if (is_provider_glitch and not permanent) else "failed"
         reason = event_type
-        # Cooldown signal for the F1 fallback gate (see helper; not a retry change).
-        kind = _cooldown_kind_for_empty_response(body_error, event_type)
+        # Cooldown signal for the F1 fallback gate (see helper; not a retry change); exhaustion never cools.
+        kind = "llm_output_exhausted" if exhausted else _cooldown_kind_for_empty_response(body_error, event_type)
     accumulated_usage.update({
         "_last_llm_error": _short_error_text(log_msg), "execution_status": status,
         "reason_code": reason, "_last_llm_error_kind": kind,
     })
+    if exhausted:  # this attempt's own facts for the next round's host fact (loop.run_llm_loop)
+        capture = last_physical_attempt_capture()  # the response's own receipt, read as send_clock reads it
+        sent = capture.max_completion_tokens if capture is not None and capture.state in {"settled", "dispatched"} else None
+        accumulated_usage["_last_llm_output_exhausted"] = output_exhaustion_facts(usage, sent)
     from ouroboros.loop_transport import stamp_owner_provider_message
     stamp_owner_provider_message(accumulated_usage, body_error)  # a body error's own sentence; a blank glitch has none
     accumulated_usage.get("_last_llm_call_meta", {}).update(failure_code=kind)
-    return event_type, is_provider_glitch, permanent_body_error
+    return event_type, is_provider_glitch, permanent
 
 
 def _cooldown_kind_for_empty_response(body_error: Dict[str, Any], event_type: str) -> str:
@@ -460,9 +467,8 @@ from ouroboros.context_budget import (  # one overflow vocabulary for every seam
     context_overflow_message as _context_overflow_message,
     output_or_body_size_message as _output_or_body_size_message,
 )
-_FORCED_INCOMPLETE_FINISH_REASONS = _STRUCTURED_CONTEXT_OVERFLOW_CODES | frozenset({
-    "length", "max_tokens", "tool_calls", "function_call", "tool_use",
-})
+_FORCED_INCOMPLETE_FINISH_REASONS = (_STRUCTURED_CONTEXT_OVERFLOW_CODES | OUTPUT_LIMIT_FINISH_REASONS
+                                     | frozenset({"tool_calls", "function_call", "tool_use"}))
 
 
 def forced_response_is_incomplete(response_meta: Optional[Dict[str, Any]]) -> bool:
@@ -1258,17 +1264,9 @@ def _replace_response_meta(
     target.clear()
     if usage is None or msg is None:
         return
-    for source, key in ((usage, "response_finish_reason"), (msg, "finish_reason"), (msg, "stop_reason")):
-        if key in source:
-            finish_present, finish_reason = True, source.get(key)
-            break
-    else:
-        finish_present, finish_reason = False, None
-    target.update({
-        "finish_reason_present": finish_present,
-        "finish_reason": finish_reason,
-        "tool_call_count": len(msg.get("tool_calls") or []),
-    })
+    finish_present, finish_reason = response_finish_reason(usage, msg)
+    target.update(finish_reason_present=finish_present, finish_reason=finish_reason,
+                  tool_call_count=len(msg.get("tool_calls") or []))
 
 
 def forced_response_parts(
@@ -1427,9 +1425,9 @@ def call_llm_with_retry(
             accumulated_usage["_model_substitutions"] = model_facts.get("substituted") or []
             context_fit_event_fields = _context_fit_event_fields(accumulated_usage) if physical_context is not None else {}
             _take_custom_receipts(usage, msg, accumulated_usage)
-            for stale in ("_last_llm_error", "_last_llm_error_kind", "_last_llm_retry_same_request",
-                          "_last_llm_status_code", "_last_llm_provider_code", "_last_llm_provider_message",
-                          "_last_llm_provider_fields", "_last_llm_provider_message_cut", "_last_llm_resource_refusal"):
+            for stale in ("_last_llm_error", "_last_llm_error_kind", "_last_llm_retry_same_request", "_last_llm_status_code",
+                          "_last_llm_provider_code", "_last_llm_provider_message", "_last_llm_provider_fields",
+                          "_last_llm_provider_message_cut", "_last_llm_resource_refusal", "_last_llm_output_exhausted"):
                 accumulated_usage.pop(stale, None)
             cost, display_model, provider, cost_estimated = _normalize_usage_cost(usage, model=model, use_local=use_local)
             accumulated_usage["_observed_route"] = observed_route_stamp(usage)
@@ -1484,7 +1482,7 @@ def call_llm_with_retry(
             if task_type == "presence": accumulated_usage["_presence_pre_dispatch_only"] = False  # a response reached the model
             _replace_response_meta(response_meta_out, usage, msg)
             if not tool_calls and (not content or not content.strip()):
-                event_type, is_provider_glitch, permanent_body_error = _record_and_emit_empty_response(
+                event_type, is_provider_glitch, permanent = _record_and_emit_empty_response(
                     usage=usage, msg=msg, accumulated_usage=accumulated_usage,
                     event_queue=event_queue, drive_logs=drive_logs, task_id=task_id,
                     execution_id=execution_id, round_id=round_id, llm_call_id=llm_call_id,
@@ -1493,19 +1491,18 @@ def call_llm_with_retry(
                     response_ref=response_ref, transient_budget=transient_budget,
                     context_fit_event_fields=context_fit_event_fields, task_attempt=task_attempt)
                 _emit_main_llm_call_state(event_queue, call_identity, "failed")
-                if event_type == "provider_incomplete_response" and not usage.get("provider_error"):
-                    response_cache_bypass_requested = True
-                if not permanent_body_error and attempt < transient_budget - 1 and TRANSPORT_DEATHS_KEY not in accumulated_usage:
-                    if _sleep_within_deadline(
-                        min(2.0 ** attempt, _TRANSIENT_BACKOFF_CAP_SEC), deadline_ts
-                    ):
+                if not permanent and attempt < transient_budget - 1 and TRANSPORT_DEATHS_KEY not in accumulated_usage:
+                    if _sleep_within_deadline(min(2.0 ** attempt, _TRANSIENT_BACKOFF_CAP_SEC), deadline_ts):
+                        # Only a glitch that is actually retried asks the gateway for a fresh response.
+                        response_cache_bypass_requested |= (
+                            event_type == "provider_incomplete_response" and not usage.get("provider_error"))
                         continue
                     _emit_retry_deadline_exhausted(
                         drive_logs, task_id=task_id, execution_id=execution_id,
                         round_id=round_id, round_idx=round_idx, attempt=attempt,
                         model=model, error_kind=event_type,
                     )
-                if _empty_response_wall_spent(is_provider_glitch, permanent_body_error, usage):
+                if _empty_response_wall_spent(is_provider_glitch, permanent, usage):
                     accumulated_usage[RETRY_WALL_EXHAUSTED_KEY] = True
                 return None, cost
             for stale in ("execution_status", "result_status", "reason_code", RETRY_WALL_EXHAUSTED_KEY, TRANSPORT_DEATHS_KEY, "_pending_transport_outcome"):

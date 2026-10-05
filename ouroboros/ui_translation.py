@@ -56,6 +56,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ouroboros import i18n_memory as memory
+from ouroboros._usage_response import OUTPUT_LIMIT_FINISH_REASONS, response_finish_reason
 from ouroboros.ui_language import invented_language_tag, is_english, normalize_language_tag
 from ouroboros.utils import utc_now_iso
 
@@ -68,7 +69,6 @@ USAGE_CATEGORY = "ui_translation"
 UI_TRANSLATION_MAX_TOKENS = 16384
 BATCH_KEYS = 100
 MAX_ATTEMPTS = 3
-_OUTPUT_LIMIT_STOPS = frozenset({"length", "max_tokens"})
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 CatalogTable = Callable[[], Dict[str, str]]
@@ -224,8 +224,7 @@ def _call_light(drive_root: pathlib.Path, messages: List[Dict[str, Any]], *, cli
     body_error = (usage or {}).get("provider_error")
     if isinstance(body_error, dict) and body_error:
         raise RuntimeError(f"provider body error (code={body_error.get('code')}): {body_error.get('message')}")
-    stop = str((msg or {}).get("finish_reason") or (msg or {}).get("stop_reason")
-               or (usage or {}).get("response_finish_reason") or "").strip().lower()
+    stop = str(response_finish_reason(usage, msg)[1] or "").strip().lower()
     return str((msg or {}).get("content") or ""), stop
 
 
@@ -428,7 +427,7 @@ def _translate_taken(drive_root: pathlib.Path, tag: str, taken: List[Tuple[str, 
         memory.requeue_pending(drive_root, tag, back)
         facts["error"] = error[:200]
         return facts
-    if stop in _OUTPUT_LIMIT_STOPS:
+    if stop in OUTPUT_LIMIT_FINISH_REASONS:
         _requeue(batch, error=f"output budget hit ({stop})", count=False)
         memory.requeue_pending(drive_root, tag, back)
         facts["error"] = "output_truncated"
@@ -674,7 +673,7 @@ def resolve_language_request(text: str, *, drive_root: Optional[pathlib.Path] = 
         raise LanguageResolveError("language_resolve_failed",
                                    f"the model could not be asked about this language ({type(exc).__name__})") from exc
     parsed = _json_object(content)
-    if stop in _OUTPUT_LIMIT_STOPS and not parsed:
+    if stop in OUTPUT_LIMIT_FINISH_REASONS and not parsed:
         raise LanguageResolveError("language_resolve_failed", "the model's answer was cut by the output budget")
     if not parsed or not isinstance(parsed.get("label"), str) or not parsed["label"].strip():
         # No profile in the answer: the host does not invent a language the model did not name.
