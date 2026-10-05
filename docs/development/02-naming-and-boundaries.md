@@ -235,6 +235,19 @@ base. Local surfaces never block on the budget; a malformed grant file fails
 every default lane.
 Equivalent historical prose stays review-only under CHECKLISTS item 7.
 
+### Current state first (ARCHITECTURE invariant 10)
+
+Before adding a reader that derives a current fact — a total, an open set, an
+owner, a completed migration, an owed notice — from history, add the
+current-state record: name its key, the transition that writes it, the readers
+that address it and where it lives (`state/usage.sqlite` summaries,
+`state/obligations/`, `state/owned_processes.json`, `state/migrations.json`);
+then the append-only evidence; then the rebuild job that recomputes the record
+when it is in doubt. A reviewer treats a new history fold on an ordinary path
+(admission, a send, a status read, a duty pass, boot, exit) as a defect, not a
+performance note; a scan belongs to an explicit job the owner or the rebuild
+starts. Enforcement: the focused tests that count rows and parses on those paths.
+
 ### Generality and emergence (P13)
 
 Every non-trivial change picks a level: patch the case in front of you, solve its

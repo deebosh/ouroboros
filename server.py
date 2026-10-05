@@ -18,7 +18,8 @@ from starlette.routing import Route, Mount
 import uvicorn
 from ouroboros.server_control import (PanicIngress, execute_panic_stop as _execute_panic_stop_impl,
                                       restart_current_process as _restart_current_process_impl)
-from ouroboros.startup_historical_audit import audit as _historical_audit
+from ouroboros.owned_shutdown import (begin_owned_stop, finish_unconfirmed_stops, start_inherited_import,
+                                       stop_owned_work)
 from ouroboros.server_auth import (
     NetworkAuthGate,
     get_network_auth_startup_warning,
@@ -28,8 +29,8 @@ from ouroboros.server_entrypoint import bound_service_socket, find_free_port, pa
 from ouroboros.launcher_bootstrap import automatic_launch_allowed
 from ouroboros.server_web import NoCacheStaticFiles, make_index_page, resolve_web_dir
 from ouroboros.process_logging import configure_process_logging
-from ouroboros.usage_accounting import ensure_legacy_imported
 from ouroboros.task_finalization import host_operation_reply_kwargs
+from ouroboros import usage_store  # the boot import of the retired journal (run_startup_phase below)
 from ouroboros.gateway import collect_routes
 from ouroboros.gateway import settings as _gateway_settings
 from ouroboros.gateway.ws import (
@@ -619,11 +620,11 @@ def _run_supervisor(settings: dict) -> None:
     _watchdog_stop = threading.Event()  # per-generation: set on EVERY exit of this generation
     try:
         # Watch startup stalls; even a failed watchdog start publishes an init outcome.
-        from ouroboros.server_liveness import loop_phase_facts
+        from ouroboros.server_liveness import loop_phase_facts, note_supervisor_ready, run_startup_phase
         _loop_liveness = [time.monotonic(), {}, time.thread_time(), None]  # slots: server_liveness.py
         _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "startup", new_tick=True), time.monotonic()
         _start_supervisor_liveness_watchdog(_loop_liveness, _watchdog_stop)
-        ensure_legacy_imported(pathlib.Path(DATA_DIR))
+        run_startup_phase(_loop_liveness, "startup:usage_store", lambda: usage_store.migrate_from_journal(pathlib.Path(DATA_DIR)))
         from supervisor.state import control_is, load_state, save_state, update_state
         from supervisor.state import append_jsonl, update_budget_from_usage, rotate_chat_log_if_needed, rotate_jsonl_log_if_needed
         _initialize_runtime_state(settings, stop_requested=lambda stop=_watchdog_stop: any(e.is_set() for e in (stop, _supervisor_stop, _restart_requested, _exit_signalled)))
@@ -676,7 +677,6 @@ def _run_supervisor(settings: dict) -> None:
         from ouroboros.consciousness import BackgroundConsciousness
         import types
 
-        _migrate_startup_cancel_latches(DATA_DIR)
         prior_worker_pids = _startup_worker_pids(DATA_DIR)
         interrupted_running: list = []
         restored_pending = restore_pending_from_snapshot(terminalized=interrupted_running)
@@ -700,9 +700,6 @@ def _run_supervisor(settings: dict) -> None:
         _resume_interrupted_project_deletions()
         _startup_prune_sweeps(preserve_task_sources=bool(
             recovered_files["unresolved"] or recovered_files["protected"] or recovered_files["errors"]), recovery_report=recovered_files)
-        _startup_worktree_prune()
-
-        _prune_delegated_snapshots()
 
         if restored_pending > 0 or interrupted_running:
             st_boot = load_state()
@@ -786,8 +783,7 @@ def _run_supervisor(settings: dict) -> None:
 
     _supervisor_ready.set()
     _supervisor_init_done.set()
-    log.info("Supervisor ready.")
-    _historical_audit.start(DATA_DIR, REPO_DIR)
+    note_supervisor_ready()
 
     offset = 0
     crash_count = 0
@@ -1283,6 +1279,17 @@ async def lifespan(app):
         and not os.environ.get("OUROBOROS_DATA_DIR")
     )
 
+    if not pytest_default_real_data_dir:  # before admission and any extension/replacement process (§9)
+        finish_unconfirmed_stops(lifespan_drive_root)
+        start_inherited_import(lifespan_drive_root)  # the one-time disk walk, off the ready path
+        from ouroboros.startup_migrations import prepare_startup_state
+        prepare_startup_state(lifespan_drive_root, repo_dir=REPO_DIR, strict=False)
+        try:  # the one journal import, on every door (providerless included), before any request
+            usage_store.migrate_from_journal(lifespan_drive_root)
+        except Exception:
+            log.critical("Usage store import failed at startup; money reads report it unavailable "
+                         "until it succeeds", exc_info=True)
+
     # Source-mode must seed native skills too, matching packaged launcher layout.
     try:
         if pytest_default_real_data_dir:
@@ -1447,7 +1454,7 @@ async def lifespan(app):
         yield
     finally:
         _supervisor_stop.set()  # first: the loop must know a teardown owns what follows
-        _historical_audit.stop()
+        begin_owned_stop(lifespan_drive_root)  # the grace starts here; pending stops are recorded before any wait
         log.info("Server shutting down...")
         # Let the loop leave its current tick BEFORE workers are killed and the
         # bridge/Manager go down: a tick still running would otherwise respawn
@@ -1522,7 +1529,7 @@ async def lifespan(app):
             get_manager().stop_server()
         except Exception:
             pass
-        _stop_owned_local_processes(lifespan_drive_root)
+        stop_owned_work(lifespan_drive_root)  # the generation's one bounded stop; a started one is joined
         try:
             from ouroboros.extension_companion import get_global_supervisor
             supervisor = get_global_supervisor()
@@ -1570,28 +1577,9 @@ def _restart_cleanup_kwargs() -> dict:
     return {}
 
 
-def _stop_owned_local_processes(drive_root: pathlib.Path, *, wait: bool = True) -> None:
-    """Shared shutdown order; the emergency path keeps its non-waiting policy."""
-    try:
-        from ouroboros.tools.shell import kill_all_tracked_subprocesses
-        kill_all_tracked_subprocesses()
-    except Exception:
-        log.debug("Tracked shell cleanup failed", exc_info=True)
-    try:
-        from ouroboros.workspace_executor import kill_all_foreground
-        kill_all_foreground(drive_root, wait=wait)
-    except Exception:
-        log.debug("Foreground executor cleanup failed", exc_info=True)
-    try:
-        from ouroboros.tools.services import kill_all_services
-        kill_all_services(drive_root, wait=wait)
-    except Exception:
-        log.debug("Owned service cleanup failed", exc_info=True)
-
-
 def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
     """Kill child processes, workers, companions, and runtime port holders."""
-    _historical_audit.stop()  # forced path may skip lifespan's finally; stop never waits
+    begin_owned_stop(DATA_DIR)  # the grace starts here; pending stops are recorded before any wait
     try:
         from supervisor.workers import kill_workers
         cleanup_kwargs = _restart_cleanup_kwargs()
@@ -1615,7 +1603,7 @@ def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
         except Exception:
             log.critical("Planned restart: engine pin check raised; the owned daemon is left serving",
                          exc_info=True)
-    _stop_owned_local_processes(DATA_DIR, wait=False)
+    stop_owned_work(DATA_DIR)  # the same one stop: joined until it completes or its deadline
     import multiprocessing
     from ouroboros.platform_layer import force_kill_pid, kill_process_on_port
     for child in multiprocessing.active_children():
@@ -1712,8 +1700,8 @@ def main() -> int:
 
         server.should_exit = True
 
-        # This bounds the graceful wait, not full cleanup: retained executor
-        # records still belong to this stop, including backend-only processes.
+        # This bounds the graceful wait; the owned-work stop below has its own
+        # deadline inside the launcher's grace, then this thread exits.
         force_exit_timeout_sec = 5 if _LAUNCHER_MANAGED else 30
         if not _uvicorn_exited.wait(timeout=force_exit_timeout_sec):
             log.warning("Uvicorn did not exit within %ss; finishing cleanup before restart",

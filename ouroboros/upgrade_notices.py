@@ -189,7 +189,7 @@ def startup_upgrade_notices(settings: Mapping[str, Any]) -> None:
         from ouroboros.reviewer_slot_config import authored_reviewer_slots_state
         from ouroboros.utils import utc_now_iso
         from supervisor import message_bus
-        from ouroboros.utils import iter_jsonl_chain_objects
+        from ouroboros.notice_receipts import recorded
         from supervisor.state import control_value, load_state, update_state
 
         state = load_state()
@@ -213,17 +213,10 @@ def startup_upgrade_notices(settings: Mapping[str, Any]) -> None:
                 text = ""
             if text:
                 owed.append((LEGACY_MEMORY_NOTICE_KEY, text, "legacy_memory_notice"))
-        # Recover the gap between the durable owner-chat write and the state
-        # marker. The chat row itself is the receipt; no second notice ledger.
-        recorded = set()
-        if owed and message_bus.DATA_DIR:
-            for row in iter_jsonl_chain_objects(message_bus.DATA_DIR / "logs" / "chat.jsonl"):
-                if row.get("direction") == "system" and row.get("chat_id") == owner_chat:
-                    recorded.add(row.get("type"))
         for key, text, system_type in owed:
             # require_write: a chat row that could not be written raises, so the
             # notice stays owed instead of being marked as published.
-            if system_type not in recorded:
+            if not recorded(message_bus.DATA_DIR, owner_chat, system_type):
                 message_bus.send_with_budget(owner_chat, text, role="system", system_type=system_type,
                                              require_write=True, ensure_record_boundary=True)
 

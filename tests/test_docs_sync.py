@@ -104,7 +104,8 @@ def test_model_send_design_note_matches_the_observability_contract():
     assert (REPO / "ouroboros" / "model_send_seal.py").exists()
     assert "refuse dispatch with the existing `PhysicalAttemptPreparationFailed`" \
         not in note_flat
-    assert "The call is NOT blocked" in note_flat
+    assert "It never calls `verify_sealed_candidate` or reads that record back" in note_flat
+    assert "facts; they do not gate a later model call" in note_flat
 
 
 def test_settings_docs_name_every_key_owner_and_what_startup_persists():

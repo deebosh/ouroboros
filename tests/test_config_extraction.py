@@ -31,9 +31,8 @@ _ADDED_OWNERS = {
     "SUPERVISOR_EVENT_BATCH_MAX_EVENTS": runtime_limits,
     "SUPERVISOR_EVENT_BATCH_MAX_SEC": runtime_limits,
     "BUDGET_PROJECTION_RETRY_SEC": runtime_limits,
-    # The two bounds of the usage ledger's display (stale-while-revalidate) read path.
+    # The usage store display read's short wait (then the fact is reported unavailable).
     "USAGE_DISPLAY_LOCK_TIMEOUT_SEC": runtime_limits,
-    "USAGE_DISPLAY_REVALIDATE_AFTER_SEC": runtime_limits,
     "IMMEDIATE_SETTINGS": settings_scales,
     "RESTART_REQUIRED_SETTINGS": settings_scales,
     "get_finalization_grace_sec": runtime_limits,
@@ -69,7 +68,6 @@ _ADDED_OWNERS = {
     # Consciousness settings scaffolding: the alarm's SSOT default interval, the closed
     # autonomy enum and the readers for the three consciousness keys.
     "WAKE_DEFAULT_SEC": runtime_limits,
-    "USAGE_LEDGER_FOLD_MIN_AGE_SEC": runtime_limits,
     "CONSCIOUSNESS_AUTONOMY_LEVELS": runtime_limits,
     "get_consciousness_autonomy": runtime_limits,
     "get_consciousness_daily_usd": runtime_limits,

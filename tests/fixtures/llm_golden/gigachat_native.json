@@ -236,11 +236,8 @@
             "candidate_raw_sha256": "4915725dbe9fb803934f49ce8d91bf61b751dde29583c9e45430fb03c6d2fdfd",
             "candidate_raw_size_bytes": 722,
             "candidate_measurement_kind": "canonical_json_v1",
-            "states": [
-              "reserved",
-              "dispatched",
-              "settled"
-            ],
+            "state": "settled",
+            "transitions": 3,
             "prompt_cache_ttl": "",
             "cost_final": false
           }
@@ -350,11 +347,8 @@
             "candidate_raw_sha256": "ae531707e11cc9e6cb6d1b6a8dd776adb3ece1180c42f06e9ad6c78bc7ff00d4",
             "candidate_raw_size_bytes": 143,
             "candidate_measurement_kind": "canonical_json_v1",
-            "states": [
-              "reserved",
-              "dispatched",
-              "settled"
-            ],
+            "state": "settled",
+            "transitions": 3,
             "prompt_cache_ttl": "",
             "cost_final": false
           }
@@ -462,11 +456,8 @@
             "candidate_raw_sha256": "ae531707e11cc9e6cb6d1b6a8dd776adb3ece1180c42f06e9ad6c78bc7ff00d4",
             "candidate_raw_size_bytes": 143,
             "candidate_measurement_kind": "canonical_json_v1",
-            "states": [
-              "reserved",
-              "dispatched",
-              "settled"
-            ],
+            "state": "settled",
+            "transitions": 3,
             "prompt_cache_ttl": "",
             "cost_final": false
           }

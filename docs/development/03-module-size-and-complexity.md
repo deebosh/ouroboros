@@ -104,10 +104,12 @@ the answer.
 
 - **Evaluate the whole operation as the project grows.** For a changed data
   reader, weigh growth in history, object count and project size, including
-  nested repetition, cold caches and concurrent users of shared resources. A
-  once-per-boot or explicit-owner scan is still allowed; its cost belongs to
-  the whole operation, not separately to every child, file or lookup it
-  visits. Where growth can materially hurt responsiveness, show evidence at a
+  nested repetition, cold caches and concurrent users of shared resources. An
+  installation migration or repair is an explicit lifecycle job with a durable
+  watermark; ordinary startup does not reconstruct unrelated history. An
+  explicit-owner scan (an audit the owner starts, a rebuild job) is allowed;
+  its cost belongs to that job, which runs outside the dialogue's process
+  (ARCHITECTURE invariant 10). Where growth can materially hurt responsiveness, show evidence at a
   representative scale on the affected path. First remove redundant work or
   reuse a validated view within one operation; add a projection, cache or
   other mechanism only when that simpler change is insufficient. A batch names
@@ -138,8 +140,8 @@ the answer.
   summaries of `ouroboros/gateway/history_segments.py` (one byte scan per
   closed archive, keyed by inode/size/mtime) that let a Project history read
   skip archives instead of parsing them; the
-  fingerprint-keyed render cache in `ouroboros/_usage_rows_memo.py`, held while
-  its input is unchanged and invalidated only by advance/refold, never by TTL;
+  usage store's summary rows (`ouroboros/usage_store.py`): current money facts
+  kept by the writing transaction, so no render is cached at all;
   the `task_result_facts.py` stat-invalidated result memo and the
   task-event SSE v2 cursor discipline, whose rules are stated once in
   ARCHITECTURE §3 "Chat and Projects".

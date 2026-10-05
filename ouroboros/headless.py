@@ -544,10 +544,8 @@ def terminal_task_files_ready(canonical_root: pathlib.Path, task: Dict[str, Any]
 def prepare_terminal_task_files(canonical_root: pathlib.Path, task: Dict[str, Any]) -> Dict[str, Any]:
     """Finish one file-save attempt without turning an I/O failure into a worker crash.
 
-    The dispatcher re-reads CURRENT; returned result is diagnostic. Pending refs
-    keep existing custody. terminal_source_present is True after a strict terminal
-    read, False for absence/nonterminal, None for unknown; later write failure
-    preserves that observation and never manufactures a completed source.
+    The dispatcher re-reads CURRENT; pending refs keep custody. terminal_source_present is True after a strict terminal read,
+    False for absence/nonterminal, None for unknown; later write failure preserves that observation, never inventing a source.
     """
     task_id = str(task.get("id") or task.get("task_id") or "")
     report: Dict[str, Any] = {"task_id": task_id, "result": None, "error": "", "terminal_source_present": None}
@@ -572,6 +570,8 @@ def prepare_terminal_task_files(canonical_root: pathlib.Path, task: Dict[str, An
         if not task_is_readonly_subagent(task) and current.get("artifact_status") not in ARTIFACT_TERMINAL_STATUSES:
             finalize_task_artifacts(root, {**task, "id": task_id})
         report["result"] = load_task_result(root, task_id, strict=True)
+        from ouroboros.obligations import drive_finished
+        drive_finished(root, task, report["result"])
     except CustodyBusy as exc:
         # Another publisher (a settlement or copy-back) holds the store: the next attempt
         # completes the same work; nothing failed and no failure is stamped.
