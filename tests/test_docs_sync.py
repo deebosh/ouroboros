@@ -365,7 +365,7 @@ def test_phase3_governance_language_is_pinned_without_new_qa_surface():
     assert "AST analyzer" in development
     assert "Diff size, line count, and file count alone are not findings" in development
 
-    assert "Mutable external-fact inventory" in development
+    assert "External facts: unknown is not no" in development
     for column in (
         "Location",
         "Fact",
@@ -376,7 +376,13 @@ def test_phase3_governance_language_is_pinned_without_new_qa_surface():
         "Recommendation",
     ):
         assert f"| {column} " in development
-    assert "does not migrate their runtime representations" in development_flat
+    for rule in (
+        "Unknown is not no.",
+        "A refusal is an observation about one request.",
+        "A model name, prefix or family is never that evidence",
+        "tests/test_model_name_invariance.py",
+    ):
+        assert rule in development_flat
 
     for text in (development, system, authoring, architecture, checklists):
         flat = " ".join(text.split())
@@ -587,7 +593,7 @@ def test_prompt_tool_names_resolve_to_registered_tools(tmp_path):
 # Language-tagged code fences (```yaml, ```python …) are examples and are not
 # scanned; the plain ``` fence holding the §1 module tree IS scanned. The first
 # ARCHITECTURE line carries the release version by contract and is skipped, as
-# are DEVELOPMENT's "Mutable external-fact inventory" (dated provenance is the
+# are DEVELOPMENT's "External facts: unknown is not no" (dated provenance is the
 # rule there) and the "Documentation contract" section that quotes the markers.
 
 DOC_RESIDUE_PATTERNS = {
@@ -605,7 +611,7 @@ DOC_RESIDUE_PATTERNS = {
     "cyrillic": r"[А-Яа-яЁё]",
 }
 DOC_RESIDUE_SKIPPED_SUBSECTIONS = {
-    "docs/DEVELOPMENT.md": ("Mutable external-fact inventory", "Documentation contract"),
+    "docs/DEVELOPMENT.md": ("External facts: unknown is not no", "Documentation contract"),
 }
 
 

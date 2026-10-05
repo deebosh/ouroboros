@@ -56,6 +56,10 @@ _ADDED_OWNERS = {
     "task_model_binding": model_slots,
     "route_binding": model_slots,
     "apply_model_role_override": model_slots,
+    # A slot's model as it routes (its USE_LOCAL_* flag), for image candidate choice.
+    "_SLOT_LOCAL_FLAGS": model_slots,
+    "local_lane_label": model_slots,
+    "slot_lane_label": model_slots,
     "CLAUDEXOR_MODEL_POLL_INTERVAL_SEC": runtime_limits,
     "CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC": runtime_limits,
     "CLAUDEXOR_STOP_EXIT_WAIT_SEC": runtime_limits,

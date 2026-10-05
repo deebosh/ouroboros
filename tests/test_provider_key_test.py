@@ -419,6 +419,8 @@ def test_discovery_failure_stops_before_generation(monkeypatch, discovery, error
     [
         ("openai/test", {"OPENROUTER_API_KEY": "key"}, "max_tokens"),
         ("openai::gpt-5.6-terra", {"OPENAI_API_KEY": "key"}, "max_completion_tokens"),
+        # Unlisted by any name prefix: the carrier is the direct provider's, not the name's.
+        ("openai::gpt-6-astra", {"OPENAI_API_KEY": "key"}, "max_completion_tokens"),
         ("openai-compatible::test", {
             "OPENAI_COMPATIBLE_API_KEY": "key",
             "OPENAI_COMPATIBLE_BASE_URL": "https://compat.example/v1",
@@ -453,6 +455,32 @@ def test_openai_class_probe_is_one_minimal_attempt(monkeypatch, model, settings,
     )
     assert client._remote_clients == {}
     assert remote.closed is True
+
+
+@pytest.mark.parametrize("model", [
+    "openai::gpt-6-astra",
+    "openai::acme-never-listed-1",
+    "openai::gpt-5.6-terra",
+    "openai::o3-mini",
+    "openai/gpt-6-astra",
+    "openai-compatible::giga-osa-glm53/glm-5.3-flash",
+    "deepseek::deepseek-v4-flash",
+    "minimax::MiniMax-M3",
+])
+def test_provider_test_token_key_is_the_send_path_rule(monkeypatch, model):
+    """Provider Test must send the token-limit carrier the real send path sends for the
+    same route, for listed and unlisted model names alike."""
+    from ouroboros import llm_probe
+
+    client = LLMClient()
+    target = client._resolve_remote_target(model)
+    sent = client._build_remote_kwargs(
+        dict(target), [{"role": "user", "content": "Reply OK"}], "medium", 16, "auto", None, None,
+        skip_capability_fetch=True,
+    )
+    probe = llm_probe._probe_candidate(target)
+    carriers = ("max_tokens", "max_completion_tokens")
+    assert [key for key in carriers if key in probe] == [key for key in carriers if key in sent]
 
 
 def test_anthropic_probe_accepts_empty_completion(monkeypatch):

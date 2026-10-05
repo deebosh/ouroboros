@@ -177,7 +177,7 @@
                 },
                 {
                   "role": "user",
-                  "content": "look[image omitted: model has no vision — shot]"
+                  "content": "look[image omitted: our GigaChat transport lane cannot carry images — shot]"
                 },
                 {
                   "role": "assistant",
@@ -225,7 +225,7 @@
               ],
               "function_call": "auto"
             },
-            "payload_sha256": "83dcf6a543ee24f9eaaa33952345c2131f56b2cf2905c3af137d2b518200e509"
+            "payload_sha256": "4915725dbe9fb803934f49ce8d91bf61b751dde29583c9e45430fb03c6d2fdfd"
           }
         ],
         "physical_attempts": [
@@ -233,8 +233,8 @@
             "source": "llm.gigachat",
             "model": "gigachat/GigaChat-3-Pro",
             "provider": "gigachat",
-            "candidate_raw_sha256": "83dcf6a543ee24f9eaaa33952345c2131f56b2cf2905c3af137d2b518200e509",
-            "candidate_raw_size_bytes": 694,
+            "candidate_raw_sha256": "4915725dbe9fb803934f49ce8d91bf61b751dde29583c9e45430fb03c6d2fdfd",
+            "candidate_raw_size_bytes": 722,
             "candidate_measurement_kind": "canonical_json_v1",
             "state": "settled",
             "transitions": 3,

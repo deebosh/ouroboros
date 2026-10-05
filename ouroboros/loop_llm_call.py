@@ -133,9 +133,9 @@ def fold_retrieval_usage(accumulated_usage: Dict[str, Any], usage: Dict[str, Any
 # large) keep failing fast. There is NO cross-model fallback here — the same
 # request is retried on the SAME model.
 _TRANSIENT_RETRY_KINDS = frozenset({"provider_transient", "provider_incomplete_response"})
-# OB-01: stamped when THIS invocation spent its same-model retry wall without a
-# usable response; entry-cleared per invocation; PERMANENT classes leave it unspent.
-RETRY_WALL_EXHAUSTED_KEY = "_llm_retry_wall_exhausted"
+# OB-01: stamped when THIS invocation spent its same-model retry wall without a usable response; entry-cleared
+# per invocation; PERMANENT classes leave it unspent. Its twin: a series of 2+ attempts (not a deadline) ended it.
+RETRY_WALL_EXHAUSTED_KEY, RETRY_ATTEMPTS_SPENT_KEY = "_llm_retry_wall_exhausted", "_llm_retry_attempts_spent"
 # Error kinds that put a model on the F1 fallback cooldown. Superset of the same-model
 # retry kinds: a body-error 429 (HTTP 200 with an error in the body — the canonical
 # cloud.ru/OpenRouter rate-limit shape) is classified "rate_limit", which must cool the
@@ -169,6 +169,8 @@ TRANSPORT_DEATHS_KEY = "_transport_deaths"
 # A local pre-dispatch refusal's own candidate facts (``LocalContextTooLargeError.refused_candidate``), for the
 # round's one strict-shrink retry; a wait's reprepare rebinds the physical context of the remaining attempts.
 REFUSED_CANDIDATE_KEY, REBOUND_PHYSICAL_CONTEXT_KEY = "_refused_candidate", "_physical_context_rebound"
+# The logical round's first started frame ({"round_id", "at": monotonic}); retries, fallbacks and redials keep it.
+ROUND_STARTED_KEY = "_llm_round_started"
 
 
 def transient_retry_max(default_retries: int) -> int:
@@ -971,8 +973,8 @@ def _record_llm_call_error(
         "provider_message": provider_message,
         "requested_profile": ((getattr(error, "usage", {}) or {}).get("claudexor") or {}).get("requested_profile", ctx.requested_profile),
         "observed_route": dict(getattr(error, "route", {}) or {}),
-        **custody_fields,
-        **(ctx.context_fit_event_fields or {}),
+        **custody_fields, **({"operation_id": str(error.operation_id)} if getattr(error, "operation_id", "") else {}),
+        **(ctx.context_fit_event_fields or {}), "ledger_attempt_ids": list(getattr(error, "ledger_attempt_ids", None) or []),
         "request_ref": ctx.request_ref.get("manifest_ref") if ctx.request_ref else None,
     }
     if not append_jsonl(ctx.drive_logs / "events.jsonl", error_event) or not has_log_sink():
@@ -1043,7 +1045,7 @@ def _stop_after_llm_error(ctx: _LlmErrorContext) -> bool:
             round_id=ctx.round_id, round_idx=ctx.round_idx, attempt=ctx.attempt,
             model=ctx.model, error_kind=error_kind,
         )
-    accumulated_usage[RETRY_WALL_EXHAUSTED_KEY] = True
+    accumulated_usage.update({RETRY_WALL_EXHAUSTED_KEY: True, RETRY_ATTEMPTS_SPENT_KEY: 1 < attempt_budget <= ctx.attempt + 1})
     return True
 
 
@@ -1126,36 +1128,38 @@ def _record_round_cache_facts(
     usage: Dict[str, Any],
     *,
     round_idx: int,
+    round_id: str = "",
 ) -> tuple:
     """Cold-restart telemetry — FACTS of this round only (no dollar counterfactuals).
 
     Returns ``(prompt_cache_ttl, cache_hit_rate, cache_cold_restart,
-    gap_since_prev_round_sec)``: a later round whose prompt was almost entirely
+    gap_since_prev_round_sec, duration_ms)``: a later round whose prompt was almost entirely
     re-written is a provider-cache expiry/invalidation made structurally visible,
     and the gap since the previous successful round is the datum that separates a
     TTL expiry (long wait) from a prefix rewrite. Also records the APPLIED TTL of
     this task's latest send — the recorded fact the wait-tool cache-horizon
-    disclosure reads (one place, never re-derived).
+    disclosure reads (one place, never re-derived). ``duration_ms`` spans the logical
+    round from its first started frame (retries, fallbacks and waits included) and
+    settles it: a later call on the same round id (a wrap-up) measures only itself.
     """
     prompt_tokens = int(usage.get("prompt_tokens") or 0)
     cached_tokens = int(usage.get("cached_tokens") or 0)
     cache_write_tokens = int(usage.get("cache_write_tokens") or 0)
     prompt_cache_ttl = str(usage.get("prompt_cache_ttl") or "")
     cache_hit_rate = (cached_tokens / prompt_tokens) if prompt_tokens > 0 else 0.0
-    prev_finished = accumulated_usage.get("_last_llm_round_finished_monotonic")
-    gap_since_prev_round_sec = (
-        round(max(0.0, time.monotonic() - float(prev_finished)), 1)
-        if isinstance(prev_finished, (int, float)) else None
-    )
+    now, prev_finished = time.monotonic(), accumulated_usage.get("_last_llm_round_finished_monotonic")
+    gap_since_prev_round_sec = round(max(0.0, now - float(prev_finished)), 1) if isinstance(prev_finished, (int, float)) else None
+    started = accumulated_usage.pop(ROUND_STARTED_KEY, None)
+    duration_ms = round(max(0.0, now - float(started["at"])) * 1000) if isinstance(started, dict) and started.get("round_id") == round_id else None
     cache_cold_restart = bool(
         round_idx > 1
         and prompt_tokens > 0
         and cached_tokens < 0.2 * prompt_tokens
         and cache_write_tokens > 0.5 * prompt_tokens
     )
-    accumulated_usage["_last_llm_round_finished_monotonic"] = time.monotonic()
+    accumulated_usage["_last_llm_round_finished_monotonic"] = now
     accumulated_usage["_last_prompt_cache_ttl"] = prompt_cache_ttl
-    return prompt_cache_ttl, cache_hit_rate, cache_cold_restart, gap_since_prev_round_sec
+    return prompt_cache_ttl, cache_hit_rate, cache_cold_restart, gap_since_prev_round_sec, duration_ms
 
 
 def _prepare_main_messages(
@@ -1173,22 +1177,22 @@ def _prepare_main_messages(
     model_role: str = "main",
     model_account_override: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    try:
-        from ouroboros.vision_routing import VisionRoutingContext, prepare_messages_for_send
+    from ouroboros import vision_routing
 
-        return prepare_messages_for_send(
+    try:
+        return vision_routing.prepare_messages_for_send(
             messages,
-            routing=VisionRoutingContext(
+            routing=vision_routing.VisionRoutingContext(
                 model=model, llm=llm, accumulated_usage=accumulated_usage,
                 drive_root=drive_root, task_id=task_id, event_queue=event_queue,
                 use_local=use_local, task_attempt=task_attempt, deadline_ts=deadline_ts,
                 model_role=model_role, model_account_override=model_account_override,
             ),
         )
-    except Exception as error:
+    except Exception as error:  # a failed projection never falls back to the canonical pixels
         propagate_model_error(error)
-        log.debug("vision routing preparation failed; falling back to canonical messages", exc_info=True)
-        return messages
+        log.warning("image preparation failed; images withheld per the image-input mode", exc_info=True)
+        return vision_routing.withhold_images(messages, error)
 
 
 def _send_main_candidate(
@@ -1336,7 +1340,7 @@ def call_llm_with_retry(
     processing_preference = resolve_processing_preference(model_role, override=processing_preference)
     _replace_response_meta(response_meta_out)
     drive_root = pathlib.Path(drive_logs).parent
-    for key in (RETRY_WALL_EXHAUSTED_KEY, REFUSED_CANDIDATE_KEY, REBOUND_PHYSICAL_CONTEXT_KEY):
+    for key in (RETRY_WALL_EXHAUSTED_KEY, RETRY_ATTEMPTS_SPENT_KEY, REFUSED_CANDIDATE_KEY, REBOUND_PHYSICAL_CONTEXT_KEY):
         accumulated_usage.pop(key, None)  # last-invocation markers (see the keys)
     execution_id = str(accumulated_usage.setdefault("execution_id", new_execution_id()))
     round_id = f"{execution_id}:round:{round_idx}"
@@ -1363,6 +1367,8 @@ def call_llm_with_retry(
                 llm=llm, accumulated_usage=accumulated_usage, drive_root=drive_root, task_id=task_id,
                 event_queue=event_queue, use_local=use_local, task_attempt=task_attempt, deadline_ts=deadline_ts,
             )
+            if (accumulated_usage.get(ROUND_STARTED_KEY) or {}).get("round_id") != round_id:
+                accumulated_usage[ROUND_STARTED_KEY] = {"round_id": round_id, "at": time.monotonic()}
             _emit_live_log(event_queue, {
                 "type": "llm_round_started", "task_id": task_id, "task_type": task_type, "execution_id": execution_id,
                 "round_id": round_id, "llm_call_id": llm_call_id, "round": round_idx, "task_attempt": task_attempt,
@@ -1508,35 +1514,29 @@ def call_llm_with_retry(
                 if _empty_response_wall_spent(is_provider_glitch, permanent, usage):
                     accumulated_usage[RETRY_WALL_EXHAUSTED_KEY] = True
                 return None, cost
-            for stale in ("execution_status", "result_status", "reason_code", RETRY_WALL_EXHAUSTED_KEY, TRANSPORT_DEATHS_KEY, "_pending_transport_outcome"):
+            for stale in ("execution_status", "result_status", "reason_code", RETRY_WALL_EXHAUSTED_KEY, RETRY_ATTEMPTS_SPENT_KEY, TRANSPORT_DEATHS_KEY, "_pending_transport_outcome"):
                 accumulated_usage.pop(stale, None)  # a USABLE response closes the round's repeat record
             accumulated_usage["rounds"] = accumulated_usage.get("rounds", 0) + 1
             cached_tokens = int(usage.get("cached_tokens") or 0)
-            prompt_cache_ttl, cache_hit_rate, cache_cold_restart, gap_since_prev_round_sec = (
-                _record_round_cache_facts(accumulated_usage, usage, round_idx=round_idx))
+            prompt_cache_ttl, cache_hit_rate, cache_cold_restart, gap_since_prev_round_sec, duration_ms = (
+                _record_round_cache_facts(accumulated_usage, usage, round_idx=round_idx, round_id=round_id))
+            ledger_ids = list(usage.get("ledger_attempt_ids") or [])  # the last one carried this response (#807)
             _round_event = {
                 "ts": utc_now_iso(), "type": "llm_round",
                 **{key: accumulated_usage[key] for key in ("first_request_at", "first_answer_at")},
-                "task_id": task_id,
-                "execution_id": execution_id,
-                "round_id": round_id,
-                "llm_call_id": llm_call_id,
-                "round": round_idx, "model": display_model,
+                "task_id": task_id, "execution_id": execution_id,
+                "round_id": round_id, "llm_call_id": llm_call_id, "round": round_idx, "model": display_model,
                 "reasoning_effort": effort,
                 **{key: usage[key] for key in ("effort", "effort_resolution", "request_wire", "claudexor") if key in usage},
-                "provider": provider,
-                "source": "loop",
-                "model_category": infer_model_category(display_model),
+                "provider": provider, "source": "loop", "model_category": infer_model_category(display_model),
                 "prompt_tokens": int(usage.get("prompt_tokens") or 0),
                 "completion_tokens": int(usage.get("completion_tokens") or 0),
                 "cached_tokens": (cached_tokens if usage.get("cached_tokens") is not None else None),
                 "cache_write_tokens": int(usage.get("cache_write_tokens") or 0),
-                "prompt_cache_ttl": prompt_cache_ttl,
-                "cache_hit_rate": cache_hit_rate,
-                "cache_cold_restart": cache_cold_restart,
-                "gap_since_prev_round_sec": gap_since_prev_round_sec,
-                "cost_usd": cost,
-                **context_fit_event_fields,
+                "prompt_cache_ttl": prompt_cache_ttl, "cache_hit_rate": cache_hit_rate,
+                "cache_cold_restart": cache_cold_restart, "gap_since_prev_round_sec": gap_since_prev_round_sec,
+                "duration_ms": duration_ms, "cost_usd": cost, **context_fit_event_fields,
+                "ledger_attempt_ids": ledger_ids, "physical_attempt_id": ledger_ids[-1] if ledger_ids else None,
                 "request_ref": request_ref.get("manifest_ref") if request_ref else None,
                 "response_ref": response_ref.get("manifest_ref") if response_ref else None,
             }
@@ -1545,8 +1545,8 @@ def call_llm_with_retry(
                 "round_id": round_id, "llm_call_id": llm_call_id, "round": round_idx, "task_attempt": task_attempt,
                 "attempt": attempt + 1, "model": display_model,
                 **{key: _round_event[key] for key in (
-                    "reasoning_effort", "cost_usd", "prompt_tokens", "completion_tokens", "cached_tokens",
-                    "cache_write_tokens", "prompt_cache_ttl", "effort", "effort_resolution", "request_wire", "claudexor") if key in _round_event},
+                    "reasoning_effort", "cost_usd", "prompt_tokens", "completion_tokens", "cached_tokens", "cache_write_tokens",
+                    "prompt_cache_ttl", "effort", "effort_resolution", "request_wire", "claudexor", "duration_ms") if key in _round_event},
                 "response_kind": "tool_calls" if tool_calls else "message",
                 "tool_call_count": len(tool_calls),
                 "has_text": bool(content and str(content).strip()),
