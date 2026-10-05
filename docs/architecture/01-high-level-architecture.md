@@ -406,6 +406,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       │   ├── skill_payload_policy.py ← Payload path resolution/confinement/sidecar detection
       │   ├── skill_manifest.py ← Unified skill manifest parser (`VALID_SKILL_TYPES`: instruction|script|extension)
       │   ├── schema_versions.py ← Opt-in `_schema_version` stamping helpers (§11.2)
+      │   ├── record_contract.py ← Record passport: the local ledger rows external observers may rely on (§11.1)
       │   └── plugin_api.py    ← PluginAPI, ExtensionRegistrationError, FORBIDDEN_SKILL_SETTINGS, VALID_EXTENSION_PERMISSIONS, VALID_EXTENSION_ROUTE_METHODS
       ├── gateways/            ← Thin outbound transport adapters; no business logic
       │   ├── claudexor.py ← Loopback descriptor/handshake/runs/quota transport; token stays private, prefers owned daemon, discover_daemon_at reads daemon/control-api.json (§6 Delegated subagents)
