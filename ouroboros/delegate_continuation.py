@@ -1,4 +1,4 @@
-"""Continuation of a settled delegated run: ``delegate_start(continue_from=<run_id>)``.
+"""Continuation of a settled delegated run: ``delegate_start``'s ``continue_from=<run_id>``.
 
 A delegated run stops for many reasons — its wall-clock cap, a vendor
 subscription limit, a crash of the harness or of this host, a cancel, a

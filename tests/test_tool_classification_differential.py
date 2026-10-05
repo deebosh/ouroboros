@@ -371,6 +371,11 @@ CURRENT_PRODUCER_CONTRACTS = {
     # acknowledge these requested apply/discard operations as completed.
     "INTEGRATE_DELEGATED_APPLY_UNCONFIRMED": (True, "integration_blocked"),
     "INTEGRATE_DELEGATED_DISCARD_UNCONFIRMED": (True, "integration_blocked"),
+    # delegate_continuation.disposition_refusal: a captured result whose snapshot a
+    # continuation took over, or may be taking over (a pending hand-over), is not
+    # applied or rejected alone; nothing changes. Its peers' answer, asserted live.
+    "INTEGRATE_DELEGATED_CONTINUATION_PENDING": (True, "integration_blocked"),
+    "INTEGRATE_DELEGATED_SUPERSEDED": (True, "integration_blocked"),
     # A reject request cannot undo direct effects already in the folder.
     # The refusal belongs to this disposition, not to the earlier write.
     "INTEGRATE_DIRECTORY_ALREADY_APPLIED": (True, "integration_blocked"),

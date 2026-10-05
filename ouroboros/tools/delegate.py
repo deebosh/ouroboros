@@ -1376,7 +1376,7 @@ def get_tools() -> List[ToolEntry]:
                     "my human's originating words verbatim. For the configured snapshotted session (retry/replacement), "
                     "only optional advisory coordination context — the host supplies the canonical work order."},
                 "subagent_id": {"type": "string", "description":
-                    "Required for a fresh start made directly: exact agent_session actor id from Available "
+                    "Required for a fresh start made directly (continue_from included): exact agent_session actor id from Available "
                     "subagents. Omit for the current configured snapshotted route and for retry_of. API actor ids are refused here "
                     "and must be scheduled as recursive children."},
                 "access": {"type": "string", "enum": list(SESSION_ACCESS_LOWERING), "description":
@@ -1414,7 +1414,7 @@ def get_tools() -> List[ToolEntry]:
                     "empty. A terminal resumable block whose cause is pool_exhausted or a limit with resetsAt: sleep "
                     "with await_messages(wake_at=resetsAt), then continue. Its floors: your task line, settled and "
                     "not already continued (else continue from the head), no ambiguous apply, access never wider. "
-                    "Never combine with retry_of."},
+                    "The actor is selected as for any start (subagent_id; a configured session omits it); never with retry_of."},
                 "continue_carrier": {"type": "string", "enum": ["auto", "packet"], "description":
                     "With continue_from only: auto (the default) lets the engine continue the old session where it "
                     "can; packet starts a NEW session briefed with the old run's evidence, for a session gone astray."},
@@ -1457,7 +1457,8 @@ def get_tools() -> List[ToolEntry]:
                 "payload's continuation=same_session fact means an answer (free_text "
                 "included, e.g. a peer's original you relay) resumes THIS session, each "
                 "resumed turn a paid round, while an input_required terminal names "
-                "continuation=new_physical_run: answer it with delegate_start(continue_from=...). An unfinished "
+                "continuation=new_physical_run: answer it with delegate_start(subagent_id=..., continue_from=<run_id>, "
+                "prompt=<the answers>). An unfinished "
                 "terminal carries the engine's resumable block (cause, resetsAt, carriers) and one continuity line "
                 "per continued try (carrier, accounts, memory, attested model). A "
                 "large terminal result is delivered as a bounded preview plus an "
@@ -1514,7 +1515,7 @@ def get_tools() -> List[ToolEntry]:
                 "post a different answer for the same interaction). A run on a route "
                 "without a mid-run question channel that ENDS needing input "
                 "(outcome_facts.reason=input_required) is answered with "
-                "delegate_start(continue_from=<run_id>, prompt=<the answers>) "
+                "delegate_start(subagent_id=..., continue_from=<run_id>, prompt=<the answers>) "
                 "— there is no rerun/decision verb, and custody stays with you."
                 " For an over-budget work order, pass the host-verified "
                 "source_response envelope alongside the ordinary answer; the host "

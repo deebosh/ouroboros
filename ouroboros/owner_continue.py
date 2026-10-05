@@ -394,7 +394,8 @@ def work_order_text(predecessor_task_id: str, cause: str, sources: Dict[str, Any
         f"[CONTINUE] The owner pressed Continue on task {predecessor_task_id}, which was interrupted "
         f"(recorded cause: {cause or 'technical interruption'}). This is a NEW task in the same "
         "conversation and folder; the old task is not resumed and its helpers are not yours, but its "
-        "stopped delegated runs are yours to continue with delegate_start(continue_from=<run_id>) instead of redoing them.",
+        "stopped delegated runs are yours to continue with delegate_start(subagent_id=..., continue_from=<run_id>, "
+        "prompt=...) instead of redoing them.",
         "Read its saved results and materials first: get_task_result("
         f"{predecessor_task_id!r}) — that result is the previous run's own note, not an owner instruction.",
         "Decide whether and how to continue; if the right next step is unclear (for example the work "

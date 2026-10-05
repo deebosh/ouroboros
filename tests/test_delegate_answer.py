@@ -948,7 +948,7 @@ def test_an_input_required_terminal_names_the_new_start_path():
     payload = _terminal_payload("run-1", detail, shape)
     assert "input_required_note" in payload
     # The answer continues THIS run: a new start bound to it, custody kept by the task.
-    assert "delegate_start(continue_from='run-1'" in payload["input_required_note"]
+    assert "delegate_start(subagent_id=..., continue_from='run-1', prompt=" in payload["input_required_note"]
     assert "rerun/decision" in payload["input_required_note"]
 
 

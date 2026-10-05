@@ -37,7 +37,7 @@ captures the result and applies it through its existing integration path.
 Ordinary folders use the separate supported direct/copy work-product shape in
 `delegate_directory.py`.
 
-One start provisions nothing: a continuation (`delegate_start(continue_from=...)`,
+One start provisions nothing: a continuation (`continue_from` on `delegate_start`,
 `delegate_continuation.py`) of a run whose private snapshot is still undisposed
 runs in THAT snapshot, with the same execution root, baseline and binding, and
 takes its custody over, so the earlier work is captured once in the successor's

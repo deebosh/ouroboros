@@ -271,7 +271,8 @@ def _terminal_payload(run_id: str, detail: Dict[str, Any],
             "This run ended NEEDING INPUT (outcome_facts.reason=input_required — "
             "see outcome_facts.work_state.required_inputs). Its harness has no "
             "mid-run question channel, so the question arrives as this terminal. Answer it with "
-            f"delegate_start(continue_from='{run_id}', prompt=<your answers>): the NEW run continues "
+            f"delegate_start(subagent_id=..., continue_from='{run_id}', prompt=<your answers>) (a configured "
+            "session omits subagent_id): the NEW run continues "
             "this work where the engine can, and its custody stays with you. "
             "Do not look for a rerun/decision verb — none exists on this surface."
         )
