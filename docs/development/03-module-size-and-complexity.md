@@ -232,7 +232,7 @@ carry the per-module contracts.
 | Skill-review root tasks | Per-skill `state/skills/<name>/review_history.jsonl`; `skill_review_runner._append_terminal_history` projects terminal identities to `state/skill_review_root_tasks.jsonl` | `skill_readiness._skill_names_from_review_history` reads a bounded newest-first suffix for acceptance | Derived index is append-only and idempotent by root/task/outcome identity; `SKILL_REVIEW_ROOT_TASKS_WARN_BYTES` warns at 20 MB |
 | Task/project execution | Canonical task result plus promoted child artifacts and summaries | Status cards, terminal rows, and Main/Project summary projections | Canonical promotion precedes child-drive GC; disposable task scratch follows the unified retention owner |
 
-### Invariant: Continuation authority and bounded Main projection
+### Invariant: Continuation authority and bounded role projections
 
 Continuation is an explicit relation, not an inferred chat-memory feature: the
 router contract requires `predecessor_task_id` (`""` = fresh; omission or
@@ -245,7 +245,7 @@ the result owner with its exact `get_task_result(include_authority=True)`
 source; the projection thresholds only the closed raw keys `result` and
 `final_answer`, at `context_budget.PREDECESSOR_RESULT_INLINE_CHARS`.
 
-The startup injection is a bounded continuation ENVELOPE, not a body copy,
+The root startup injection is a bounded continuation ENVELOPE, not a body copy,
 minted by the one producer `contracts.task_contract.bounded_continuation_envelope`:
 the predecessor's contract core inherits without its nested
 `predecessor_authority`, every field is whole-or-pointer against one strict
@@ -255,6 +255,15 @@ stay the untouched SSOT. Disclosed: the bound is per-field, so a pathological
 row can still exceed the wire budget — the refusal is typed and loud rather
 than a silent $0. No hop cap exists anywhere: depth belongs to the mind, the
 floor only keeps bodies off the wire.
+
+Children and external work orders use the pure, idempotent
+`main_context_authority.project_helper_predecessor_authority`: answer, contract
+core, owner words, fingerprint/source and omitted fields with serialized sizes.
+Declared inputs retain only the reference, preserving lineage reads. Apply the
+projection AFTER the parent contract spread; direct sessions use the same function.
+Keep the original envelope kind so existing previews, including their wrapper,
+survive `build_task_contract` unchanged. Canonical results and root contracts never
+change; a brief cannot stand in for the omitted evidence.
 
 Provider context overflow is a typed recovery fact: after the useful reclaim
 and one strictly-smaller same-route retry, a final `context_overflow` skips the
