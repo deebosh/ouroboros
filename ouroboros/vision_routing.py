@@ -9,8 +9,8 @@ record means unknown, and unknown never withholds the owner's image: the route
 receives the pixels and answers for itself. A Claudexor route answers from its
 account's catalog (``provider_models.supports_vision``).
 
-``prepare_messages_for_send`` is the only place that turns image blocks into
-captions or markers; transport builders encode what they are given. For a Main
+``prepare_messages_for_send`` decides what each send carries; transport builders
+encode it (a lane that cannot carry bytes marks them as its own limit). For a Main
 send the owner's image mode decides:
 
 * Auto: pixels unless the route's own metadata says no; then a caption from the
@@ -472,6 +472,8 @@ def note_candidate_images(raw_sha256: Optional[str], payload: Any) -> None:
     key = str(raw_sha256 or "")
     try:
         with _CANDIDATE_IMAGES_LOCK:
+            if key in _CANDIDATE_IMAGES:  # a re-sent candidate (a 5xx series) becomes the newest entry again
+                _CANDIDATE_IMAGES[key] = _CANDIDATE_IMAGES.pop(key)
             if not key or key in _CANDIDATE_IMAGES or not isinstance(payload, Mapping):
                 return
         found = frozenset(_url_digest(url) for part in (payload.get("messages"), payload.get("input"))
@@ -490,30 +492,36 @@ def candidate_images(raw_sha256: Optional[str]) -> Optional[frozenset]:
         return _CANDIDATE_IMAGES.get(str(raw_sha256 or ""))
 
 
-def image_route_key(model: str) -> str:
-    """The vision route a refusal belongs to: the resolved route's image scope and model.
+def image_route_key(model: str, role: str = "vision", pin: Optional[str] = None) -> str:
+    """The vision route a refusal belongs to: the resolved route's image scope, model and account.
 
-    Another model, provider, endpoint or routing option is another route (a fallback
-    never inherits a refusal); the accounts of one route share it. "" for our local lane.
+    Another model, provider, endpoint, routing option or account is another route: a fallback
+    never inherits a refusal, and equal model strings with different accounts are different
+    routes (``model_slots.route_binding``: ``role``'s account unless ``pin`` names one; Auto
+    and API routes have none). "" for our local lane.
     """
     name = str(model or "").strip()
     if not name or provider_for_model(name) == "local":
         return ""
     try:
         from ouroboros.llm import LLMClient
+        from ouroboros.model_slots import route_binding
 
         target = LLMClient()._resolve_remote_target(name)
+        account = route_binding(name, False, role, overrides=None if pin is None else {
+            role: {"model_account_override": pin}})[2]
     except Exception:
         return name
-    return "|".join((image_route_scope(target) or str(target.get("provider") or ""),
-                     str(target.get("source") or ""), str(target.get("resolved_model") or name)))
+    return "|".join((image_route_scope(target) or str(target.get("provider") or ""), str(target.get("source") or ""),
+                     str(target.get("resolved_model") or name), account))
 
 
-def _route_refusals(accumulated_usage: Any, model: str) -> Dict[str, Dict[str, Any]]:
+def _route_refusals(accumulated_usage: Any, model: str, role: str = "vision",
+                    pin: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
     usage = accumulated_usage if isinstance(accumulated_usage, dict) else {}
     records = [record for record in (usage.get(REFUSED_IMAGES_KEY), usage.get(_PENDING_REFUSALS_KEY))
                if isinstance(record, dict) and record]
-    route, merged = (image_route_key(model) if records else ""), {}
+    route, merged = (image_route_key(model, role, pin) if records else ""), {}
     for record in records:
         merged.update(record.get(route) or {})
     return merged
@@ -524,7 +532,8 @@ def refused_images(routing: VisionRoutingContext) -> Dict[str, Dict[str, Any]]:
 
     Such an image takes its mode's text instead of pixels (Auto and Caption: a caption
     from a route that did not refuse it, else a marker; Inline: a marker)."""
-    return _route_refusals(routing.accumulated_usage, routing.model)
+    return _route_refusals(routing.accumulated_usage, routing.model, routing.model_role or "main",
+                           routing.model_account_override)
 
 
 def _refusal_answer(facts: Mapping[str, Any]) -> str:
@@ -948,8 +957,14 @@ def retry_refused_image_round(ctx: Any, failed: Any) -> Optional[Tuple[Any, Any]
     from ouroboros.loop_llm_call import RETRY_ATTEMPTS_SPENT_KEY, RETRY_WALL_EXHAUSTED_KEY
     from ouroboros.usage_accounting import PhysicalAttemptPreconditionFailed
 
-    digests = refusal.pop("digests")
-    route, facts = image_route_key(ctx.active_model), {**refusal, "via": "main", "model": str(ctx.active_model or "")}
+    from ouroboros.model_slots import task_model_binding
+    from ouroboros.model_wait import current_model_wait
+
+    digests, waiter = refusal.pop("digests"), current_model_wait()  # the round's own role and account binding:
+    role, pin = task_model_binding({"model_role": getattr(ctx, "model_role", ""), "task_metadata": getattr(  # as sent
+        ctx.tools._ctx, "task_metadata", {})}, context_fit_plan=getattr(ctx, "context_fit_plan", None) or getattr(
+        ctx.tools._ctx, "context_fit_plan", None), overrides=waiter.overrides if waiter else None)
+    route, facts = image_route_key(ctx.active_model, role, pin), {**refusal, "via": "main", "model": str(ctx.active_model or "")}
     keys = (*_ROUND_ERROR_KEYS, RETRY_WALL_EXHAUSTED_KEY, RETRY_ATTEMPTS_SPENT_KEY)
     first = {key: usage[key] for key in keys if key in usage}  # the first error, before the retry overwrites it
     usage[_PENDING_REFUSALS_KEY] = {route: {digest: dict(facts) for digest in digests}}

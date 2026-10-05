@@ -23,7 +23,7 @@ def _gateway_models(monkeypatch, items):
 
 
 def test_task_start_probe_records_a_compatible_gateways_image_input(tmp_path, monkeypatch):
-    """v3-C: the window probe already reads the gateway's /models; the same response
+    """The window probe already reads the gateway's /models; the same response
     states image input for the exact route, also when it publishes no window."""
     from ouroboros.provider_models import supports_vision
 

@@ -249,10 +249,23 @@ def test_the_retry_wall_tells_a_spent_attempt_budget_from_a_deadline_stop(root, 
     loop_llm_call.call_llm_with_retry(llm, _messages(), MAIN, None, "low", 3, tmp_path, "t", 1, None, spent, "task")
     assert spent[RETRY_WALL_EXHAUSTED_KEY] is True and spent[RETRY_ATTEMPTS_SPENT_KEY] is True
 
+    # One attempt is no series: a 5xx blip on a fallback-chain candidate (attempt_cap=1) keeps its pixels.
+    single: dict = {}
+    loop_llm_call.call_llm_with_retry(llm, _messages(), MAIN, None, "low", 3, tmp_path, "t", 1, None, single, "task",
+                                      attempt_cap=1)
+    assert single[RETRY_WALL_EXHAUSTED_KEY] is True and single[RETRY_ATTEMPTS_SPENT_KEY] is False
+    assert vr.image_refusal({**single, "_last_llm_error_kind": "provider_transient"}, _capture(503)) is None
+
     monkeypatch.setattr(loop_llm_call, "_sleep_within_deadline", lambda *_a, **_k: False)
     stopped: dict = {}
     loop_llm_call.call_llm_with_retry(llm, _messages(), MAIN, None, "low", 3, tmp_path, "t", 1, None, stopped, "task")
     assert stopped[RETRY_WALL_EXHAUSTED_KEY] is True and stopped[RETRY_ATTEMPTS_SPENT_KEY] is False
+    # The marker never outlives its invocation: a usable answer clears both twins.
+    ok = {"_llm_retry_attempts_spent": True}
+    llm_ok = type("LLM", (), {"chat": staticmethod(lambda **_kw: ({"role": "assistant", "content": "fine"}, {})),
+                              "default_model": lambda self: MAIN})()
+    loop_llm_call.call_llm_with_retry(llm_ok, _messages(), MAIN, None, "low", 3, tmp_path, "t", 1, None, ok, "task")
+    assert RETRY_ATTEMPTS_SPENT_KEY not in ok and RETRY_WALL_EXHAUSTED_KEY not in ok
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +445,25 @@ def test_a_fresh_confirmed_yes_is_never_overwritten_by_a_refusal(root, monkeypat
     ctx.messages.append({"role": "user", "content": [{"type": "image_url", "image_url": {"url": IMAGE_B}}]})
     ctx.round_idx = 2
     assert loop._call_round_model(ctx)[0] is not None and provider.sent[2:] == [{DIGEST_B}]
+
+
+def test_a_refusal_belongs_to_its_account_not_to_every_account_of_the_model(root, monkeypatch):
+    """Equal model strings with different accounts are different routes (``model_slots.route_binding``)."""
+    from tests.test_llm_claudexor import MODEL as SUBSCRIPTION
+
+    monkeypatch.setenv("OUROBOROS_MODEL_ACCOUNTS", json.dumps({"main": "main-a", "vision": "vision-b"}))
+    usage: dict = {vr.REFUSED_IMAGES_KEY: {vr.image_route_key(SUBSCRIPTION, "main"): {DIGEST_A: {"status": 400}}}}
+    main_send = vr.VisionRoutingContext(model=SUBSCRIPTION, llm=_Provider(root, None), accumulated_usage=usage)
+    assert set(vr.refused_images(main_send)) == {DIGEST_A}, "the refusing account keeps its memory"
+    refused_by = vr.refusal_check(usage, [DIGEST_A])
+    assert refused_by(SUBSCRIPTION) == "", "the vision account never refused this image: it may still take it"
+    on_main_account = vr.VisionRoutingContext(model=SUBSCRIPTION, llm=_Provider(root, None), accumulated_usage=usage,
+                                              model_role="vision", model_account_override="main-a")
+    assert set(vr.refused_images(on_main_account)) == {DIGEST_A}, "the same account through another role is that route"
+    vr.record_image_refusal(usage, SUBSCRIPTION, [DIGEST_A], {"status": 400})  # now the vision account refused it too
+    assert "refused this image" in refused_by(SUBSCRIPTION)
+    # An API route has no account: a pin or a role never splits its memory.
+    assert vr.image_route_key(MAIN, "main", "any-pin") == vr.image_route_key(MAIN)
 
 
 def test_a_fallback_route_never_inherits_another_routes_refusal(root):

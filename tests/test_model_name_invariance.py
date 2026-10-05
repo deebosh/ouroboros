@@ -181,7 +181,6 @@ class _CaptionModel:
 
 @pytest.fixture
 def empty_evidence(monkeypatch, tmp_path):
-    from ouroboros import provider_models
     from ouroboros.llm import LLMClient
 
     settings = {
@@ -197,8 +196,7 @@ def empty_evidence(monkeypatch, tmp_path):
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("OUROBOROS_MODEL_FALLBACK", raising=False)
     # Whatever in-process capability memory the code keeps starts empty.
-    for owner, name, empty in ((provider_models, "_VISION_OVERLAY", {}),
-                               (LLMClient, "_SUPPORTED_PARAMS_CACHE", {}),
+    for owner, name, empty in ((LLMClient, "_SUPPORTED_PARAMS_CACHE", {}),
                                (LLMClient, "_SUPPORTED_PARAMS_FETCHED", False),
                                (LLMClient, "_CAPABILITIES_FETCH_OK", False),
                                (LLMClient, "_CONTEXT_LENGTH_CACHE", {})):

@@ -1437,7 +1437,7 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
     refused = ctx.accumulated_usage.pop(REFUSED_CANDIDATE_KEY, None)  # a local pre-dispatch refusal's own facts
     from ouroboros.vision_routing import retry_refused_image_round  # the capture is read right after the send
     retried = None if msg is not None else retry_refused_image_round(ctx, _loop().last_physical_attempt_capture())
-    if retried is not None:  # one same-round retry without a refused image: no fallback route, no cooldown
+    if retried is not None:  # the retry ran: success stays on this route; a failure recovers as before
         return (*retried, ctx.active_context_mode)
     if msg is not None or str(ctx.accumulated_usage.get("_last_llm_error_kind") or "") != "context_overflow":
         return msg, cost, ctx.active_context_mode

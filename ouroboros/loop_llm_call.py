@@ -134,7 +134,7 @@ def fold_retrieval_usage(accumulated_usage: Dict[str, Any], usage: Dict[str, Any
 # request is retried on the SAME model.
 _TRANSIENT_RETRY_KINDS = frozenset({"provider_transient", "provider_incomplete_response"})
 # OB-01: stamped when THIS invocation spent its same-model retry wall without a usable response; entry-cleared
-# per invocation; PERMANENT classes leave it unspent. Its twin, set with it: the attempt budget (not a deadline) ended it.
+# per invocation; PERMANENT classes leave it unspent. Its twin: a series of 2+ attempts (not a deadline) ended it.
 RETRY_WALL_EXHAUSTED_KEY, RETRY_ATTEMPTS_SPENT_KEY = "_llm_retry_wall_exhausted", "_llm_retry_attempts_spent"
 # Error kinds that put a model on the F1 fallback cooldown. Superset of the same-model
 # retry kinds: a body-error 429 (HTTP 200 with an error in the body — the canonical
@@ -1043,7 +1043,7 @@ def _stop_after_llm_error(ctx: _LlmErrorContext) -> bool:
             round_id=ctx.round_id, round_idx=ctx.round_idx, attempt=ctx.attempt,
             model=ctx.model, error_kind=error_kind,
         )
-    accumulated_usage.update({RETRY_WALL_EXHAUSTED_KEY: True, RETRY_ATTEMPTS_SPENT_KEY: ctx.attempt >= attempt_budget - 1})
+    accumulated_usage.update({RETRY_WALL_EXHAUSTED_KEY: True, RETRY_ATTEMPTS_SPENT_KEY: 1 < attempt_budget <= ctx.attempt + 1})
     return True
 
 
@@ -1328,7 +1328,7 @@ def call_llm_with_retry(
     processing_preference = resolve_processing_preference(model_role, override=processing_preference)
     _replace_response_meta(response_meta_out)
     drive_root = pathlib.Path(drive_logs).parent
-    for key in (RETRY_WALL_EXHAUSTED_KEY, REFUSED_CANDIDATE_KEY, REBOUND_PHYSICAL_CONTEXT_KEY):
+    for key in (RETRY_WALL_EXHAUSTED_KEY, RETRY_ATTEMPTS_SPENT_KEY, REFUSED_CANDIDATE_KEY, REBOUND_PHYSICAL_CONTEXT_KEY):
         accumulated_usage.pop(key, None)  # last-invocation markers (see the keys)
     execution_id = str(accumulated_usage.setdefault("execution_id", new_execution_id()))
     round_id = f"{execution_id}:round:{round_idx}"
@@ -1505,7 +1505,7 @@ def call_llm_with_retry(
                 if _empty_response_wall_spent(is_provider_glitch, permanent, usage):
                     accumulated_usage[RETRY_WALL_EXHAUSTED_KEY] = True
                 return None, cost
-            for stale in ("execution_status", "result_status", "reason_code", RETRY_WALL_EXHAUSTED_KEY, TRANSPORT_DEATHS_KEY, "_pending_transport_outcome"):
+            for stale in ("execution_status", "result_status", "reason_code", RETRY_WALL_EXHAUSTED_KEY, RETRY_ATTEMPTS_SPENT_KEY, TRANSPORT_DEATHS_KEY, "_pending_transport_outcome"):
                 accumulated_usage.pop(stale, None)  # a USABLE response closes the round's repeat record
             accumulated_usage["rounds"] = accumulated_usage.get("rounds", 0) + 1
             cached_tokens = int(usage.get("cached_tokens") or 0)

@@ -20,7 +20,7 @@ confirmed no.
 Metadata enters through the writer Ouroboros already runs (the OpenRouter
 ``/models`` read in ``llm_capability_policy``); the rows come from a recorded
 catalog response (``tests/fixtures/openrouter_models_vision_rows.json``). Memory,
-the OpenRouter overlay, the evidence store and the network start empty in every
+the evidence store and the network start empty in every
 test, and the send path is required to make no network call.
 """
 
@@ -54,23 +54,8 @@ PNG = b"\x89PNG\r\n\x1a\nfixture-image"
 PNG_B64 = base64.b64encode(PNG).decode()
 IMAGE_URL = f"data:image/png;base64,{PNG_B64}"
 
-PENDING_C2 = True
-# PENDING_C2 -- observable details the C2/C3 commits settle; adjust them HERE, never the contracts:
-#   * TRANSPORT_WORDS: a marker for our own transport limit names the transport (lane), not the model
-#     (test_local_lane_marker_names_the_transport, test_gigachat_*_marker_names_the_transport).
-#   * test_fresh_route_metadata_no_auto_marker_names_source_and_date expects the marker to name the
-#     metadata source ("OpenRouter") and the observation date (UTC, YYYY-MM-DD).
-#   * _house_clock_advanced: the clocks the evidence reader consults (expiry test).
-#   * test_catalog_row_parsing drives the one pure parser through the existing OpenRouter writer and
-#     assumes the parser reads every documented shape on any received row (incl. Anthropic's
-#     capabilities.image_input object); repoint _verdict_after_receiving to the parser if C2 names it.
-#   * test_vlm_explicit_confirmed_no_model_is_called_and_refusal_is_typed accepts any error ToolResult
-#     whose text or meta carries the provider's status and words (C2: VLM_ERROR with meta from the capture).
-#   * test_a_failed_send_preparation_never_sends_pixels breaks `vision_routing.prepare_messages_for_send`,
-#     the entry point the Main loop seam calls today.
-#   * the `cold` fixture resets in-process capability memory by name; a C2 evidence cache joins its list.
-# Not covered here: the one same-round retry after a real refusal, its marker in Inline mode, and excluding
-# the route that refused THIS image even from an explicit vision slot (tests/test_image_refusal_retry.py).
+# A marker for our own transport limit names the transport (lane), not the model. The one same-round
+# retry after a real refusal and the refused-image memory are pinned in tests/test_image_refusal_retry.py.
 TRANSPORT_WORDS = ("transport", "lane")
 
 
@@ -80,8 +65,7 @@ TRANSPORT_WORDS = ("transport", "lane")
 
 @pytest.fixture
 def cold(monkeypatch, tmp_path):
-    """No capability fact anywhere: memory caches, OpenRouter overlay, evidence store, network."""
-    from ouroboros import provider_models
+    """No capability fact anywhere: memory caches, evidence store, network."""
     from ouroboros.llm import LLMClient
 
     settings = {
@@ -98,9 +82,7 @@ def cold(monkeypatch, tmp_path):
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("OUROBOROS_MODEL_FALLBACK", raising=False)
     # Whatever in-process capability memory the code keeps starts empty.
-    # PENDING_C2: an in-process evidence cache added by C2 joins this list.
-    for owner, name, empty in ((provider_models, "_VISION_OVERLAY", {}),
-                               (LLMClient, "_SUPPORTED_PARAMS_CACHE", {}),
+    for owner, name, empty in ((LLMClient, "_SUPPORTED_PARAMS_CACHE", {}),
                                (LLMClient, "_SUPPORTED_PARAMS_FETCHED", False),
                                (LLMClient, "_CAPABILITIES_FETCH_OK", False),
                                (LLMClient, "_CONTEXT_LENGTH_CACHE", {})):
@@ -248,7 +230,7 @@ def _vision_query_payload(monkeypatch, client, model: str) -> dict:
 
 @contextlib.contextmanager
 def _house_clock_advanced(monkeypatch, hours: float):
-    """PENDING_C2: shift the wall clocks an evidence reader may consult by ``hours``."""
+    """Shift the wall clocks an evidence reader may consult by ``hours``."""
     import time
 
     from ouroboros import deadline_utils, utils
@@ -592,7 +574,7 @@ PARSER_CASES = [
 
 
 def _verdict_after_receiving(monkeypatch, rows, model: str):
-    """PENDING_C2: the parser seen through the existing OpenRouter writer and the oracle."""
+    """The parser seen through the existing OpenRouter writer and the oracle."""
     from ouroboros.provider_models import supports_vision
 
     _receive_openrouter_catalog(monkeypatch, rows)
@@ -694,7 +676,7 @@ def test_caption_mode_vision_query_still_sends_pixels_to_its_caption_model(cold,
 def test_a_failed_send_preparation_never_sends_pixels(cold, monkeypatch, tmp_path, mode):
     """Unknown evidence may send; a failure to execute the owner's mode may not.
 
-    PENDING_C2: if the Main loop seam calls another projection entry point, break that one.
+    It breaks ``vision_routing.prepare_messages_for_send``, the entry point the Main loop seam calls.
     """
     from ouroboros import loop_llm_call, vision_routing
 
