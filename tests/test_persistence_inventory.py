@@ -604,7 +604,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # journal's scan state, the ``records.jsonl`` row).
 # 312 -> 314 (target merge 8d612997c): the two paths the target added on its own
 # 308 -> 310 step land beside the memory change's four.
-EXPECTED_SCAN_PATHS = 314
+# 314 -> 315 (C4 restart/exit): ``state/owned_processes.json``, the installation's ownership set the
+# exit stop reads instead of walking data/state; its own section-2 row.
+EXPECTED_SCAN_PATHS = 315
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

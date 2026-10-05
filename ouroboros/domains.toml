@@ -323,6 +323,7 @@ D20 = "Presence"
 "ouroboros/openrouter_attribution.py" = "D02"
 "ouroboros/outcome_receipt_store.py" = "D01"
 "ouroboros/outcomes.py" = "D01"
+"ouroboros/owned_shutdown.py" = "D09"  # the ownership set and the one bounded exit stop (§9)
 "ouroboros/owner_hurry.py" = "D09"
 "ouroboros/owner_source.py" = "D09"
 "ouroboros/owner_quiz.py" = "D09"  # F6 sync (#Q-2b): owner quiz cards, structural expiry with the authoring task

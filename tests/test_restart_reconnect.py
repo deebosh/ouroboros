@@ -439,7 +439,7 @@ def test_owner_restart_cleanup_disables_second_custody_reconcile(monkeypatch):
     monkeypatch.setattr(server._historical_audit, "stop", lambda: None)
     monkeypatch.setattr(server, "_managed_update_pending_kwargs", lambda: {})
     monkeypatch.setattr(server, "_stop_owned_daemon_for_new_pin", lambda: None)
-    monkeypatch.setattr(server, "_stop_owned_local_processes", lambda *a, **k: None)
+    monkeypatch.setattr(server, "stop_owned_work", lambda *a, **k: None)
     monkeypatch.setattr("multiprocessing.active_children", lambda: [])
     monkeypatch.setattr("ouroboros.extension_companion.panic_kill_all", lambda: None)
     calls = []

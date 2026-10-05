@@ -126,10 +126,12 @@ def _stop_owned_work(ctx: Any) -> list:
     owner-only ``hold_never_started`` (the never-started queue is held under
     the same ids, not cancelled) and the typed ``owner_restart`` cause every
     task it settles records (an earlier Stop keeps its own), delegated-run cancellation
-    through the public owner-gone seam over the attach-only gateway, and the
-    attested owned-daemon stop exactly as Panic makes it. Between the cancel
-    intents and that stop nothing may call ``ensure_owned_gateway`` — it would
-    start a dead daemon — which is what the two flags above guarantee.
+    through the public owner-gone seam over the attach-only gateway, the
+    attested owned-daemon stop exactly as Panic makes it, and finally the
+    generation's one bounded stop of its owned processes (``stop_owned_work``),
+    which the teardown and the restart watcher later join. Between the cancel
+    intents and the daemon stop nothing may call ``ensure_owned_gateway`` — it
+    would start a dead daemon — which is what the two flags above guarantee.
 
     Returns the owned live task ids it addressed — captured ONCE, before the
     stop makes them unreadable — so the caller can tell the owner what was
@@ -167,6 +169,9 @@ def _stop_owned_work(ctx: Any) -> list:
         log.warning("Owner restart: delegated-run cancellation did not complete; custody retained",
                     exc_info=True)
     _stop_owned_daemon("Owner restart")
+    from ouroboros.owned_shutdown import stop_owned_work
+
+    stop_owned_work(DATA_DIR)  # unconfirmed records stay stamped for the next start; never a veto
     return stopped
 
 

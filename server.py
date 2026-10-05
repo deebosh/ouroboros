@@ -20,6 +20,7 @@ import uvicorn
 from ouroboros.server_control import (PanicIngress, execute_panic_stop as _execute_panic_stop_impl,
                                       restart_current_process as _restart_current_process_impl)
 from ouroboros.startup_historical_audit import audit as _historical_audit
+from ouroboros.owned_shutdown import finish_unconfirmed_stops, stop_owned_work
 from ouroboros.server_auth import (
     NetworkAuthGate,
     get_network_auth_startup_warning,
@@ -1304,6 +1305,9 @@ async def lifespan(app):
         and not os.environ.get("OUROBOROS_DATA_DIR")
     )
 
+    if not pytest_default_real_data_dir:  # before admission and any extension/replacement process (§9)
+        finish_unconfirmed_stops(lifespan_drive_root)
+
     # Source-mode must seed native skills too, matching packaged launcher layout.
     try:
         if pytest_default_real_data_dir:
@@ -1542,7 +1546,7 @@ async def lifespan(app):
             get_manager().stop_server()
         except Exception:
             pass
-        _stop_owned_local_processes(lifespan_drive_root)
+        stop_owned_work(lifespan_drive_root)  # the generation's one bounded stop; a started one is joined
         try:
             from ouroboros.extension_companion import get_global_supervisor
             supervisor = get_global_supervisor()
@@ -1590,25 +1594,6 @@ def _restart_cleanup_kwargs() -> dict:
     return {}
 
 
-def _stop_owned_local_processes(drive_root: pathlib.Path, *, wait: bool = True) -> None:
-    """Shared shutdown order; the emergency path keeps its non-waiting policy."""
-    try:
-        from ouroboros.tools.shell import kill_all_tracked_subprocesses
-        kill_all_tracked_subprocesses()
-    except Exception:
-        log.debug("Tracked shell cleanup failed", exc_info=True)
-    try:
-        from ouroboros.workspace_executor import kill_all_foreground
-        kill_all_foreground(drive_root, wait=wait)
-    except Exception:
-        log.debug("Foreground executor cleanup failed", exc_info=True)
-    try:
-        from ouroboros.tools.services import kill_all_services
-        kill_all_services(drive_root, wait=wait)
-    except Exception:
-        log.debug("Owned service cleanup failed", exc_info=True)
-
-
 def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
     """Kill child processes, workers, companions, and runtime port holders."""
     _historical_audit.stop()  # forced path may skip lifespan's finally; stop never waits
@@ -1635,7 +1620,7 @@ def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
         except Exception:
             log.critical("Planned restart: engine pin check raised; the owned daemon is left serving",
                          exc_info=True)
-    _stop_owned_local_processes(DATA_DIR, wait=False)
+    stop_owned_work(DATA_DIR)  # the same one stop: joined until it completes or its deadline
     import multiprocessing
     from ouroboros.platform_layer import force_kill_pid, kill_process_on_port
     for child in multiprocessing.active_children():
@@ -1728,8 +1713,8 @@ def main() -> int:
 
         server.should_exit = True
 
-        # This bounds the graceful wait, not full cleanup: retained executor
-        # records still belong to this stop, including backend-only processes.
+        # This bounds the graceful wait; the owned-work stop below has its own
+        # deadline inside the launcher's grace, then this thread exits.
         force_exit_timeout_sec = 5 if _LAUNCHER_MANAGED else 30
         if not _uvicorn_exited.wait(timeout=force_exit_timeout_sec):
             log.warning("Uvicorn did not exit within %ss; finishing cleanup before restart",

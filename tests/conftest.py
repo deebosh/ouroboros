@@ -795,7 +795,8 @@ def _isolate_workspace_executor_globals():
     (services._LOCK is non-reentrant, so calling a service helper there would deadlock).
     """
     try:
-        from ouroboros import workspace_executor as we
+        from ouroboros import owned_shutdown, workspace_executor as we
+        owned_shutdown._GENERATION_STOP = owned_shutdown._Stop()  # the one owned-work stop is per process
     except Exception:
         we = None
     try:
