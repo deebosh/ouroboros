@@ -805,7 +805,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     // hidden page skips it altogether, since every page show reloads.
     const settingsPageActive = () => state?.activePage === 'settings';
 
-    async function loadSettings() {
+    async function loadSettings({ awaitEnrichment = true } = {}) {
         resetSecretReveals(page);
         const sequence = ++loadSequence;
         const restartSequence = ++restartReadSequence;
@@ -835,22 +835,30 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         // not delay the clean baseline above or absorb an owner edit made while
         // it was pending, so it lands only on an unchanged draft.
         const isCurrent = () => sequence === loadSequence && revision === draftRevision;
-        const enrichment = [reloadReviewerSlots({ isCurrent }), reloadSubagentsSection()];
-        const extData = await extensionsRead;
-        if (extData && isCurrent()) {
-            renderRequestedSkillSecrets(page, extData.skills || [], data);
-            const sections = Array.isArray(extData.live?.settings_sections) ? extData.live.settings_sections : [];
-            enrichment.push(renderExtensionSettingsSections(page, sections, { isCurrent }));
+        const enriched = (async () => {
+            const enrichment = [reloadReviewerSlots({ isCurrent }), reloadSubagentsSection()];
+            const extData = await extensionsRead;
+            if (extData && isCurrent()) {
+                renderRequestedSkillSecrets(page, extData.skills || [], data);
+                const sections = Array.isArray(extData.live?.settings_sections) ? extData.live.settings_sections : [];
+                enrichment.push(renderExtensionSettingsSections(page, sections, { isCurrent }));
+            }
+            await Promise.all(enrichment);
+            if (!isCurrent()) {
+                updateSettingsDirtyState();
+                return false;
+            }
+            // Optional enrichment belongs in a still-clean baseline, never in an
+            // owner edit made while one of those reads was pending.
+            setSettingsCleanBaseline();
+            return true;
+        })();
+        // A confirmed Save waits for the document only; its enrichment lands behind the same guards.
+        if (!awaitEnrichment) {
+            enriched.catch(() => {});
+            return true;
         }
-        await Promise.all(enrichment);
-        if (!isCurrent()) {
-            updateSettingsDirtyState();
-            return false;
-        }
-        // Optional enrichment belongs in a still-clean baseline, never in an
-        // owner edit made while one of those reads was pending.
-        setSettingsCleanBaseline();
-        return true;
+        return enriched;
     }
 
     async function reloadSettingsWithFeedback() {
@@ -1387,7 +1395,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
                 saveOutcomeUnknown ||= failure.unknown;
             }
             const ownerError = runtimeModeError || autoGrantError || contextModeError || safetyModeError;
-            const draftKept = ownerError || sentRevision !== draftRevision || !(await loadSettings());
+            const draftKept = ownerError || sentRevision !== draftRevision || !(await loadSettings({ awaitEnrichment: false }));
             syncAutoGrantBridgeState();
             let statusMsg;
             let statusType = 'ok';

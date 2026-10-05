@@ -258,14 +258,26 @@ def test_settings_paints_and_saves_while_the_installed_skill_list_is_held(direct
             page.locator("#s-gh-repo").fill("owner/held-proof")
             expect(page.locator("#settings-unsaved-indicator")).to_have_class(re.compile(r"\bis-visible\b"))
             held.pop().fulfill(json=listing)
-            behavior["hold"] = False
             expect(page.locator("#s-gh-repo")).to_have_value("owner/held-proof")
             expect(page.locator("#settings-unsaved-indicator")).to_have_class(re.compile(r"\bis-visible\b"))
+            # A confirmed Save waits for the settings document only: its reload's list read stays
+            # held, yet the save completes, Save is usable again and the owner can leave the page.
             page.click("#btn-save-settings")
             expect(page.locator("#settings-status")).to_contain_text("Settings saved", timeout=20_000)
             assert saves[-1]["GITHUB_REPO"] == "owner/held-proof"
-            expect(rows).to_have_count(1, timeout=20_000)
+            for _ in range(200):
+                if held:
+                    break
+                page.wait_for_timeout(50)
+            assert len(held) == 1, "the post-save reload reads the list once more, still held"
+            expect(page.locator("#btn-save-settings")).to_be_enabled()
             expect(page.locator("#settings-unsaved-indicator")).not_to_have_class(re.compile(r"\bis-visible\b"))
+            page.click('[data-nav-page="chat"]')
+            expect(page.locator("#page-chat")).to_be_visible(timeout=10_000)
+            behavior["hold"] = False
+            held.pop().fulfill(json=listing)
+            page.click('[data-nav-page="settings"]')
+            expect(rows).to_have_count(1, timeout=20_000)
         finally:
             for route in held:
                 route.abort()
