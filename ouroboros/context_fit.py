@@ -41,19 +41,6 @@ ContextProfile = Literal["owner_max", "owner_low", "owner_nano", "task_local_low
 MeasurementBasis = Literal["fresh_route_usage", "fresh_model_usage", "cold_estimate"]
 
 
-@dataclass(frozen=True)
-class CallContextFit:
-    """Arithmetic for one prepared physical input, never dispatch authority."""
-
-    effective_max_tokens: int
-    strict_bound_proven: bool
-    fit_status: str
-    missing_evidence: Tuple[str, ...]
-    input_tokens: int
-    bound_tokens: Optional[int]
-    free_tokens: Optional[int]
-
-
 def project_tool_result_batch(
     results: List[Dict[str, Any]], messages: List[Dict[str, Any]], tool_schemas: list,
     *, drive_root: pathlib.Path, task_id: str,
@@ -121,48 +108,6 @@ def project_tool_result_batch(
     return rows, {"status": "projected" if final.get("accepted") is True else "minimum_view_unfit", "fit": final}
 
 
-def resolve_call_context_fit(
-    *, input_tokens: int, input_is_exact: bool, caller_max_tokens: int,
-    total_target_tokens: Optional[int], route_capacity_tokens: Optional[int],
-    minimum_free_tokens: int, tokenizer_template_provenance: Optional[Mapping[str, Any]],
-    output_limit_enforced: bool, reasoning_included_in_limit: Optional[bool],
-    route_capacity_confirmed: bool = False,
-) -> CallContextFit:
-    """Choose one output allowance after actual route/template preparation.
-
-    Positive capacity values are sizing observations; only the adapter's
-    separately attested facts establish a strict claim. Unknown evidence never
-    prohibits a route. Callers keep their existing recovery/admission policy;
-    this function creates no send, retry, reservation, or continuation identity.
-    """
-    if input_tokens < 0 or caller_max_tokens < 0 or minimum_free_tokens < 0:
-        raise ValueError("context measurements and token allowances must be nonnegative")
-    bounds = [int(value) for value in (total_target_tokens, route_capacity_tokens)
-              if value is not None and value > 0]
-    bound = min(bounds) if bounds else None
-    free = bound - input_tokens if bound is not None else None
-    effective = min(caller_max_tokens, max(0, free)) if free is not None else caller_max_tokens
-    missing = []
-    if not input_is_exact:
-        missing.append("exact_input_measurement")
-    if not tokenizer_template_provenance:
-        missing.append("tokenizer_template_provenance")
-    if not route_capacity_confirmed or not route_capacity_tokens:
-        missing.append("confirmed_serving_capacity")
-    if not output_limit_enforced:
-        missing.append("enforced_output_limit")
-    if reasoning_included_in_limit is not True:
-        missing.append("reasoning_within_measured_window")
-    fit_status = ("unknown_capacity" if free is None else "unfit" if free < 0
-                  else "insufficient_headroom" if free < minimum_free_tokens else "fits")
-    # An estimate alone cannot prescribe a zero-output physical request. Keep
-    # the caller's allowance and disclose that the proposed view needs fitting.
-    if not input_is_exact and effective == 0 and caller_max_tokens > 0:
-        effective = caller_max_tokens
-    return CallContextFit(effective, fit_status == "fits" and not missing,
-                          fit_status, tuple(missing), input_tokens, bound, free)
-
-
 @dataclass(frozen=True)
 class ContextFitProjection:
     """One deterministic Low/Max rendering of a shared immutable context core."""
@@ -172,7 +117,6 @@ class ContextFitProjection:
     estimated_tokens: int
     calibrated_tokens: int
     calibration_ratio: float
-    fits_known_window: Optional[bool]
     user_content_json: Optional[str] = None
     # The memory view's fact of this projection (``memory_floor.view_receipt``): role,
     # room, floor steps and boundaries, block sizes; empty without a view (declared input).
@@ -201,8 +145,8 @@ class MainFitMeasurement:
     round_id: str
     profile: ContextProfile
     rendered_mode: Literal["max", "low", "nano"]
-    estimated_input_tokens: int
-    response_reserve_tokens: int
+    estimated_input_tokens: int  # calibrated: the estimate times the fresh density
+    response_reserve_tokens: int  # the reply floor the fit leaves (Nano: min(8,192, ceiling); else the ceiling)
     target_total_tokens: Optional[int]
     capacity_total_tokens: Optional[int]
     measurement_basis: MeasurementBasis
@@ -213,6 +157,10 @@ class MainFitMeasurement:
     # Low-water margin the goal carries ABOVE the deficit (0 without a deficit):
     # the pass is deficit-triggered but sized to land below the boundary.
     low_water_margin_tokens: int = 0
+    raw_input_tokens: int = 0  # the same estimate before the density
+    # The reply allowance Main PLANS for this candidate (``context_budget.reply_allowance_tokens``);
+    # the send finalizer computes the sent value on the sealed candidate with the same rule.
+    reply_allowance_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -279,8 +227,7 @@ class ContextFitPlan:
                                      memory_facts=facts, estimated_tokens=_request_tokens(
                                          system, projection.user_content_json or self.user_content_json))
             calibrated = int(int(projection.estimated_tokens or 0) * ratio) if projection is not None else 0
-            return projection and replace(projection, calibrated_tokens=calibrated, calibration_ratio=ratio, fits_known_window=_fits_window(
-                projection.mode, calibrated, window_tokens, known_window, output_reserve, self.preferred_mode))
+            return projection and replace(projection, calibrated_tokens=calibrated, calibration_ratio=ratio)
 
         return replace(self, initial_mode=start, window_tokens=window_tokens, output_reserve_tokens=output_reserve,
                        max_projection=project(self.max_projection), low_projection=project(self.low_projection),
@@ -666,23 +613,25 @@ def measure_main_fit(
     A positive deficit triggers at most one reclaim pass per route+round; the
     requested goal is deficit + ``reclaim_low_water_margin`` so the pass lands
     below the boundary instead of exactly at it (``RECLAIM_LOW_WATER_DIVISOR``).
+    Both deficits count the reply floor the fit leaves (Nano: ``min(8192, C)``);
+    the reply the candidate will actually get is ``reply_allowance_tokens``.
     """
     from ouroboros.capability_evidence import (
         canonical_evidence_root, is_known, resolve_main_token_density,
     )
-    from ouroboros.context_budget import OWNER_LOW_TARGET_TOKENS, OWNER_NANO_TARGET_TOKENS, NANO_MIN_HEADROOM_TOKENS
+    from ouroboros.context_budget import (
+        OWNER_LOW_TARGET_TOKENS, OWNER_NANO_TARGET_TOKENS, NANO_MIN_HEADROOM_TOKENS, reply_allowance_tokens,
+    )
 
     if drive_root is None:
         drive_root = canonical_evidence_root()
     density, basis = resolve_main_token_density(drive_root, plan.route_fp, plan.model)
     density = float(density)
-    estimated_input = int(math.ceil(estimate_context_prompt_tokens(
-        messages,
-        tools,
-        provider=plan.provider,
-        reasoning_effort=reasoning_effort,
-    ) * density))
-    reserve = NANO_MIN_HEADROOM_TOKENS if profile.endswith("_nano") else int(plan.output_reserve_tokens or 0)
+    raw_input = int(estimate_context_prompt_tokens(messages, tools, provider=plan.provider, reasoning_effort=reasoning_effort))
+    estimated_input = int(math.ceil(raw_input * density))
+    ceiling = int(plan.output_reserve_tokens or 0)
+    nano = profile.endswith("_nano")
+    reserve = min(NANO_MIN_HEADROOM_TOKENS, ceiling) if nano else ceiling
     total = estimated_input + reserve
     target = (OWNER_NANO_TARGET_TOKENS if profile == "owner_nano"
               else OWNER_LOW_TARGET_TOKENS if profile == "owner_low" else None)
@@ -710,6 +659,10 @@ def measure_main_fit(
         capacity_deficit_tokens=capacity_deficit,
         reclaim_goal_tokens=goal,
         low_water_margin_tokens=margin,
+        raw_input_tokens=raw_input,
+        reply_allowance_tokens=reply_allowance_tokens(
+            caller_max_tokens=ceiling, nano=nano, owner_nano=profile == "owner_nano",
+            input_tokens=estimated_input, raw_input_tokens=raw_input, window_tokens=capacity),
     )
     if goal > 0 and not automatic_pass_used:
         action: Literal["send", "reclaim_once", "send_target_miss"] = "reclaim_once"
@@ -816,13 +769,6 @@ def main_output_reserve_tokens(*, use_local: bool) -> int:
 
         return local_context_limits(MAIN_LOOP_MAX_TOKENS)[1]
     return MAIN_LOOP_MAX_TOKENS
-
-
-def _fits_window(mode: str, calibrated: int, window: int, known: bool, reserve: int, owner: str) -> Optional[bool]:
-    from ouroboros.context_budget import context_mode_limits
-
-    target, reserve = context_mode_limits(mode, owner, reserve)  # only the owner's Nano frames it (Low's is elastic)
-    return calibrated + reserve <= (min(target, int(window or 0)) if target and mode == "nano" else int(window or 0)) if known else None
 
 
 def _request_tokens(system_content: List[Dict[str, Any]], user_content_json: str) -> int:
@@ -939,14 +885,12 @@ def build_context_fit_plan(
                     estimated = source_estimate
             except (OSError, ValueError, KeyError):
                 log.warning("Exact task input source could not be retained; preserving complete input", exc_info=True)
-        calibrated = int(estimated * ratio)
         return ContextFitProjection(
             mode=mode,
             system_content_json=system_content_json,
             estimated_tokens=estimated,
-            calibrated_tokens=calibrated,
+            calibrated_tokens=int(estimated * ratio),
             calibration_ratio=ratio,
-            fits_known_window=_fits_window(mode, calibrated, evidence.window_tokens, known_window, output_reserve, preferred),
             user_content_json=user_projection,
             memory_facts=memory_facts,
         )

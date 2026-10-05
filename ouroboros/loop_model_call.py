@@ -768,6 +768,8 @@ def _remember_main_fit(ctx: _RoundModelCallContext, disposition: Any) -> None:
     usage["_context_profile"] = measurement.profile
     usage["_context_measurement_basis"] = measurement.measurement_basis
     usage["_context_measurement_density"] = measurement.measurement_density
+    usage["_context_raw_input_tokens"] = measurement.raw_input_tokens
+    usage["_context_reply_allowance_tokens"] = measurement.reply_allowance_tokens
     usage["_context_target_total_tokens"] = measurement.target_total_tokens
     usage["_context_capacity_total_tokens"] = measurement.capacity_total_tokens
     usage["_context_target_deficit_tokens"] = measurement.target_deficit_tokens

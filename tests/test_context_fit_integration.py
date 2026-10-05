@@ -14,7 +14,6 @@ def _projection(mode: str):
         estimated_tokens=10,
         calibrated_tokens=10,
         calibration_ratio=1.0,
-        fits_known_window=None,
     )
 
 
