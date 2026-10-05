@@ -725,7 +725,7 @@ def _projection(mode: str, blocks):
 
     return ContextFitProjection(
         mode=mode, system_content_json=json.dumps(blocks), estimated_tokens=10,
-        calibrated_tokens=10, calibration_ratio=1.0, fits_known_window=None,
+        calibrated_tokens=10, calibration_ratio=1.0,
     )
 
 

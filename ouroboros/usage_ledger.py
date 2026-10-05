@@ -18,6 +18,7 @@ import contextlib
 import errno
 import json
 import logging
+import math
 import os
 import pathlib
 import re
@@ -130,6 +131,10 @@ def _validate_candidate_facts(row: Dict[str, Any], sequence: int) -> None:
             raise UsageLedgerCorrupt(f"invalid physical_context flags in usage row seq={sequence}")
         if not all(isinstance(context.get(key), str) for key in ("route_fp", "round_id")):
             raise UsageLedgerCorrupt(f"invalid physical_context identity in usage row seq={sequence}")
+        density = context.get("measurement_density")  # absent on rows written before the field existed
+        if density is not None and (isinstance(density, bool) or not isinstance(density, (int, float))
+                                    or not math.isfinite(density) or density <= 0):
+            raise UsageLedgerCorrupt(f"invalid physical_context measurement_density in usage row seq={sequence}")
     manifest_ref = row.get("candidate_manifest_ref")
     if manifest_ref is not None and (
         not isinstance(manifest_ref, dict)

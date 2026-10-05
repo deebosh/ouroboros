@@ -17,7 +17,9 @@ import copy
 import hashlib
 import inspect
 import json
+import math
 import threading
+from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Set
 
 from ouroboros.anthropic_native_custody import is_replayed_native_content
@@ -523,69 +525,65 @@ def _finalized_physical_candidate(
     physical = _physical_candidate({key: value for key, value in payload.items() if key != "timeout"})
     if fresh_clock:
         physical = refresh_wire_clock(physical, api_surface=api_surface)
-    if target.get("context_mode") == "nano":
-        physical = _fit_output_payload(target, physical, api_surface)
+    physical = bound_reply_allowance(target, physical)
     return prepare_wire_payload_for_send(
         {**target, "contract_headers": processing_contract_headers(target, physical)},
         physical, api_surface=api_surface, logical_payload=payload,
     )
 
 
+def bound_reply_allowance(target: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Set a rendered-Nano Main candidate's wire allowance: the one place that does.
 
-def _prepared_input_measurement(target: Dict[str, Any], payload: Dict[str, Any]) -> dict:
-    """Current routes offer an actual-shape estimate, never an exact template count."""
+    ``context_budget.reply_allowance_tokens`` on THIS candidate: its own bounded count
+    (system, messages, tools) times the density Main measured with, against the bound
+    capacity (the local lane: its confirmed serving window); the local server's exact
+    count replaces the estimate, needs no slack and may raise it. Low and Max are left
+    alone (their floor is the ceiling, so the rule would return it: no measurement). A
+    payload without a numeric field (the web-search Responses body) is left alone too;
+    the field is never created. An exact shortfall is the typed local overflow before
+    any send, carrying this candidate's facts; an estimate never refuses.
+    """
+    from ouroboros.context_budget import LocalContextTooLargeError, exact_reply_shortfall, reply_allowance_tokens
     from ouroboros.context_fit import bounded_prompt_tokens_for_payload
 
-    measured = target.get("local_input_measurement") or {}
-    if target.get("provider") == "local" and measured.get("supported") and measured.get("input_is_exact") is True:
-        from ouroboros.local_model_server import input_fingerprint
+    context = current_physical_attempt_context()
+    field = next((key for key in ("max_completion_tokens", "max_tokens")
+                  if isinstance(payload.get(key), int) and not isinstance(payload.get(key), bool)), None)
+    if context is None or field is None or context.rendered_mode != "nano":
+        return payload
+    window, measured, exact = context.capacity_total_tokens, target.get("local_input_measurement") or {}, False
+    if target.get("provider") == "local":
+        window = target.get("context_window_tokens") if target.get("context_window_confirmed") else window
+        if measured.get("supported") and measured.get("input_is_exact") is True:
+            from ouroboros.local_model_server import input_fingerprint
 
-        if measured.get("native_input_sha256") == input_fingerprint(payload):
-            return {"input_tokens": measured["input_tokens"], "input_is_exact": True,
-                    "tokenizer_template_provenance": measured.get("tokenizer_template_provenance"),
-                    "route_capacity_tokens": measured.get("context_window"), "route_capacity_confirmed": True}
-    context = {key: payload[key] for key in ("system", "messages", "input", "instructions", "tools", "functions") if key in payload}
-    chars = len(_canonical_candidate_bytes(context).decode("utf-8"))
-    return {"input_tokens": bounded_prompt_tokens_for_payload(context, chars),
-            "input_is_exact": False, "tokenizer_template_provenance": None,
-            "route_capacity_tokens": target.get("context_window_tokens", getattr(current_physical_attempt_context(), "capacity_total_tokens", None)),
-            "route_capacity_confirmed": bool(target.get("context_window_confirmed", False))}
+            exact = measured.get("native_input_sha256") == input_fingerprint(payload)
+    if exact:
+        raw = input_tokens = int(measured["input_tokens"])
+        window = measured.get("context_window") or window
+    else:
+        from ouroboros.request_wire_recovery import registered_source_payload
 
-
-def _fit_output_payload(target: Dict[str, Any], payload: Dict[str, Any], api_surface: str) -> Dict[str, Any]:
-    """Use the shared Nano arithmetic after native tool projection and before sealing."""
-    from dataclasses import asdict
-    from ouroboros.context_budget import OWNER_NANO_TARGET_TOKENS, NANO_MIN_HEADROOM_TOKENS
-    from ouroboros.context_fit import resolve_call_context_fit
-
-    field = next((key for key in ("max_completion_tokens", "max_tokens") if isinstance(payload.get(key), int)), None)
-    if field is None:
-        return payload  # An opaque route has no enforceable native output field here.
-    measured = _prepared_input_measurement(target, payload)
-    provider = target.get("provider")
-    # Local formatters can make additional internal generations outside this cap.
-    limit_enforced = provider == "openai" and field == "max_completion_tokens" or provider == "anthropic" and field == "max_tokens"
-
-    if provider == "local":
-        limit_enforced = measured["input_is_exact"] and (target.get("local_input_measurement") or {}).get("output_limit_enforced") is True
-    nano = target.get("context_mode") == "nano"
-    # Only the owner's Nano is bounded by its target; a Nano the window chose answers to the window alone.
-    owner_nano = nano and getattr(current_physical_attempt_context(), "profile", "owner_nano") != "task_local_nano"
-    fit = resolve_call_context_fit(**measured, caller_max_tokens=payload[field],
-        total_target_tokens=OWNER_NANO_TARGET_TOKENS if owner_nano else None,
-        minimum_free_tokens=NANO_MIN_HEADROOM_TOKENS if nano else 0, output_limit_enforced=limit_enforced,
-        reasoning_included_in_limit=True if limit_enforced else None)
-    facts = asdict(fit)
-    if provider == "local" and measured["input_is_exact"]:
-        facts["serving_process_id"] = target["local_input_measurement"].get("process_id")
-    target["call_context_fit"] = facts
-    if fit.effective_max_tokens <= 0 or measured["input_is_exact"] and fit.fit_status in {"unfit", "insufficient_headroom"}:
-        error = PhysicalAttemptPreparationFailed("Exact prepared input does not fit the selected context allowance")
-        error.call_context_fit = facts
+        source = registered_source_payload(payload) or payload  # a re-finalized wire form counts as its source
+        raw = bounded_prompt_tokens_for_payload(
+            {key: source[key] for key in ("system", "messages", "tools", "functions") if key in source}, 0)
+        input_tokens = math.ceil(raw * float(getattr(context, "measurement_density", None) or 1.0))
+    frame = dict(caller_max_tokens=int(payload[field]), nano=True, input_tokens=input_tokens, window_tokens=window)
+    candidate = {**payload, field: reply_allowance_tokens(
+        owner_nano=context.profile == "owner_nano", raw_input_tokens=raw, exact=exact, **frame)}
+    if exact and exact_reply_shortfall(**frame):
+        request = _attempt_request(target, candidate)
+        error = LocalContextTooLargeError(
+            f"the local model's window of {int(window)} tokens leaves {int(window) - input_tokens} for the reply "
+            f"after {input_tokens} exact input tokens, below the floor of {min(frame['caller_max_tokens'], 8_192)}")
+        error.refused_candidate = {
+            **{key: getattr(request, key) for key in (
+                "model", "provider", "max_completion_tokens", "candidate_measurement_kind", "candidate_raw_sha256",
+                "candidate_raw_size_bytes", "candidate_context_sha256", "candidate_context_size_bytes")},
+            "physical_context": asdict(context), "input_tokens": input_tokens, "context_window_tokens": int(window)}
         raise error
-    result = {**payload, field: fit.effective_max_tokens}
-    facts["candidate_raw_sha256"] = hashlib.sha256(_canonical_candidate_bytes(result)).hexdigest()
-    return result
+    return candidate
 
 
 def _candidate_before_dispatch(candidate: Dict[str, Any], request: AttemptRequest):

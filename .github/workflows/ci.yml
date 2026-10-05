@@ -5,7 +5,7 @@
 # Tier 2.5 (Integration): Manual / tag (branch pushes: provider-canary-push.yml)       → Real-provider tests, reusable provider-canary.yml (~2 min)
 # Tier 2.6 (Skill smoke): Push to ouroboros-stable / manual / tag                     → LIVE OuroborosHub official-skill install smoke (3-OS, ~5 min) + review→grant→enable-persistence flow on one cheap reviewer slot (ubuntu-only step, OPENROUTER_API_KEY, ~$1.2/run)
 # Tier 3 (Build+Release): Tag v*                                                       → PyInstaller + GitHub Release (~15 min)
-# Scheduled (System E2E): Daily cron / manual                                          → KEYLESS tests/system_e2e/ scenario lane (Ubuntu, ≤40 min)
+# Opt-in (System E2E):    Manual / tag (no schedule)                                     → KEYLESS tests/system_e2e/ scenario lane (Ubuntu, ≤40 min)
 # Manual (Live E2E):      Dispatch input e2e_live=true only (no schedule)                → PAID devtools/e2e_live stand, $30 cap, OUROBOROS_E2E_LIVE_OPENROUTER_KEY (skipped honestly without it)
 #
 # Tier 2.5 requires OPENROUTER_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY.
@@ -41,16 +41,10 @@ on:
         description: 'Run the paid live E2E stand ($30 cap; needs the OUROBOROS_E2E_LIVE_OPENROUTER_KEY secret)'
         type: boolean
         default: false
-  # One cron, owned by exactly ONE job through `github.event.schedule`: 04:37
-  # is the keyless system-e2e-mock lane (the paid e2e-live stand runs only on
-  # its opt-in dispatch input). Off the hour deliberately: GitHub's cron queue
-  # is deepest at :00. NOTE for any job added later — a scheduled run reports
-  # the DEFAULT BRANCH in github.ref, so a job gated on a branch ref alone fires
-  # on the schedule (integration-test carries the explicit event guard), and a
-  # job gated on the bare event name fires on every cron this block carries —
-  # bind a scheduled job to its own cron string.
-  schedule:
-    - cron: '37 4 * * *'
+  # No schedule (owner, 2026-10-05): nobody read the nightly results. The
+  # keyless system-e2e-mock lane runs on manual dispatch and release tags. A
+  # scheduled run would report the DEFAULT BRANCH in github.ref, which is why
+  # the paid lanes below keep their `!= 'schedule'` guards.
 
 # Read-only is sufficient for tests and fork PRs. The release job overrides
 # this narrowly with contents: write when publishing a tag.
@@ -367,9 +361,8 @@ jobs:
   # ──────────────────────────────────────────────────────────────────
   integration-test:
     # A scheduled run is neither a manual run nor a tag. The leading guard keeps
-    # the nightly cron above OFF this paid lane even if a branch-ref condition
-    # joins the group below: a scheduled run carries the default branch in
-    # github.ref.
+    # any schedule OFF this paid lane even if a branch-ref condition joins the
+    # group below: a scheduled run carries the default branch in github.ref.
     if: |
       github.event_name != 'schedule'
       && (github.event_name == 'workflow_dispatch'
@@ -586,12 +579,12 @@ jobs:
             "python -m pytest tests/ -m portable_detail -q --tb=short"
 
   # ──────────────────────────────────────────────────────────────────
-  # Scheduled: the KEYLESS system_e2e scenario lane (tests/system_e2e/).
+  # The KEYLESS system_e2e scenario lane (tests/system_e2e/).
   # Those tests carry `integration` + `serial` AND the OUROBOROS_E2E_DEEP env
   # gate, so no other job in this file can reach them — without this one the
   # suite would be proof nobody executes. Deliberately NOT a push/PR lane
   # (owner 9A, replacing the plan §8 PR lane): each scenario spawns a real
-  # isolated server, so the cost belongs on a nightly, not on every review.
+  # isolated server, so it runs on manual dispatch and release tags only.
   # No provider secrets: the lane is keyless by construction and this job
   # names none, which is the only way a job gets one. The four OUROBOROS_*
   # roots point into runner.temp so no scenario can reach a real install.
@@ -599,13 +592,8 @@ jobs:
   # ──────────────────────────────────────────────────────────────────
   system-e2e-mock:
     # Also on a release tag: the release bar must not skip the 57-scenario lane
-    # (owner decision, batch №13 item 4, 2026-09-02). Bound to ITS cron string,
-    # so a cron another job adds to the schedule block never runs this lane a
-    # second time each night.
-    if: |
-      (github.event_name == 'schedule' && github.event.schedule == '37 4 * * *')
-      || github.event_name == 'workflow_dispatch'
-      || startsWith(github.ref, 'refs/tags/v')
+    # (owner decision, batch №13 item 4, 2026-09-02).
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:

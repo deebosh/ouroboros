@@ -4,8 +4,8 @@ secret.
 
 Pinned as a contract, not as text: the job fires only on a dispatch whose
 `e2e_live` input is true (never a plain dispatch — the pre-tag 3-OS matrix must
-not spend money — nor push, pull_request, tag, or any schedule: the workflow's
-one cron belongs to the keyless lane); the input changes no other job's gate;
+not spend money — nor push, pull_request, tag, or any schedule: the workflow
+carries none); the input changes no other job's gate;
 the dispatch checks out and seeds its own sha; it names
 exactly one secret, `OUROBOROS_E2E_LIVE_OPENROUTER_KEY`, gated through a
 non-secret job-level env (GitHub rejects `secrets.*` inside `if:`); a missing
@@ -40,7 +40,6 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 CI_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 JOB = "e2e-live"
 SECRET = "OUROBOROS_E2E_LIVE_OPENROUTER_KEY"
-KEYLESS_CRON = "37 4 * * *"
 DISPATCH_INPUT = "e2e_live"
 SKIP_LINE = f"skipped: secret {SECRET} not configured"
 TOTAL_BUDGET_USD = 30.0
@@ -81,10 +80,9 @@ def _stand_args() -> dict[str, str | None]:
 def test_the_paid_lane_fires_only_on_an_opted_in_dispatch():
     workflow = _workflow()
     triggers = workflow.get("on") or workflow.get(True)
-    # The schedule carries the keyless lane's cron alone: the paid stand runs on
-    # no schedule (tests/test_platform_ci_events.py evaluates the gate per event).
-    crons = [str(entry["cron"]) for entry in triggers["schedule"]]
-    assert crons == [KEYLESS_CRON], crons
+    # The workflow carries no schedule at all, and the gate refuses one anyway
+    # (tests/test_platform_ci_events.py evaluates it per event).
+    assert "schedule" not in triggers, triggers
     # The opt-in: a boolean dispatch input, OFF by default, naming the cost and
     # the secret. A plain `gh workflow run CI --ref <branch>` (the pre-tag 3-OS
     # matrix) therefore never runs the paid lane.

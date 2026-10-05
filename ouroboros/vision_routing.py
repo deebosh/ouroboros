@@ -886,8 +886,8 @@ def _round_capture(ctx: Any, failed: Any) -> bool:
 
 
 def _without_refused_images(failed: Any, refused: frozenset) -> Callable[[Any], bool]:
-    """Admit only the retry this refusal earned: no refused image in the physical candidate, the
-    same model, route and account, round and output reserve (a wait onto another route is not it)."""
+    """Admit only the retry this refusal earned: no refused image in the physical candidate, the same
+    model, route and account, round, and at most its reply allowance (a wait onto another route is not it)."""
     def predicate(request: Any) -> bool:
         sent = candidate_images(getattr(request, "candidate_raw_sha256", None))
         context, failed_context = request.physical_context, failed.physical_context
@@ -896,7 +896,7 @@ def _without_refused_images(failed: Any, refused: frozenset) -> Callable[[Any], 
             and context.route_fp == failed_context.route_fp and context.round_id == failed_context.round_id)
         return bool(sent is not None and not sent & refused and same_round
                     and request.provider == failed.provider and request.model == failed.model
-                    and request.max_completion_tokens == failed.max_completion_tokens)
+                    and request.max_completion_tokens <= failed.max_completion_tokens)  # the failed allowance caps it
 
     return predicate
 
@@ -956,7 +956,8 @@ def retry_refused_image_round(ctx: Any, failed: Any) -> Optional[Tuple[Any, Any]
                 ctx.tools._ctx):  # this round already reclaimed: measure its result, never reclaim again
             fit = loop._measure_after_reclaim(ctx)
         msg, cost = loop._dispatch_round_model(
-            ctx, fit, attempt_cap=1, candidate_predicate=_without_refused_images(failed, digests))
+            ctx, fit, attempt_cap=1, candidate_predicate=_without_refused_images(failed, digests),
+            max_tokens=int(getattr(failed, "max_completion_tokens", 0) or 0) or None)
     except PhysicalAttemptPreconditionFailed:
         # A refused image was still there, or a wait moved the round to another route:
         # nothing left the host, so the first error stands as it was.

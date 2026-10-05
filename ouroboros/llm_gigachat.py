@@ -18,6 +18,7 @@ from ouroboros.llm_attempt import (
     _execute_candidate,
     _physical_candidate,
     attach_processing_receipt,
+    bound_reply_allowance,
 )
 
 
@@ -264,7 +265,7 @@ class _GigaChatLaneMixin:
         # before measurement and sealing. The library's transport retries are off
         # (``_get_gigachat_client``); its one re-send after a 401 repeats these
         # sealed bytes inside the same attempt and claims no fresher clock.
-        candidate = _physical_candidate(stamp_clock_note(payload))
+        candidate = bound_reply_allowance(target, _physical_candidate(stamp_clock_note(payload)))
         request = _attempt_request(target, candidate, source="llm.gigachat")
         completion = _execute_candidate(
             request,

@@ -207,7 +207,6 @@ class LLMClient(
         caller_execution_deadline: Optional[float] = None,
         wait_for_resources: bool = True,
         processing_preference: str | None = None,
-        context_mode: str | None = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call returning (message, usage); no_proxy avoids macOS fork proxy crashes.
 
@@ -236,8 +235,6 @@ class LLMClient(
                     local_kwargs["reasoning_effort"] = reasoning_effort
                 if processing_preference:
                     local_kwargs["processing_preference"] = processing_preference
-                if context_mode:
-                    local_kwargs["context_mode"] = context_mode
                 message, usage = self._chat_local(
                     messages, tools, max_tokens, tool_choice, **local_kwargs,
                 )
@@ -245,9 +242,7 @@ class LLMClient(
                 # Central worker policy: remote calls from worker processes avoid
                 # system proxy lookup without every caller remembering a flag.
                 no_proxy = no_proxy or in_worker_process()
-                target = {**self._resolve_remote_target(model),
-                          "processing_preference": processing_preference,
-                          "context_mode": context_mode}
+                target = {**self._resolve_remote_target(model), "processing_preference": processing_preference}
                 if temperature is None and target.get("provider") != "claudexor":
                     temperature = default_temperature
                 message, usage = self._chat_remote(
@@ -296,7 +291,6 @@ class LLMClient(
         caller_execution_deadline: Optional[float] = None,
         wait_for_resources: bool = True,
         processing_preference: str | None = None,
-        context_mode: str | None = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Async remote chat; no_proxy keeps forked macOS workers off OS proxy APIs.
 
@@ -317,8 +311,6 @@ class LLMClient(
                     local_kwargs["reasoning_effort"] = reasoning_effort
                 if processing_preference:
                     local_kwargs["processing_preference"] = processing_preference
-                if context_mode:
-                    local_kwargs["context_mode"] = context_mode
                 result = self._chat_local(messages, tools, max_tokens, tool_choice, **local_kwargs)
                 return result, last_physical_attempt_capture()
 
@@ -331,9 +323,7 @@ class LLMClient(
                 adopt_physical_attempt_capture(capture)
             result[1]["ledger_attempt_ids"] = list(attempt_ids)
             return result
-        target = {**self._resolve_remote_target(model),
-                  "processing_preference": processing_preference,
-                  "context_mode": context_mode}
+        target = {**self._resolve_remote_target(model), "processing_preference": processing_preference}
         if temperature is None and target.get("provider") != "claudexor":
             temperature = default_temperature
         carried_turn_state = turn_state_for_route(model_turn_state, target.get("provider"))

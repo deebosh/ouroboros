@@ -16,12 +16,13 @@ import queue
 import time
 
 from dataclasses import asdict, dataclass, replace
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros import task_pacing
 from ouroboros.context_budget import ContextReclaimRequest
 from ouroboros.context_compaction import context_reclaim_transcript_sha256
 from ouroboros.llm import LLMClient
-from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY, _TRANSPORT_DEATH_RETRIES
+from ouroboros.loop_llm_call import REBOUND_PHYSICAL_CONTEXT_KEY, REFUSED_CANDIDATE_KEY, TRANSPORT_DEATHS_KEY, _TRANSPORT_DEATH_RETRIES
 from ouroboros.loop_tool_execution import prune_reclaim_trace_refs, reclaim_negative_memo, reclaim_trace_refs
 from ouroboros.observability import new_execution_id
 from ouroboros.tools.registry import ToolRegistry
@@ -409,8 +410,9 @@ def _run_cross_model_fallback_chain(
             # (A same-family candidate wrote its notice into the shared transcript, so its fit stays with it.)
             tool_schemas[:], tools._ctx._route_left_out_tool_names = resident
             invalidate_task_cache_splits(task_id)
-        if _walk_fenced(tools._ctx, accumulated_usage):
-            break
+        if _walk_fenced(tools._ctx, accumulated_usage) or str(
+                accumulated_usage.get("_last_llm_error_kind") or "") == "llm_output_exhausted":
+            break  # an exhausted candidate answered: its outcome is the round's, no further route is dialed
         _cooled(fallback_model, fallback_use_local, fallback_role)
         previous_model, previous_tag = fallback_model, ftag
     fenced = msg is None and _walk_fenced(tools._ctx, accumulated_usage)
@@ -501,10 +503,17 @@ def _recover_failed_round(limit_ctx: Any, tools: ToolRegistry, msg: Any, episode
             round_idx=limit_ctx.round_idx, event_queue=limit_ctx.event_queue, accumulated_usage=usage,
             task_type=limit_ctx.task_type, emit_progress=emit_progress, context_fit_plan=context_fit_plan,
             active_context_mode=active_context_mode)
-        if msg is None and not _walk_fenced(ctx, usage) and (kind in _ROUND_WAIT_KINDS or usage.get("_pending_transport_outcome")):
-            # The round's own outage or unknown outcome owns its wait: a later
-            # candidate's failure never re-aims it (nor the probe's expected route).
-            outstanding = usage.get("_pending_transport_outcome") or pending
+        outstanding = usage.get("_pending_transport_outcome") or pending
+        exhausted = usage.get("_last_llm_error_kind") == "llm_output_exhausted"
+        if (msg is None and not _walk_fenced(ctx, usage) and (outstanding or not exhausted)
+                and (kind in _ROUND_WAIT_KINDS or usage.get("_pending_transport_outcome"))):
+            # The round's own outage or unknown outcome owns its wait: a later candidate's
+            # failure never re-aims it (nor the probe's expected route). A candidate that answered
+            # but spent its reply allowance keeps that kind when no attempt is outstanding (the
+            # loop's next round reads it); otherwise its host fact waits for the continuation.
+            if exhausted:
+                _loop()._append_or_merge_user_message(
+                    limit_ctx.messages, _loop()._output_exhausted_notice(usage.get("_last_llm_output_exhausted")))
             usage["_last_llm_error_kind"] = "provider_outcome_unknown" if outstanding else kind
             if outstanding:
                 usage["_pending_transport_outcome"] = outstanding
@@ -768,6 +777,8 @@ def _remember_main_fit(ctx: _RoundModelCallContext, disposition: Any) -> None:
     usage["_context_profile"] = measurement.profile
     usage["_context_measurement_basis"] = measurement.measurement_basis
     usage["_context_measurement_density"] = measurement.measurement_density
+    usage["_context_raw_input_tokens"] = measurement.raw_input_tokens
+    usage["_context_reply_allowance_tokens"] = measurement.reply_allowance_tokens
     usage["_context_target_total_tokens"] = measurement.target_total_tokens
     usage["_context_capacity_total_tokens"] = measurement.capacity_total_tokens
     usage["_context_target_deficit_tokens"] = measurement.target_deficit_tokens
@@ -815,6 +826,7 @@ def _physical_context_for_fit(disposition: Any) -> PhysicalAttemptContext:
         capacity_total_tokens=measurement.capacity_total_tokens,
         context_target_miss=disposition.action == "send_target_miss",
         automatic_pass_used=disposition.automatic_pass_used,
+        measurement_density=measurement.measurement_density,
     )
 
 
@@ -851,6 +863,7 @@ def _dispatch_round_model(
     *,
     attempt_cap: Optional[int],
     candidate_predicate: Optional[Callable[[Any], Any]] = None,
+    max_tokens: Optional[int] = None,  # the strict-shrink retry's ceiling: the failed attempt's sent allowance
 ) -> Tuple[Any, float]:
     from ouroboros.model_wait import current_model_wait
     from ouroboros.loop_transport import emit_model_substitution, transport_repeat_stop_requested
@@ -925,7 +938,9 @@ def _dispatch_round_model(
             model_context_observer=observe_feedback,
             send_clock_policy=main_clock_policy(
                 getattr(ctx.tools._ctx, "task_metadata", {}), task_type=ctx.task_type),
+            **({"max_tokens": int(max_tokens)} if max_tokens else {}),
         )
+    ctx.accumulated_usage.pop(REBOUND_PHYSICAL_CONTEXT_KEY, None)  # consumed by the call's later attempts, if any
     capture = _loop().last_physical_attempt_capture()
     if primary and deferral is not None and deferral.fact and result[0] is None:
         ctx.tools._ctx._deferred_resource_refusal = deferral
@@ -1039,8 +1054,10 @@ def _reprepare_waiting_main(ctx: _RoundModelCallContext, kwargs: dict):
                                          and not use_local and provider_for_model(model) != "claudexor")
     if provider_for_model(model) == "claudexor":
         kwargs["bypass_response_cache"] = False
-    return PreparedModelCall(kwargs, _physical_context_for_fit(disposition) if disposition else None,
-                             current_physical_attempt_predicate())
+    physical = _physical_context_for_fit(disposition) if disposition else None
+    if physical is not None:  # the remaining attempts of this call send under the new route's measurement
+        ctx.accumulated_usage[REBOUND_PHYSICAL_CONTEXT_KEY] = physical
+    return PreparedModelCall(kwargs, physical, current_physical_attempt_predicate())
 
 
 def _run_main_reclaim(
@@ -1170,7 +1187,8 @@ def _measure_after_reclaim(ctx: _RoundModelCallContext) -> Any:
 
 
 def _reproject_actual_overflow_low(ctx: _RoundModelCallContext) -> None:
-    if ctx.active_context_mode == "low" or ctx.context_fit_plan is None:
+    """An actual overflow lowers Max to task-local Low; Low stays Low and Nano stays Nano (never raised)."""
+    if ctx.active_context_mode != "max" or ctx.context_fit_plan is None:
         return
     ctx.messages[:] = ctx.context_fit_plan.reproject_transcript(ctx.messages, "low")
     invalidate_task_cache_splits(ctx.task_id)
@@ -1187,10 +1205,18 @@ def _reproject_actual_overflow_low(ctx: _RoundModelCallContext) -> None:
     })
 
 
+def _refused_candidate(facts: Dict[str, Any]) -> Any:
+    """The local lane's pre-dispatch refusal as the comparison candidate of its own round."""
+    physical = facts.get("physical_context")
+    return SimpleNamespace(**{**facts, "physical_context": PhysicalAttemptContext(**physical) if physical else None,
+                              "refused_before_dispatch": True})
+
+
 def _failed_capture_is_comparable(capture: Any) -> bool:
     return bool(
         capture is not None
-        and capture.state in {"dispatched", "settled", "unresolved"}
+        and (getattr(capture, "state", None) in {"dispatched", "settled", "unresolved"}
+             or getattr(capture, "refused_before_dispatch", False))
         and capture.candidate_measurement_kind == "canonical_json_v1"
         and capture.candidate_raw_sha256
         and capture.candidate_context_size_bytes is not None
@@ -1206,7 +1232,7 @@ def _strict_context_shrink_predicate(failed: Any) -> Callable[[Any], bool]:
             request.candidate_measurement_kind == "canonical_json_v1"
             and request.provider == failed.provider
             and request.model == failed.model
-            and request.max_completion_tokens == failed.max_completion_tokens
+            and request.max_completion_tokens <= failed.max_completion_tokens  # the retry's ceiling is the failed allowance
             and current_context is not None
             and failed_context is not None
             and current_context.route_fp == failed_context.route_fp
@@ -1408,6 +1434,7 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
         disposition,
         attempt_cap=ctx.attempt_cap,
     )
+    refused = ctx.accumulated_usage.pop(REFUSED_CANDIDATE_KEY, None)  # a local pre-dispatch refusal's own facts
     from ouroboros.vision_routing import retry_refused_image_round  # the capture is read right after the send
     retried = None if msg is not None else retry_refused_image_round(ctx, _loop().last_physical_attempt_capture())
     if retried is not None:  # one same-round retry without a refused image: no fallback route, no cooldown
@@ -1417,7 +1444,8 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
 
     # Snapshot immediately: a reclaim summarizer is itself physically receipted
     # and would otherwise replace the failed Main candidate in the ContextVar.
-    failed_capture = _loop().last_physical_attempt_capture()
+    # A refusal before dispatch left no capture: compare with the refused candidate, never an earlier round's.
+    failed_capture = _refused_candidate(refused) if refused else _loop().last_physical_attempt_capture()
     if disposition is None:
         return msg, cost, ctx.active_context_mode
 
@@ -1472,6 +1500,7 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
             candidate_predicate=_strict_context_shrink_predicate(
                 failed_capture,
             ),
+            max_tokens=int(getattr(failed_capture, "max_completion_tokens", 0) or 0) or None,
         )
     except PhysicalAttemptPreconditionFailed:
         return _skipped("context_candidate_not_strictly_smaller")
