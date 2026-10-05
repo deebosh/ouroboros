@@ -69,8 +69,8 @@ PENDING_C2 = True
 #   * test_a_failed_send_preparation_never_sends_pixels breaks `vision_routing.prepare_messages_for_send`,
 #     the entry point the Main loop seam calls today.
 #   * the `cold` fixture resets in-process capability memory by name; a C2 evidence cache joins its list.
-# Not covered here (C3 owns those tests): the one same-round retry after a real refusal, its marker in
-# Inline mode, and excluding the route that refused THIS image even from an explicit vision slot.
+# Not covered here: the one same-round retry after a real refusal, its marker in Inline mode, and excluding
+# the route that refused THIS image even from an explicit vision slot (tests/test_image_refusal_retry.py).
 TRANSPORT_WORDS = ("transport", "lane")
 
 
