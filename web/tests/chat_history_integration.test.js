@@ -163,6 +163,30 @@ test('Load more history only ever reads older pages, however deep the reader goe
     assert.equal(button.hidden, true, 'at the beginning of history the button leaves');
 });
 
+test('reading to the beginning of a long room leaves no dead button behind released pages', async (t) => {
+    // Rows stay off-screen, so the 3-page budget releases the newest pages as the reader goes deep.
+    const oldRect = ElementStub.prototype.getBoundingClientRect;
+    ElementStub.prototype.getBoundingClientRect = function () {
+        return this.dataset.historyId
+            ? { top: 1000, bottom: 1020, left: 0, right: 100, width: 100, height: 20 }
+            : oldRect.call(this);
+    };
+    t.after(() => { ElementStub.prototype.getBoundingClientRect = oldRect; });
+    const span = (from, to) => ({ v: 1, view: 'room', upper: { chat: 600, progress: 0 }, spans: {
+        chat: { from, to, chain: 'retained', gaps: [] }, progress: { from: 0, to: 0, chain: 'empty', gaps: [] } } });
+    const recent = { ...page([row('chat:550', 'Newest')], 'page:recent', 'before:500'), coverage: span(500, 600) };
+    const f = fixture(t, recent, (cursor) => {
+        const end = Number(cursor.split(':').at(-1)), from = end - 100;
+        return { ...page([row(`chat:${from + 50}`, `Row ${from}`)], `page:${end}`, from > 0 ? `before:${from}` : null),
+            coverage: span(from, end) };
+    });
+    await f.refresh();
+    for (let press = 0; press < 5; press += 1) await f.clickOlder();
+    assert.deepEqual(f.calls, [null, 'before:500', 'before:400', 'before:300', 'before:200', 'before:100']);
+    const button = f.messages.querySelector('.chat-load-older').querySelector('.chat-load-older-btn');
+    assert.equal(button.hidden, true, 'at the beginning no control offers a press that reads nothing');
+});
+
 test('live message adopts its physical history identity without replacing the visible bubble', async (t) => {
     const f = fixture(t);
     await f.refresh();

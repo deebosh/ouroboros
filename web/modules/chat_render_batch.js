@@ -68,7 +68,7 @@ export function createHistoryControls(messagesDiv, statusHost = null) {
             const host = statusHost && (error || incomplete || approximate || hydrating) ? statusHost : root;
             if (note.parentNode !== host) host.appendChild(note);
             note.classList.toggle('chat-history-status', host === statusHost);
-            const buttonHidden = !error && !snapshot.canOlder && !coverage.horizonGap && !hydrating;
+            const buttonHidden = !error && !snapshot.canOlder && !(coverage.horizonGap && !snapshot.canNewer) && !hydrating;
             const fields = [
                 [button, { textContent: loading ? 'Loading…'
                     : changedView ? 'Refresh history' : error ? 'Retry loading messages' : 'Load more history',
