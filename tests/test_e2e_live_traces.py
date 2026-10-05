@@ -25,7 +25,7 @@ FAKE_KEY = "sk-or-v1-e2e-live-traces-test-key-never-printed-0123456789"
 STUB_KEY = "stub-key-not-a-credential"
 FORK = "state/headless_tasks/t1/data"
 TRACED = ["logs/events.jsonl", "logs/server.log", "logs/server.log.1", "logs/tools.jsonl", "task_results/t1.json",
-          "state/advisory_review.json", "state/usage_attempts.jsonl", "state/queue_snapshot.json",
+          "state/advisory_review.json", "state/usage.sqlite", "state/usage_attempts.jsonl", "state/queue_snapshot.json",
           "observability/calls/t1/llm_1.json", f"{FORK}/logs/events.jsonl", f"{FORK}/state/advisory_review.json",
           f"{FORK}/task_results/t1.json"]
 NOT_TRACED = ["settings.json", f"{FORK}/settings.json", "memory/identity.md", "observability/blobs/abc.prompt.gz",

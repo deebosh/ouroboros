@@ -65,6 +65,8 @@ def boot(monkeypatch, tmp_path):
                        "STATE_LOCK_PATH": tmp_path / "locks/state.lock"}.items():
         monkeypatch.setattr(ss, name, path)
     monkeypatch.setattr(bus, "DATA_DIR", tmp_path)
+    from ouroboros.startup_migrations import prepare_startup_state
+    prepare_startup_state(tmp_path)
     delivered = []
     monkeypatch.setattr(bus, "get_bridge", lambda: SimpleNamespace(send_message=lambda *a, **kw: delivered.append(a)))
     ss.save_state({"owner_chat_id": 7, "owner_id": 1, notices.REVIEWER_DEFAULT_NOTICE_KEY: "already",

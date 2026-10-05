@@ -304,8 +304,6 @@ def _handle_budget_pause(evt: Dict[str, Any], ctx: Any) -> None:
             resource_limit=pause,
             result="Task paused before its first model dispatch; explicit resume or cancel required.",
         )
-        from ouroboros.pause_notices import track
-        track(ctx.DRIVE_ROOT, task_id)
     except Exception:
         log.warning("Failed to persist budget pause for %s", task_id, exc_info=True)
     event = {

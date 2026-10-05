@@ -545,7 +545,6 @@ def set_budget_pause(root: Any, task_id: str, row: Dict[str, Any],
         _TRULY_TERMINAL_STATUSES, require_writable_task_result_schema,
         stamp_task_result_schema, task_result_path,
     )
-    from ouroboros.utils import update_json_locked
 
     expected_states = (
         None if expected_state is None
@@ -575,10 +574,8 @@ def set_budget_pause(root: Any, task_id: str, row: Dict[str, Any],
                   and (old.get("state") != STATE_PAUSED or old.get("pause_id") != row.get("pause_id")) else {})
         return stamp_task_result_schema({**current, **retained_wait, **notice, "budget_pause": dict(row)})
 
-    update_json_locked(task_result_path(root, task_id), update, strict_existing_dict=True)
-    if row.get("state") == STATE_PAUSED and row.get("reason") == "budget":
-        from ouroboros.pause_notices import track
-        track(root, task_id)
+    from ouroboros.obligations import update_result
+    update_result(task_result_path(root, task_id), update, strict_existing_dict=True)
     return dict(row)
 
 

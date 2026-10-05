@@ -1214,7 +1214,15 @@ def _send_main_candidate(
         return result
 
 
-def _take_custom_receipts(usage: Dict[str, Any], msg: Dict[str, Any], accumulated_usage: Dict[str, Any]) -> None:
+def _take_response_facts(usage: Dict[str, Any], msg: Dict[str, Any], accumulated_usage: Dict[str, Any]) -> None:
+    model_facts = usage.get("claudexor") or {}
+    accumulated_usage["_model_route"] = dict(model_facts.get("route") or {})
+    accumulated_usage["_model_substitutions"] = model_facts.get("substituted") or []
+    for stale in ("_last_llm_error", "_last_llm_error_kind", "_last_llm_retry_same_request",
+                  "_last_llm_status_code", "_last_llm_provider_code", "_last_llm_provider_message",
+                  "_last_llm_provider_fields", "_last_llm_provider_message_cut", "_last_llm_resource_refusal",
+                  "_last_llm_output_exhausted"):
+        accumulated_usage.pop(stale, None)
     receipts = pop_custom_validation_receipts(usage, msg.get("tool_calls") or [])
     accumulated_usage.pop(CUSTOM_RECEIPTS_USAGE_KEY, None)
     if receipts:
@@ -1391,6 +1399,7 @@ def call_llm_with_retry(
                     "response_cache_bypass_requested": response_cache_bypass_requested,
                 },
                 manifest={
+                    "first_request_at": accumulated_usage.setdefault("first_request_at", utc_now_iso()),
                     "execution_id": execution_id,
                     "round_id": round_id,
                     "llm_call_id": llm_call_id,
@@ -1420,15 +1429,8 @@ def call_llm_with_retry(
             host_route = usage.get("model_role_route") or {}
             model, use_local = host_route.get("model", model), host_route.get("use_local", use_local)
             physical_context = accumulated_usage.pop(REBOUND_PHYSICAL_CONTEXT_KEY, physical_context)
-            model_facts = usage.get("claudexor") or {}
-            accumulated_usage["_model_route"] = dict(model_facts.get("route") or {})
-            accumulated_usage["_model_substitutions"] = model_facts.get("substituted") or []
             context_fit_event_fields = _context_fit_event_fields(accumulated_usage) if physical_context is not None else {}
-            _take_custom_receipts(usage, msg, accumulated_usage)
-            for stale in ("_last_llm_error", "_last_llm_error_kind", "_last_llm_retry_same_request", "_last_llm_status_code",
-                          "_last_llm_provider_code", "_last_llm_provider_message", "_last_llm_provider_fields",
-                          "_last_llm_provider_message_cut", "_last_llm_resource_refusal", "_last_llm_output_exhausted"):
-                accumulated_usage.pop(stale, None)
+            _take_response_facts(usage, msg, accumulated_usage)
             cost, display_model, provider, cost_estimated = _normalize_usage_cost(usage, model=model, use_local=use_local)
             accumulated_usage["_observed_route"] = observed_route_stamp(usage)
             add_usage(accumulated_usage, usage)
@@ -1443,6 +1445,7 @@ def call_llm_with_retry(
                     "usage": usage,
                 },
                 manifest={
+                    "first_answer_at": accumulated_usage.setdefault("first_answer_at", utc_now_iso()),
                     "execution_id": execution_id,
                     "round_id": round_id,
                     "llm_call_id": llm_call_id,
@@ -1513,6 +1516,7 @@ def call_llm_with_retry(
                 _record_round_cache_facts(accumulated_usage, usage, round_idx=round_idx))
             _round_event = {
                 "ts": utc_now_iso(), "type": "llm_round",
+                **{key: accumulated_usage[key] for key in ("first_request_at", "first_answer_at")},
                 "task_id": task_id,
                 "execution_id": execution_id,
                 "round_id": round_id,

@@ -202,7 +202,9 @@ def test_cost_breakdown_aggregates_cache_tokens_and_ttl(tmp_path):
         ]) + "\n",
         encoding="utf-8",
     )
+    from ouroboros import usage_store
 
+    usage_store.migrate_from_journal(tmp_path)  # the server's lifecycle import of legacy telemetry
     response = asyncio.run(make_cost_breakdown_endpoint(tmp_path)(None))
     payload = json.loads(response.body.decode("utf-8"))
 
@@ -233,12 +235,14 @@ def test_cost_breakdown_aggregates_cache_tokens_and_ttl(tmp_path):
 @pytest.mark.parametrize("encoding", ["string", "json_token"])
 @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
 def test_cost_breakdown_refuses_nonfinite_legacy_cost_without_import(tmp_path, caplog, literal, encoding):
-    """Nonfinite legacy money is an integrity failure at the real gateway: 503,
-    never a fabricated $0 total, and no completed import that would hide it."""
+    """Nonfinite legacy money is an integrity failure: the store's one-time import
+    refuses it (no completed import that would hide it, no store), and the real
+    gateway then answers 503, never a fabricated $0 total."""
     import asyncio
+    from ouroboros import usage_store
     from ouroboros.gateway.history import make_cost_breakdown_endpoint
-    from ouroboros.usage_ledger import LEDGER_REL, QUARANTINE_REL, UsageNonFiniteMoney
-    from ouroboros.usage_legacy_import import IMPORT_REL
+    from ouroboros.usage_journal import IMPORT_REL
+    from ouroboros.usage_ledger import LEDGER_REL, QUARANTINE_REL, UsageLockUnavailable, UsageNonFiniteMoney
 
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
@@ -253,6 +257,8 @@ def test_cost_breakdown_refuses_nonfinite_legacy_cost_without_import(tmp_path, c
     endpoint = make_cost_breakdown_endpoint(tmp_path)
 
     for _ in range(2):  # no watermark was written, so a retry refuses again
+        with pytest.raises(UsageNonFiniteMoney):
+            usage_store.migrate_from_journal(tmp_path)
         caplog.clear()
         response = asyncio.run(endpoint(None))
         payload = json.loads(response.body.decode("utf-8"))
@@ -266,13 +272,15 @@ def test_cost_breakdown_refuses_nonfinite_legacy_cost_without_import(tmp_path, c
             "error_code": "ledger_unavailable",
         }
         refused = [record for record in caplog.records if record.exc_info]
-        assert [type(record.exc_info[1]) for record in refused] == [UsageNonFiniteMoney]
+        # A display never re-runs the refused history import: it reports the store unavailable.
+        assert [type(record.exc_info[1]) for record in refused] == [UsageLockUnavailable]
 
     assert events_path.read_bytes() == source
     archived = list((tmp_path / "archive" / "usage_import").glob("*/events.jsonl"))
     assert [path.read_bytes() for path in archived] == [source]
     assert not (tmp_path / IMPORT_REL).exists()
     assert not (tmp_path / QUARANTINE_REL).exists()
+    assert not (tmp_path / usage_store.STORE_REL).exists()
     assert not (tmp_path / LEDGER_REL).exists()
 
 

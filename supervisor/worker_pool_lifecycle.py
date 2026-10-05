@@ -694,7 +694,7 @@ def kill_workers_for_update(
 
 def _kill_survivors() -> None:
     """Force-kill any workers and their descendant trees (daemon roots spared)."""
-    for w in _pool().WORKERS.values():
+    for w in list(_pool().WORKERS.values()):  # read outside the queue lock while a dead slot may retire
         pid = w.proc.pid
         if pid is None:
             continue

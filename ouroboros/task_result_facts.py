@@ -93,7 +93,6 @@ def raw_result_facts(results_dir: pathlib.Path, *, reader=None) -> tuple[Dict[st
             or isinstance(contract, dict) and "capability_ceiling" in contract
         )
         facts["schema_refusal"] = task_result_schema_refusal(data)
-        facts["pause_notice_pending"] = bool(data.get("pause_notices"))
         rows[name] = facts
         _RAW_TS_MEMO[key] = (signature, tuple(facts.items()))
     return rows, malformed

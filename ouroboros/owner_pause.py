@@ -220,7 +220,7 @@ def set_fence_state(root_drive: Any, root_task_id: str, *, fence_id: str, state:
     from ouroboros.task_results import (
         require_writable_task_result_schema, stamp_task_result_schema, task_result_path,
     )
-    from ouroboros.utils import update_json_locked, utc_now_iso
+    from ouroboros.utils import utc_now_iso
 
     written: Dict[str, Any] = {}
 
@@ -241,11 +241,9 @@ def set_fence_state(root_drive: Any, root_task_id: str, *, fence_id: str, state:
                   if state == FENCE_PAUSED and old.get("state") != FENCE_PAUSED else {})
         return stamp_task_result_schema({**current, **notice, "owner_pause": fence})
 
-    update_json_locked(task_result_path(pathlib.Path(root_drive), str(root_task_id)), update,
-                       strict_existing_dict=True)
-    if state == FENCE_PAUSED:
-        from ouroboros.pause_notices import track
-        track(root_drive, root_task_id)
+    from ouroboros.obligations import update_result
+    update_result(task_result_path(pathlib.Path(root_drive), str(root_task_id)), update,
+                  strict_existing_dict=True)
     return dict(written)
 
 

@@ -193,13 +193,12 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
     except Exception as exc:
         blockers.append({"kind": "process_custody_unreadable", "detail": str(exc)[:200]})
     try:
-        from ouroboros import usage_accounting as ua
-        attempts, integrity, _memo, _generation = ua._memoized_final_rows(custody_root)
-        if not integrity:
-            raise OSError("attempt_custody_unreadable")
+        from ouroboros import usage_store
+        # The root's open attempts only (the store's open-set index).
+        with usage_store.read(custody_root) as txn:
+            attempts = txn.open_attempts(root_task_id=predecessor)
         for attempt in attempts:
-            if (str(attempt.get("root_task_id") or "") == predecessor
-                    and attempt.get("state") in {"dispatched", "unresolved"}):
+            if attempt.get("state") in {"dispatched", "unresolved"}:
                 consumer = attempt.get("local_answer_consumer_id")
                 retired = (member_results.get(str(attempt.get("task_id") or ""), {})
                            .get("retired_model_consumers") or {}).get(consumer) if consumer else None

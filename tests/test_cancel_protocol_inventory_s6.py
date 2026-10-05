@@ -109,7 +109,7 @@ TERMINAL_WRITERS = {
     ('ouroboros/review_projection.py::publish_acceptance_checkpoint', '"running"'): 'dynamic',
     # Rebinds a proven legacy child start before existing orphan materialization;
     # write_task_result still preserves any terminal status under its locked reducer.
-    ('ouroboros/server_maintenance.py::_recover_terminal_task_files', '"running"'): 'dynamic',
+    ('ouroboros/startup_task_files.py::recover_terminal_task_files', '"running"'): 'dynamic',
     ('ouroboros/task_status.py::reconcile_orphaned_running_tasks', 'eff_status'): 'dynamic',
     # TZ-1 A/V10: the one child-drive settlement and mailbox cleanup write custody fields
     # (published artifact rows, unread mail) onto CURRENT with its own status inside the

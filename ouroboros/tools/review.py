@@ -518,7 +518,8 @@ AFTER the governance documents below). On very large changes, the fit note may
 replace duplicated full-file snapshots with a path manifest; in that case the
 complete added/deleted lines remain in the staged diff. Review every checklist
 item, report every distinct current problem, and make every FAIL actionable
-with file/symbol evidence and a concrete fix.
+with file/symbol evidence and a concrete remedy — deleting a mechanism or
+disclosing a residual are remedies too.
 
 {critical_calibration}
 
