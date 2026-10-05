@@ -280,7 +280,7 @@ def test_prompt_states_tree_facts_and_advice_and_no_session_claim():
 # --------------------------------------------------------------------------- delegate_start wiring
 
 def _start(tmp_path, monkeypatch, *, acting, run_id, prompt="finish the remaining work", start_kwargs=None,
-           capabilities=("continueFrom",), engine_version="3.22.0", start_error=None, task_id=None):
+           capabilities=("continueFrom",), engine_version="3.22.0", start_error=None, task_id=None, access=None):
     """Run _delegate_start against a stub engine; returns (last request, payload, ctx, calls)."""
     import ouroboros.tools.delegate as delegate
     from ouroboros.gateways import claudexor as gw
@@ -310,7 +310,17 @@ def _start(tmp_path, monkeypatch, *, acting, run_id, prompt="finish the remainin
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
     delegate._CUSTODY.clear()
     ctx = _delegating_ctx(tmp_path, acting=acting, task_id=task_id or f"t-nanny-{'write' if acting else 'read'}")
-    payload = json.loads(delegate._delegate_start(ctx, prompt, **(start_kwargs or {})).text)
+    if access is None:
+        result = delegate._delegate_start(ctx, prompt, **(start_kwargs or {}))
+    else:
+        from ouroboros import subagent_runtime, subagents
+        from tests._delegated_transport_shared import _transport_snapshot
+
+        monkeypatch.setattr(delegate, "prepare_delegate_start_actor", subagent_runtime.prepare_delegate_start_actor)
+        result = subagent_runtime.exact_start(ctx, prompt, {
+            "snapshot": _transport_snapshot(subagents.get_subagent_harness()),
+            "access": access, **(start_kwargs or {})})
+    payload = json.loads(result.text)
     delegate._CUSTODY.clear()
     return (calls[-1] if calls else None), payload, ctx, calls
 
@@ -378,6 +388,34 @@ def _snapshot_count():
 
     return sum(1 for row in subagent_worktrees._load_registry(None, strict=True, op="test")
                if row.get("kind") == subagent_worktrees._KIND_DELEGATED_EXEC)
+
+
+def test_readonly_continuation_starts_while_the_writers_patch_awaits_disposition(tmp_path, monkeypatch):
+    from ouroboros.tools.delegate_integration import capture_terminal_patch_for_drive
+
+    first, _p, ctx, _calls = _start(tmp_path, monkeypatch, acting=True, run_id="run-writer")
+    snapshot_root = pathlib.Path(first["execution"]["workspaceRoot"])
+    (snapshot_root / "waiting.txt").write_text("pending disposition\n", encoding="utf-8")
+    _settle(tmp_path, "run-writer", ctx.task_id)
+    capture = capture_terminal_patch_for_drive(tmp_path, custody.replay(tmp_path)["run-writer"])
+    assert capture["status"] == "ready_with_changes"
+    patch = pathlib.Path(capture["patch_artifact"])
+    original = patch.read_bytes()
+    count = _snapshot_count()
+
+    request, payload, _ctx, calls = _start(
+        tmp_path, monkeypatch, acting=True, run_id="run-reader", access="readonly",
+        start_kwargs={"continue_from": "run-writer"})
+    assert payload["status"] == "started", payload
+    assert len(calls) == 1 and request["access"] == "readonly" and request["mode"] == "ask"
+    assert request["continueFrom"] == "run-writer" and "execution" not in request
+    assert "wait for your supervisor's decision" in request["prompt"]
+    pred, succ = (custody.replay(tmp_path)[rid] for rid in ("run-writer", "run-reader"))
+    assert succ.continuation_of == pred.run_id and not succ.capture_id and not succ.snapshot_id
+    assert pred.patch_captured and not pred.patch_disposed and not pred.superseded_by
+    assert [row.run_id for row in custody.undisposed_patches(tmp_path)] == [pred.run_id]
+    assert _snapshot_count() == count and patch.read_bytes() == original
+    assert (snapshot_root / "waiting.txt").read_text(encoding="utf-8") == "pending disposition\n"
 
 
 def test_a_writing_continuation_runs_in_the_predecessors_snapshot_and_supersedes_its_capture(tmp_path, monkeypatch):

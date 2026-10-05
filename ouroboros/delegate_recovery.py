@@ -216,7 +216,8 @@ def unsettled_start_ids(
 
     A review run is the review substrate's obligation, not the actor's
     delegation slot, so it never blocks the actor's own start; nor does the
-    undisposed patch of the run a start ``continuing`` takes over in its snapshot.
+    undisposed patch of the run a start is ``continuing``. A readonly continuation
+    leaves that patch waiting for its own disposition; it is not a fresh replacement.
     """
 
     mine = str(task_id or "")

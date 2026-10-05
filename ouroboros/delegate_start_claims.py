@@ -84,7 +84,7 @@ def _claimed(drive: pathlib.Path, claim_target: str, payload_busy: Callable[[pat
             from ouroboros.delegate_recovery import unsettled_start_ids
 
             blockers = unsettled_start_ids(drive, task_id, continuing=str(
-                request_row.get("continuation_of") or "") if request_row.get("capture_id") else "")
+                request_row.get("continuation_of") or ""))
             if any(blockers.values()):
                 if claim_target:
                     holder = payload_busy(drive, pathlib.Path(claim_target))
