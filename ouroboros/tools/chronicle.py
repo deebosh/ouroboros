@@ -40,7 +40,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
-from ouroboros import chat_chain
+from ouroboros import chat_chain, memory_inventory
 from ouroboros.chronicle_import import LEGACY_ROOM_ID, row_lineage
 from ouroboros.chronicle_store import (SPEAKERS, ChronicleStore, PublishResult, draft_signer, source_time_span,
                                        verify_quotes)
@@ -442,15 +442,23 @@ def _span(span: Any) -> str:
     return f"{span.get('start')}–{span.get('end')}" + (" (incomplete)" if span.get("incomplete") else "")
 
 
-def _covers_summary(record: Dict[str, Any]) -> str:
+def _periods(store: ChronicleStore, root: Path, records: List[Dict[str, Any]]) -> Dict[str, memory_inventory.Period]:
+    """Each listed part's period as read from its members' rooms (``memory_inventory.record_period``)."""
+    parts = [record for record in records if record.get("kind") == "part"]
+    units = {unit.record_id: unit for unit in memory_inventory.legacy_units(store, root)} if parts else {}
+    return {record["id"]: memory_inventory.record_period(store, record, units) for record in parts}
+
+
+def _covers_summary(record: Dict[str, Any], period: Optional[memory_inventory.Period]) -> str:
     covers = record.get("covers") if isinstance(record.get("covers"), dict) else {}
     kind = record.get("kind")
     if kind == "page":
         notes = len(covers.get("note_ids") or [])
         return (f"covers {_span(covers.get('ts_span'))}, {covers.get('count', 0)} rows"
                 + (f" + {notes} notes" if notes else ""))
-    if kind == "part":
-        return f"folds {len(covers.get('member_ids') or [])} records, {_span(covers.get('ts_span'))}"
+    if kind == "part":  # the period its members' rows give, the same the view prints; never the recorded aggregate
+        dated = _span(period.span) + period.note() if period is not None else "period unknown"
+        return f"folds {len(covers.get('member_ids') or [])} records, {dated}"
     if kind in ("legacy", "gap"):
         raw = covers.get("raw_range") if isinstance(covers.get("raw_range"), dict) else {}
         meta = record.get("metadata") or {}
@@ -488,13 +496,13 @@ def _target_label(target: Any) -> str:
     return f"source {target.get('path') or target.get('kind') or '?'}{location}"
 
 
-def _record_header(record: Dict[str, Any]) -> str:
+def _record_header(record: Dict[str, Any], period: Optional[memory_inventory.Period] = None) -> str:
     parts = [f"{record.get('kind')} {record.get('id')}", f"room {record.get('room_id')}",
              _author_label(record.get("author"))]
     if record.get("kind") == "mark":
         parts += [f"scope {record.get('scope')}", f"target {_target_label(record.get('target_ref'))}",
                   f"visibility {record.get('visibility')}"]
-    for part in (record.get("status"), _covers_summary(record), _stamp_summary(record.get("host_stamp"))):
+    for part in (record.get("status"), _covers_summary(record, period), _stamp_summary(record.get("host_stamp"))):
         if part:
             parts.append(str(part))
     if record.get("target_id"):
@@ -510,12 +518,13 @@ def _record_header(record: Dict[str, Any]) -> str:
     return "[" + "; ".join(parts) + "]"
 
 
-def _listed(record: Dict[str, Any]) -> str:
+def _listed(record: Dict[str, Any], periods: Dict[str, memory_inventory.Period]) -> str:
     """One record as listed in its room: the header, then the text that acts."""
+    header = _record_header(record, periods.get(record["id"]))
     if record.get("kind") == "mark":
         quote = record.get("quote") if record.get("visibility") == "full" else None
-        return _record_header(record) + "\n" + str(record.get("text") or "") + (f"\nquote: {quote}" if quote else "")
-    return _record_header(record) + "\n" + str(record.get("current_text", record.get("text")) or "")
+        return header + "\n" + str(record.get("text") or "") + (f"\nquote: {quote}" if quote else "")
+    return header + "\n" + str(record.get("current_text", record.get("text")) or "")
 
 
 def _row_line(address: Dict[str, Any], row: Dict[str, Any], pos: int, lineage: Dict[str, Any]) -> Tuple[str, str]:
@@ -575,10 +584,12 @@ def _read_records(root: Path, room: str, after_seq: int, limit: int) -> str:
     store = _existing_store(root)
     head = f"room {room}; head {store.room_head(room) if store is not None else 0}"
     entries: List[Dict[str, Any]] = []
+    periods: Dict[str, memory_inventory.Period] = {}
     if store is not None:
         entries = sorted(store.room_records(room, after_seq=after_seq) + _active_marks(store, room, after_seq),
                          key=lambda record: record["sequence"])
-    kept, texts, exhausted = _collect(iter(entries), _listed, limit)
+        periods = _periods(store, root, entries)
+    kept, texts, exhausted = _collect(iter(entries), lambda record: _listed(record, periods), limit)
 
     def continuation(k: int, done: bool) -> str:
         last = kept[k - 1]["sequence"] if k else after_seq
@@ -591,7 +602,8 @@ def _read_records(root: Path, room: str, after_seq: int, limit: int) -> str:
         return text
     big = kept[0]  # one record larger than a page is read through its own address
     size = len(str(big.get("current_text", big.get("text")) or ""))
-    stub = f"{_record_header(big)}\n(text of {size} chars does not fit this page: memory_read(node_id={big['id']}) pages it)"
+    stub = (f"{_record_header(big, periods.get(big['id']))}\n(text of {size} chars does not fit this page: "
+            f"memory_read(node_id={big['id']}) pages it)")
     return f"{head}\n{continuation(1, exhausted and len(kept) == 1)}\n{stub}"
 
 
@@ -706,7 +718,8 @@ def _read_node(root: Path, node_id: str, start: int, limit: int) -> str:
     if record is None:
         raise ValueError(f"memory node {node_id} not found")
     shown, document = _node_document(store, record)
-    return _window(_record_header(shown), document, start, limit, lambda end: f"memory_read(node_id={node_id}, start={end})")
+    header = _record_header(shown, _periods(store, root, [shown]).get(shown["id"]))
+    return _window(header, document, start, limit, lambda end: f"memory_read(node_id={node_id}, start={end})")
 
 
 def _read_source(root: Path, ref: Any, start: int, limit: int) -> str:

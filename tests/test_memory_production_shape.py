@@ -147,3 +147,64 @@ def test_a_correction_of_a_page_folded_twice_stands_once_under_the_acting_part_t
     assert later.count(fix) == 1 and fix in _block(later, beyond) and f" {made.outer}\n" not in later
     # The child's story shows the same block (an integrator and a child differ only in the retold first block).
     assert fix in _story(tmp_path, {"id": "kid00001", "chat_id": 1, "delegation_role": "subagent"})
+
+
+# --- a record's period and place come from its room's own rows -------------------------------------------
+
+def _dated(text, record_id):
+    """The period of a record's ``### <room> · <period> · <kind> <id>`` header in the story."""
+    return next(line for line in text.split("\n") if line.endswith(f" {record_id}")).split(" · ")[1]
+
+
+def _memory_read(root, **arguments):
+    from ouroboros.tools.chronicle import _memory_read
+    from ouroboros.tools.registry import ToolContext
+
+    return _memory_read(ToolContext(repo_dir=root, drive_root=root, task_id="root0001", current_chat_id=1), **arguments)
+
+
+def test_a_part_is_dated_and_ordered_by_its_rooms_own_rows_not_by_its_block(tmp_path):
+    """The journal records a block's period and position for a part over an old record, so a room that takes
+    the tail of a block was dated from the block's first row and the parts of one block shared one place. The
+    story, the room page and memory_read read the period and the order from the room's rows at read time; a
+    retold record with no row keeps its block's period and says so; a part over both says so; a nested part is
+    dated by its page; Main's part over a whole block reads as it always did."""
+    from ouroboros import memory_floor
+    from ouroboros import memory_view as mv
+
+    made = shape.production(tmp_path)
+    store, alpha, beta, parts = ChronicleStore(tmp_path), made.alpha, made.beta, made.parts
+    units = _units(tmp_path)
+    task = {"id": "turn0001", "chat_id": 1}
+    snapshot = mv.capture_memory_view(tmp_path, task, mv.view_spec_for_task(task, tmp_path))
+    story = mv.render_story(snapshot)
+    alpha_part, main_part, quiet = parts[f"legacy-b00-r{alpha}"], parts["legacy-b00-r1"], parts["legacy-b01-r1"]
+    # Alpha's rows of block zero are 2, 3 and the owner's word that started it (row 5): 00:02 on, not the block's 00:00.
+    assert _dated(story, alpha_part) == "2026-09-01 00:02 → 2026-09-01 00:05"
+    assert store.get(alpha_part)["covers"]["ts_span"]["start"] == "2026-09-01T00:00:00+00:00"  # the journal, untouched
+    assert _dated(story, main_part) == "2026-09-01 00:00 → 2026-09-01 00:05"
+    assert _dated(story, quiet) == "2026-09-02 00:00 → 2026-09-02 00:03 (block period)"
+    assert _dated(story, made.outer) == "2026-09-03 00:00 → 2026-09-03 00:01"  # the page over rows 10-11
+    # Block zero by each room's first row (Main 0, Alpha 2, Transport 4) though the fold wrote Transport first; block
+    # one likewise (Alpha's row 6 and Main's block position 6 in publication order, Beta's row 8); then my pages.
+    expected = [main_part, alpha_part, parts["legacy-b00-r777"], parts[f"legacy-b01-r{alpha}"], quiet,
+                parts[f"legacy-b01-r{beta}"], made.outer, made.gap_page]
+    assert [line.rsplit(" ", 1)[1] for line in story.split("\n") if line.startswith("### ")] == expected
+    assert [ident for step, ident, _whole, _short in memory_floor.floor_elements(snapshot) if step == "F5"] == expected
+    assert [mi.record_period(store, store.get(record), units).first for record in expected] == [0, 2, 4, 6, 6, 8, 10, 12]
+    # memory_read dates the part as the view does, in its room listing and alone.
+    dated = "folds 1 records, 2026-09-01T00:02:00+00:00–2026-09-01T00:05:00+00:00;"
+    listed = _memory_read(tmp_path, room_id=alpha)
+    assert dated in next(line for line in listed.split("\n") if line.startswith(f"[part {alpha_part}; "))
+    assert dated in _memory_read(tmp_path, node_id=alpha_part).split("\n")[0]
+    assert "2026-09-02T00:00:00+00:00–2026-09-02T00:03:00+00:00 (block period);" in _memory_read(tmp_path, node_id=quiet)
+    # A part over Main's two blocks: its own rows from block zero, the block's period for block one.
+    both = shape.part(tmp_path, "1", [main_part, quiet], text="Main's two old blocks, told once.")
+    later = mv.capture_memory_view(tmp_path, task, mv.view_spec_for_task(task, tmp_path))
+    assert _dated(mv.render_story(later), both) == "2026-09-01 00:00 → 2026-09-02 00:03 (partly block period)"
+    assert mi.record_period(store, store.get(both), units) == mi.Period(
+        {"start": "2026-09-01T00:00:00+00:00", "end": "2026-09-02T00:03:00+00:00", "incomplete": False}, 0, "mixed")
+    room = mv.render_room(later)
+    assert f"#### part {main_part} — 2026-09-01 00:00 → 2026-09-01 00:05 — under part {both}" in room
+    assert f"#### part {quiet} — 2026-09-02 00:00 → 2026-09-02 00:03 (block period) — under part {both}" in room
+    assert f"#### part {made.inner} — 2026-09-03 00:00 → 2026-09-03 00:01 — under part {made.outer}" in room

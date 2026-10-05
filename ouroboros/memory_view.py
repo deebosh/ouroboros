@@ -343,8 +343,14 @@ def _fixes(store: ChronicleStore, record: Mapping[str, Any], fixes: Mapping[str,
             for member in members for fix in fixes.get(str(member), ())]
 
 
-def _story_pages(store: ChronicleStore, label: Callable[..., str]) -> Tuple[List[Dict[str, Any]], int]:
-    """Every acting page and part not folded into a part, all rooms, by ``stream_span[0]`` then sequence."""
+def _dated(period: memory_inventory.Period) -> str:
+    """A page's or part's period as the view prints it: its room's own rows, a block's labelled as the block's."""
+    return _period(period.span) + period.note()
+
+
+def _story_pages(store: ChronicleStore, label: Callable[..., str],
+                 units: Mapping[str, memory_inventory.LegacyUnit]) -> Tuple[List[Dict[str, Any]], int]:
+    """Every acting page and part not folded into a part, all rooms, by the first row of its own room then sequence."""
     fixes: Dict[str, List[Dict[str, Any]]] = {}
     for record in store.records(kinds=("correction", "decision")):
         if record["kind"] == "correction" or record.get("accepted") is False:
@@ -360,13 +366,11 @@ def _story_pages(store: ChronicleStore, label: Callable[..., str]) -> Tuple[List
             mine += record["kind"] == "page" and _mapping(record.get("author")).get("kind") == "mind"
             if record.get("folded_into"):
                 continue
-            covers = _mapping(record.get("covers"))
-            span = covers.get("stream_span")
-            first = span[0] if isinstance(span, list) and span and type(span[0]) is int else -1
-            keyed.append(((first, record["sequence"]), {
+            period = memory_inventory.record_period(store, record, units)
+            keyed.append(((period.first, record["sequence"]), {
                 "kind": record["kind"], "id": record["id"], "room_id": room,
                 "label": str(_mapping(record.get("metadata")).get("room_label") or label(room)),
-                "period": _period(covers.get("ts_span")), "text": str(record.get("current_text") or ""),
+                "period": _dated(period), "text": str(record.get("current_text") or ""),
                 "status": str(record.get("status") or ""), "signer": draft_signer(record.get("author")),
                 "stamp": _stamp_summary(record.get("host_stamp")), "fixes": _fixes(store, record, fixes), "quotes": record.get("quotes") or []}))
     return [entry for _key, entry in sorted(keyed, key=lambda pair: pair[0])], mine
@@ -401,7 +405,7 @@ def _capture_story(store: ChronicleStore, root: pathlib.Path, label: Callable[..
             read = _mapping(_mapping(_mapping(unit.refusal.get("response_ref")).get("read")).get("arguments"))
             refusals.append({"id": unit.record_id, "label": entry["label"], "period": entry["period"],
                              "kind": str(unit.refusal.get("kind") or "refused"), "path": str(read.get("path") or "")})
-    pages, mine = _story_pages(store, label)
+    pages, mine = _story_pages(store, label, {unit.record_id: unit for unit in units})
     progress = memory_inventory.legacy_progress(units)
     open_units = [unit for unit in units if not unit.folded]
     status = {"folded": progress["folded"], "total": progress["periods"], "pages_by_me": mine,
@@ -608,9 +612,9 @@ def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
                             "of": LEGACY_ROOM_LABEL if str(record.get("room_id")) == LEGACY_ROOM_ID else ""}
                            for record in retold if not getattr(unit := units.get(record["id"]), "folded", False)
                            and record["id"] not in whole]
-        own = {} if spec.story else {e["id"]: {**e, "part": None} for e in _story_pages(store, label)[0] if e["room_id"] == room}  # story order: the floor takes the oldest first
+        own = {} if spec.story else {e["id"]: {**e, "part": None} for e in _story_pages(store, label, units)[0] if e["room_id"] == room}  # story order: the floor takes the oldest first
         facts["under_parts"] = [own.get(record["id"]) or {"id": record["id"], "kind": record["kind"], "part": record["folded_into"],
-                                 "period": _period(_mapping(record.get("covers")).get("ts_span")), "text": str(record.get("current_text") or "")}
+                                 "period": _dated(memory_inventory.record_period(store, record, units)), "text": str(record.get("current_text") or "")}
                                 for record in (records if spec.story else store.pages_of_room(room)) if record["kind"] in ("page", "part") and (record.get("folded_into") or record["id"] in own)]
         facts["notes"] = list(notes.get(room, ()))
     if spec.origin_words and room.lstrip("-").isdigit() and int(room) in memory_inventory.membership_facts(

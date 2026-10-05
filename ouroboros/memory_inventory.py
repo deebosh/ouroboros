@@ -17,6 +17,9 @@ them a second time:
   ``gap`` (a torn line of the chronicle itself) is not a member the store folds, so it
   stays a pointer: readable and correctable, never folded.
 - A **period** (a block of the old memory) is folded when every unit of it is.
+- A **story record's period and place** (``record_period``) are read from its room's own rows:
+  a page's covers, a retold record's rows (without rows, its block's recorded period, labelled),
+  a part's union over its members. The aggregate a part records is historical and not shown.
 - An **open segment** is the oldest run of a room's open rows (after the frontier, or within
   one legacy unit's range) with no sealed row inside: what one page may seal without being
   refused ``already_sealed``. The sealed set is taken away before the choice.
@@ -385,10 +388,12 @@ class LegacyUnit:
     folded: bool
     refusal: Optional[Dict[str, Any]]  # the fallback writer's refusal receipt for this unit, if any
     ts_span: Optional[Dict[str, Any]] = None  # ``source_time_span`` of the room's own rows; None without rows
+    first_pos: int = -1  # the stream position of the room's first row in the range; -1 without rows
 
 
+_RowSet = Tuple[FrozenSet[str], Optional[Dict[str, Any]], int]  # row_sha256 set, time span, first position
 _LEGACY_ROWS: Dict[str, Tuple[Tuple[str, ...], int, List[Tuple[Dict[str, Any], Dict[str, Any]]]]] = {}
-_LEGACY_SETS: Dict[str, Tuple[Tuple[Any, ...], Dict[str, Tuple[FrozenSet[str], Optional[Dict[str, Any]]]]]] = {}
+_LEGACY_SETS: Dict[str, Tuple[Tuple[Any, ...], Dict[str, _RowSet]]] = {}
 _RETELLING_CHARS: Dict[str, Dict[str, int]] = {}
 _UNITS: Dict[str, Tuple[Tuple[Any, ...], List[LegacyUnit]]] = {}
 
@@ -428,8 +433,8 @@ def _legacy_stream(root: pathlib.Path, stop: int) -> Tuple[Tuple[str, ...], List
 
 
 def _legacy_row_sets(root: pathlib.Path, ranges: Dict[str, Tuple[str, Tuple[int, int]]],
-                     facts: MembershipFacts) -> Dict[str, Tuple[FrozenSet[str], Optional[Dict[str, Any]]]]:
-    """``record id -> (row_sha256 set, time span of those rows)`` of each exact unit: its range's rows of its room."""
+                     facts: MembershipFacts) -> Dict[str, _RowSet]:
+    """``record id -> (row_sha256 set, time span, first position)`` of each exact unit: its range's rows of its room."""
     if not ranges:
         return {}
     stop = max(end for _room, (_start, end) in ranges.values())
@@ -440,16 +445,17 @@ def _legacy_row_sets(root: pathlib.Path, ranges: Dict[str, Tuple[str, Tuple[int,
     if cached is not None and cached[0] == key:
         return cached[1]
     rooms_at: Dict[int, FrozenSet[str]] = {}
-    sets: Dict[str, Tuple[FrozenSet[str], Optional[Dict[str, Any]]]] = {}
+    sets: Dict[str, _RowSet] = {}
     for record_id, (room, (start, end)) in ranges.items():
-        members, stamps = set(), []
+        members, stamps, first = set(), [], -1
         for pos in range(max(start, 0), min(end, len(stream))):
             if pos not in rooms_at:
                 rooms_at[pos] = rooms_of_row(stream[pos][1], facts)
             if room in rooms_at[pos]:
                 members.add(stream[pos][0]["row_sha256"])
                 stamps.append(stream[pos][1].get("ts"))
-        sets[record_id] = (frozenset(members), source_time_span(stamps) if stamps else None)
+                first = pos if first < 0 else first
+        sets[record_id] = (frozenset(members), source_time_span(stamps) if stamps else None, first)
     _LEGACY_SETS[str(root.resolve())] = (key, sets)
     return sets
 
@@ -488,7 +494,7 @@ def legacy_units(store: ChronicleStore, root: Any) -> List[LegacyUnit]:
     units = []
     for pointer in pointers:
         record_id, room = pointer["node_id"], str(pointer["room_id"])
-        rows, span = row_sets.get(record_id, (frozenset(), None))
+        rows, span, first = row_sets.get(record_id, (frozenset(), None, -1))
         uncovered = len(rows - _sealed(store, room, authority)) if rows else 0
         refusal = refusals.get(record_id)
         block = pointer.get("legacy_block")
@@ -497,7 +503,7 @@ def legacy_units(store: ChronicleStore, root: Any) -> List[LegacyUnit]:
             raw="exact" if record_id in ranges else "unknown", rows=len(rows), uncovered=uncovered,
             retelling_chars=chars.get(record_id, 0),
             folded=bool(pointer.get("folded_into")) or (bool(rows) and uncovered == 0),
-            refusal=dict(refusal) if isinstance(refusal, dict) else None, ts_span=span))
+            refusal=dict(refusal) if isinstance(refusal, dict) else None, ts_span=span, first_pos=first))
     _UNITS[str(root.resolve())] = (key, units)
     return list(units)
 
@@ -510,6 +516,54 @@ def legacy_progress(units: List[LegacyUnit]) -> Dict[str, Any]:
             blocks[unit.block] = blocks.get(unit.block, True) and unit.folded
     pending = sorted(block for block, folded in blocks.items() if not folded)
     return {"periods": len(blocks), "folded": len(blocks) - len(pending), "pending": pending}
+
+
+# --- the period and place of a story record ----------------------------------------------------
+
+class Period(NamedTuple):
+    """A story record's period as read from its room's rows: ``span`` (``source_time_span`` form, None when no
+    row and no block period is known), ``first`` (the stream position its story order starts from; -1 unknown)
+    and ``source``: ``rows`` (the room's own rows), ``block`` (a retold record without rows: its block's recorded
+    period and position) or ``mixed`` (a part over both)."""
+    span: Optional[Dict[str, Any]]
+    first: int
+    source: str
+
+    def note(self) -> str:
+        """What a reader prints after the period: nothing for the room's own rows, else whose period it is."""
+        return {"block": " (block period)", "mixed": " (partly block period)"}.get(self.source, "") if self.span else ""
+
+
+def record_period(store: ChronicleStore, record: Mapping[str, Any], units: Mapping[str, LegacyUnit]) -> Period:
+    """The period and place of a page, part or retold record, from its room's own rows, never the journal's aggregate.
+
+    A page: its own covers. A retold record: its unit's rows (``units``: the ready legacy map of one reader);
+    without rows, its block's recorded period and position, labelled ``block``. A part: the union over its
+    members, recursively, so a room that takes the tail of a block is dated and ordered by its own rows; the
+    ``covers.ts_span`` the part recorded (its members' block aggregate) is not read.
+    """
+    covers = record.get("covers") if isinstance(record.get("covers"), Mapping) else {}
+    if record.get("kind") == "part":
+        members = [record_period(store, member, units) for member_id in covers.get("member_ids") or ()
+                   if (member := store.get(str(member_id))) is not None]
+        spans = [period.span for period in members if period.span]
+        sources = {period.source for period in members if period.span}
+        span = source_time_span([span[key] for span in spans for key in ("start", "end") if span.get(key)],
+                                incomplete=any(not period.span or period.span.get("incomplete") for period in members)
+                                ) if spans else None
+        firsts = [period.first for period in members if period.first >= 0]
+        return Period(span, min(firsts) if firsts else -1, "mixed" if len(sources) > 1 else next(iter(sources), "rows"))
+    if record.get("kind") in ("legacy", "gap"):
+        unit = units.get(str(record.get("id")))
+        if unit is not None and unit.ts_span:
+            return Period(dict(unit.ts_span), unit.first_pos, "rows")
+        raw = covers.get("raw_range") if isinstance(covers.get("raw_range"), Mapping) else {}
+        span, pos = (raw.get("ts_span"), raw.get("pos")) if raw.get("status") == "exact" else (None, None)
+        return Period(dict(span) if isinstance(span, Mapping) and (span.get("start") or span.get("end")) else None,
+                      pos[0] if isinstance(pos, list) and pos and type(pos[0]) is int else -1, "block")
+    span, stream = covers.get("ts_span"), covers.get("stream_span")
+    return Period(dict(span) if isinstance(span, Mapping) and (span.get("start") or span.get("end")) else None,
+                  stream[0] if isinstance(stream, list) and stream and type(stream[0]) is int else -1, "rows")
 
 
 # --- open segments --------------------------------------------------------------------------------
