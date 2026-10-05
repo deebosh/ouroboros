@@ -18,6 +18,7 @@ from ouroboros.send_clock import CLOCK_NOTE_PREFIX
 from tests.test_context_fit_integration import _plan
 from tests.test_llm_claudexor import MODEL, ROUTE, result, ledger, setup as gateway_fixture
 from tests.test_model_wait import live_wait as wait_fixture
+from tests._usage_store_testing import dispatched_attempts
 
 setup = gateway_fixture
 live_wait = wait_fixture
@@ -86,9 +87,9 @@ def test_native_account_repair_rebinds_real_physical_candidate_before_send(main_
     else:
         answer, _cost, _mode = _dispatch(ctx)
         assert answer["content"] == result()["message"]["content"]
-    rows = ledger(ctx.drive_root)
-    assert [row["state"] for row in rows] == ["reserved", "dispatched", "released", "reserved", "dispatched", "settled"]
-    dispatched = [row for row in rows if row["state"] == "dispatched"]
+    rows = ledger(ctx.drive_root)  # one current row per attempt: the released send, then the answered one
+    assert [(row["state"], row["revision"]) for row in rows] == [("released", 3), ("settled", 3)]
+    dispatched = dispatched_attempts(ctx.drive_root)
     assert dispatched[0]["physical_context"]["route_fp"] == "capacity-account-a"
     assert dispatched[1]["physical_context"]["route_fp"] == "capacity-account-b"
     assert dispatched[1]["physical_context"]["capacity_total_tokens"] == 240_000

@@ -52,7 +52,7 @@ worktrees, Deliverables, cache and userbase defaults for pytest, preflight and
 their server children — including `env=None` children; explicit test roots survive. Bare pytest keeps explicitly supplied
 provider/lane controls for integration CI; launcher and preflight scrub them.
 Under that marker `supervisor/git_ops_reset.py` installs no dependencies for ANY
-caller; production unchanged. C locale/Git ceilings stabilize probes; pytest Deliverables follows synthetic HOME. `MAC_CHROMIUM_TMPDIR` shares the disposable temp root: macOS Chromium ignores `TMPDIR` for initial download staging. Not an OS sandbox. Ledger scale: [contract and runner](../USAGE_COMPACTION.md#writer-continuity-and-qualification).
+caller; production unchanged. C locale/Git ceilings stabilize probes; pytest Deliverables follows synthetic HOME. `MAC_CHROMIUM_TMPDIR` shares the disposable temp root: macOS Chromium ignores `TMPDIR` for initial download staging. Not an OS sandbox. Money scale: [usage store](../USAGE_STORE.md#4-reads).
 
 `tests/candidate_checkout.py` owns shared UI and keyless wait/repair checkouts: tracked
 worktree bytes plus non-ignored new files — staged, unstaged, deleted, executable

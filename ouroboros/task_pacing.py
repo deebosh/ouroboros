@@ -767,6 +767,7 @@ def prepared_wrapup_candidate(
         context_fit_plan=getattr(owner_ctx, "context_fit_plan", None),
         overrides=waiter.overrides if waiter else None)
 
+    # Named residual: reads the task's refused-image memory, never recovers a first refusal (vision_routing).
     send_messages = _prepare_main_messages(
         messages, model=ctx.active_model, llm=ctx.llm,
         accumulated_usage=ctx.accumulated_usage,
@@ -1131,7 +1132,7 @@ def _acceptance_rails_line_inner(
                 projection = usage_projection(
                     scope.drive_root, global_limit_usd=scope.global_limit_usd,
                 )
-                root = (projection.get("by_root") or {}).get(scope.root_task_id) or {}
+                root = usage_projection(scope.drive_root, root_task_id=scope.root_task_id)
                 remaining = projection.get("remaining_known_usd")
                 money_bits.append(_headroom_phrase(remaining, rails.get("cost_ceiling_usd"), root.get("accounted_usd")))
         except Exception:

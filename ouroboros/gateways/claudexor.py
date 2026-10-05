@@ -104,6 +104,7 @@ class ClaudexorUnavailable(RuntimeError):
     # What the engine REPORTED about a failed run ("" = nothing reported); set only by
     # ``run_failure_error``. An opaque fact: carried and shown, never branched on.
     reported_cause = ""
+    retry_after = ""  # The received HTTP Retry-After header, never a local backoff.
 
     def __init__(self, code: str, message: str, *, status_code: int = 0,
                  required_actions: tuple[str, ...] = (), observation_timeout: bool = False,
@@ -533,10 +534,12 @@ class ClaudexorGateway:
         # it is a timer at all. At engine 3.14.0 the daemon serializes no `resetsAt` into a
         # pool ControlProblem context (the dated producer is the run-detail RunFailure, and
         # `cooldown_until` lives in a quota snapshot), so this seam yields the plain class.
-        return (_window_exhausted_refusal(code, message, context.get("resetsAt"),
+        error = (_window_exhausted_refusal(code, message, context.get("resetsAt"),
                                           status_code=response.status_code)
                 or ClaudexorUnavailable(code, message, status_code=response.status_code,
                                         required_actions=required_actions))
+        error.retry_after = response.headers.get("Retry-After", "")
+        return error
 
     # -- operations ------------------------------------------------------------
 

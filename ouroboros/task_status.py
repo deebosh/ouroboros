@@ -714,12 +714,14 @@ def reconcile_orphaned_running_tasks(
     task-done seam sends. This module stays free of a supervisor import.
     """
     from ouroboros.task_custody import attempt_basis
-    from ouroboros.task_results import list_task_results, write_task_result
+    from ouroboros.task_results import write_task_result
+    from ouroboros.obligations import result_rows
 
     root = pathlib.Path(drive_root)
     healed = 0
     try:
-        running = list_task_results(root, statuses=[STATUS_RUNNING, STATUS_INTERRUPTED])
+        running = [row for row in result_rows(root, "nonterminal", exclude=exclude_task_ids)
+                   if row.get("status") in {STATUS_RUNNING, STATUS_INTERRUPTED}]
     except Exception:
         return 0
     for row in running:
@@ -741,7 +743,7 @@ def reconcile_orphaned_running_tasks(
             log.debug("Orphan reconcile skipped %s: cancel authority unreadable", task_id, exc_info=True)
             continue
         try:
-            effective = load_effective_task_result(root, task_id, materialize_artifacts=False)
+            effective = effective_task_result(root, row, materialize_artifacts=False)
         except Exception:
             continue
         eff_status = str(effective.get("status") or "").strip().lower()

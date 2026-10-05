@@ -131,7 +131,7 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
     concurrent request.
     """
     from ouroboros.tools.github import github_token_from_env_or_settings
-    from ouroboros.usage_accounting import ensure_legacy_imported, usage_projection, usage_writer_snapshot
+    from ouroboros.usage_accounting import usage_projection, usage_writer_snapshot
     from supervisor.queue import get_evolution_status_snapshot
     from supervisor.state import TOTAL_BUDGET_LIMIT, control_value, load_state
     from supervisor.workers import PENDING, RUNNING, WORKERS
@@ -153,14 +153,13 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
     drive_root = request_drive_root(request)
     accounting_available = True
     try:
-        ensure_legacy_imported(drive_root)
         # The writer's slim snapshot (totals, marker, OpenRouter bucket): this response
         # serializes ``physical_calls`` and scalar accounting fields only, so the five
         # grouped axes of ``usage_breakdown`` would be rendered per poll and thrown away.
         # Its private provenance keys stay off the wire even when the unbounded-budget
         # branch reuses the mapping directly as its accounting projection.
-        # /api/state is polled: both reads are display reads, so a contended ledger lock
-        # serves the last validated snapshot instead of parking this worker thread.
+        # /api/state is polled: both reads are display reads (a short wait, then the
+        # accounting is reported unavailable) instead of parking this worker thread.
         breakdown = {
             key: value
             for key, value in usage_writer_snapshot(drive_root, allow_stale=True).items()

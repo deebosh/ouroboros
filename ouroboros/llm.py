@@ -636,25 +636,25 @@ class LLMClient(
         model_operation_observer: Any = None,
         model_account_override: str | None = None,
         processing_preference: str | None = None,
+        purpose: str = "vlm",
     ) -> Tuple[str, Dict[str, Any]]:
-        """Run a lightweight vision query; image dicts use url or base64+mime."""
+        """Run a lightweight vision query; image dicts use url or base64+mime.
+
+        ``model`` is named explicitly, so the one image policy sends its pixels
+        (``purpose`` "vlm" for a VLM tool, "caption" for a send-time caption);
+        it never captions here, so a caption cannot recurse into another."""
+        from ouroboros.vision_routing import VisionRoutingContext, prepare_messages_for_send, query_image_url
+
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
         for img in images:
-            if "url" in img:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {"url": img["url"]},
-                })
-            elif "base64" in img:
-                mime = img.get("mime", "image/png")
-                content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{img['base64']}"},
-                })
+            if "url" in img or "base64" in img:  # the URL a refusal of this image is remembered by
+                content.append({"type": "image_url", "image_url": {"url": query_image_url(img)}})
             else:
                 log.warning("vision_query: skipping image with unknown format: %s", list(img.keys()))
 
-        messages = [{"role": "user", "content": content}]
+        messages = prepare_messages_for_send([{"role": "user", "content": content}], routing=VisionRoutingContext(
+            model, self, {}, use_local=use_local, model_role=model_role,
+            model_account_override=model_account_override), purpose=purpose)
         response_msg, usage = self.chat(
             messages=messages,
             model=model,

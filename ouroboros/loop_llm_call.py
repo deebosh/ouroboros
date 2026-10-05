@@ -133,9 +133,9 @@ def fold_retrieval_usage(accumulated_usage: Dict[str, Any], usage: Dict[str, Any
 # large) keep failing fast. There is NO cross-model fallback here — the same
 # request is retried on the SAME model.
 _TRANSIENT_RETRY_KINDS = frozenset({"provider_transient", "provider_incomplete_response"})
-# OB-01: stamped when THIS invocation spent its same-model retry wall without a
-# usable response; entry-cleared per invocation; PERMANENT classes leave it unspent.
-RETRY_WALL_EXHAUSTED_KEY = "_llm_retry_wall_exhausted"
+# OB-01: stamped when THIS invocation spent its same-model retry wall without a usable response; entry-cleared
+# per invocation; PERMANENT classes leave it unspent. Its twin: a series of 2+ attempts (not a deadline) ended it.
+RETRY_WALL_EXHAUSTED_KEY, RETRY_ATTEMPTS_SPENT_KEY = "_llm_retry_wall_exhausted", "_llm_retry_attempts_spent"
 # Error kinds that put a model on the F1 fallback cooldown. Superset of the same-model
 # retry kinds: a body-error 429 (HTTP 200 with an error in the body — the canonical
 # cloud.ru/OpenRouter rate-limit shape) is classified "rate_limit", which must cool the
@@ -1045,7 +1045,7 @@ def _stop_after_llm_error(ctx: _LlmErrorContext) -> bool:
             round_id=ctx.round_id, round_idx=ctx.round_idx, attempt=ctx.attempt,
             model=ctx.model, error_kind=error_kind,
         )
-    accumulated_usage[RETRY_WALL_EXHAUSTED_KEY] = True
+    accumulated_usage.update({RETRY_WALL_EXHAUSTED_KEY: True, RETRY_ATTEMPTS_SPENT_KEY: 1 < attempt_budget <= ctx.attempt + 1})
     return True
 
 
@@ -1177,22 +1177,22 @@ def _prepare_main_messages(
     model_role: str = "main",
     model_account_override: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    try:
-        from ouroboros.vision_routing import VisionRoutingContext, prepare_messages_for_send
+    from ouroboros import vision_routing
 
-        return prepare_messages_for_send(
+    try:
+        return vision_routing.prepare_messages_for_send(
             messages,
-            routing=VisionRoutingContext(
+            routing=vision_routing.VisionRoutingContext(
                 model=model, llm=llm, accumulated_usage=accumulated_usage,
                 drive_root=drive_root, task_id=task_id, event_queue=event_queue,
                 use_local=use_local, task_attempt=task_attempt, deadline_ts=deadline_ts,
                 model_role=model_role, model_account_override=model_account_override,
             ),
         )
-    except Exception as error:
+    except Exception as error:  # a failed projection never falls back to the canonical pixels
         propagate_model_error(error)
-        log.debug("vision routing preparation failed; falling back to canonical messages", exc_info=True)
-        return messages
+        log.warning("image preparation failed; images withheld per the image-input mode", exc_info=True)
+        return vision_routing.withhold_images(messages, error)
 
 
 def _send_main_candidate(
@@ -1218,7 +1218,15 @@ def _send_main_candidate(
         return result
 
 
-def _take_custom_receipts(usage: Dict[str, Any], msg: Dict[str, Any], accumulated_usage: Dict[str, Any]) -> None:
+def _take_response_facts(usage: Dict[str, Any], msg: Dict[str, Any], accumulated_usage: Dict[str, Any]) -> None:
+    model_facts = usage.get("claudexor") or {}
+    accumulated_usage["_model_route"] = dict(model_facts.get("route") or {})
+    accumulated_usage["_model_substitutions"] = model_facts.get("substituted") or []
+    for stale in ("_last_llm_error", "_last_llm_error_kind", "_last_llm_retry_same_request",
+                  "_last_llm_status_code", "_last_llm_provider_code", "_last_llm_provider_message",
+                  "_last_llm_provider_fields", "_last_llm_provider_message_cut", "_last_llm_resource_refusal",
+                  "_last_llm_output_exhausted"):
+        accumulated_usage.pop(stale, None)
     receipts = pop_custom_validation_receipts(usage, msg.get("tool_calls") or [])
     accumulated_usage.pop(CUSTOM_RECEIPTS_USAGE_KEY, None)
     if receipts:
@@ -1332,7 +1340,7 @@ def call_llm_with_retry(
     processing_preference = resolve_processing_preference(model_role, override=processing_preference)
     _replace_response_meta(response_meta_out)
     drive_root = pathlib.Path(drive_logs).parent
-    for key in (RETRY_WALL_EXHAUSTED_KEY, REFUSED_CANDIDATE_KEY, REBOUND_PHYSICAL_CONTEXT_KEY):
+    for key in (RETRY_WALL_EXHAUSTED_KEY, RETRY_ATTEMPTS_SPENT_KEY, REFUSED_CANDIDATE_KEY, REBOUND_PHYSICAL_CONTEXT_KEY):
         accumulated_usage.pop(key, None)  # last-invocation markers (see the keys)
     execution_id = str(accumulated_usage.setdefault("execution_id", new_execution_id()))
     round_id = f"{execution_id}:round:{round_idx}"
@@ -1397,6 +1405,7 @@ def call_llm_with_retry(
                     "response_cache_bypass_requested": response_cache_bypass_requested,
                 },
                 manifest={
+                    "first_request_at": accumulated_usage.setdefault("first_request_at", utc_now_iso()),
                     "execution_id": execution_id,
                     "round_id": round_id,
                     "llm_call_id": llm_call_id,
@@ -1426,15 +1435,8 @@ def call_llm_with_retry(
             host_route = usage.get("model_role_route") or {}
             model, use_local = host_route.get("model", model), host_route.get("use_local", use_local)
             physical_context = accumulated_usage.pop(REBOUND_PHYSICAL_CONTEXT_KEY, physical_context)
-            model_facts = usage.get("claudexor") or {}
-            accumulated_usage["_model_route"] = dict(model_facts.get("route") or {})
-            accumulated_usage["_model_substitutions"] = model_facts.get("substituted") or []
             context_fit_event_fields = _context_fit_event_fields(accumulated_usage) if physical_context is not None else {}
-            _take_custom_receipts(usage, msg, accumulated_usage)
-            for stale in ("_last_llm_error", "_last_llm_error_kind", "_last_llm_retry_same_request", "_last_llm_status_code",
-                          "_last_llm_provider_code", "_last_llm_provider_message", "_last_llm_provider_fields",
-                          "_last_llm_provider_message_cut", "_last_llm_resource_refusal", "_last_llm_output_exhausted"):
-                accumulated_usage.pop(stale, None)
+            _take_response_facts(usage, msg, accumulated_usage)
             cost, display_model, provider, cost_estimated = _normalize_usage_cost(usage, model=model, use_local=use_local)
             accumulated_usage["_observed_route"] = observed_route_stamp(usage)
             add_usage(accumulated_usage, usage)
@@ -1449,6 +1451,7 @@ def call_llm_with_retry(
                     "usage": usage,
                 },
                 manifest={
+                    "first_answer_at": accumulated_usage.setdefault("first_answer_at", utc_now_iso()),
                     "execution_id": execution_id,
                     "round_id": round_id,
                     "llm_call_id": llm_call_id,
@@ -1511,7 +1514,7 @@ def call_llm_with_retry(
                 if _empty_response_wall_spent(is_provider_glitch, permanent, usage):
                     accumulated_usage[RETRY_WALL_EXHAUSTED_KEY] = True
                 return None, cost
-            for stale in ("execution_status", "result_status", "reason_code", RETRY_WALL_EXHAUSTED_KEY, TRANSPORT_DEATHS_KEY, "_pending_transport_outcome"):
+            for stale in ("execution_status", "result_status", "reason_code", RETRY_WALL_EXHAUSTED_KEY, RETRY_ATTEMPTS_SPENT_KEY, TRANSPORT_DEATHS_KEY, "_pending_transport_outcome"):
                 accumulated_usage.pop(stale, None)  # a USABLE response closes the round's repeat record
             accumulated_usage["rounds"] = accumulated_usage.get("rounds", 0) + 1
             cached_tokens = int(usage.get("cached_tokens") or 0)
@@ -1519,7 +1522,9 @@ def call_llm_with_retry(
                 _record_round_cache_facts(accumulated_usage, usage, round_idx=round_idx, round_id=round_id))
             ledger_ids = list(usage.get("ledger_attempt_ids") or [])  # the last one carried this response (#807)
             _round_event = {
-                "ts": utc_now_iso(), "type": "llm_round", "task_id": task_id, "execution_id": execution_id,
+                "ts": utc_now_iso(), "type": "llm_round",
+                **{key: accumulated_usage[key] for key in ("first_request_at", "first_answer_at")},
+                "task_id": task_id, "execution_id": execution_id,
                 "round_id": round_id, "llm_call_id": llm_call_id, "round": round_idx, "model": display_model,
                 "reasoning_effort": effort,
                 **{key: usage[key] for key in ("effort", "effort_resolution", "request_wire", "claudexor") if key in usage},

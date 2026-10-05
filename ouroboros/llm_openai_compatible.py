@@ -131,17 +131,9 @@ class _OpenAICompatibleLaneMixin:
         messages = self._normalize_system_message_placement(messages)
         resolved_model = str(target.get("resolved_model") or "")
         provider = str(target.get("provider") or "")
-        # Blind models receive an explicit image placeholder on both branches,
-        # preserving canonical blocks. Check qualified and bare identities:
-        # direct names lose their provider prefix, while a compatible route's
-        # vendor-prefixed bare name may carry the only recognizable vision prefix.
-        # OpenRouter's two spellings coincide; vision-capable models pass unchanged.
-        from ouroboros.provider_models import supports_vision
-        if not (
-            supports_vision(str(target.get("usage_model") or resolved_model))
-            or supports_vision(resolved_model)
-        ):
-            messages = self._replace_image_blocks_with_placeholder(messages)
+        # Image blocks are encoded as received: whether this route gets pixels,
+        # a caption or a marker was decided by the send policy (vision_routing),
+        # never by this builder from a model name.
         messages = _project_openai_family_system(target, messages)
         # Official direct OpenAI Chat uses the current completion-token carrier:
         # provider-wide; model names are not capability authority across routes.

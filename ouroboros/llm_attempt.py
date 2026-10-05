@@ -461,12 +461,14 @@ def _attempt_request(
         key: payload[key] for key in ("system", "messages", "tools", "functions") if key in payload
     })
     from ouroboros.send_clock import record_candidate, split_clock_note
+    from ouroboros.vision_routing import note_candidate_images
 
     # The same bytes carry the Main clock line; its clock-free twin identifies
     # the candidate across two samples (the forced-final admission predicate).
     clock_note, clock_free = split_clock_note(payload)
     raw_sha256 = hashlib.sha256(raw).hexdigest()
     record_candidate(raw_sha256, clock_note)
+    note_candidate_images(raw_sha256, payload)  # the images it carries, for an image-refusal retry's predicate
     return AttemptRequest(
         model=str(target.get("usage_model") or target.get("resolved_model") or payload.get("model") or ""),
         provider=str(target.get("provider") or "unknown"),
@@ -625,23 +627,8 @@ def _candidate_before_dispatch(candidate: Dict[str, Any], request: AttemptReques
                 ),
             },
         )
-        # CPL-5 forward invariant (model-visible ⟺ logged): reconstruct the
-        # durable record just written and byte-compare it with the wire-bound
-        # candidate. A mismatch is a typed durable fact, never a second dispatch
-        # gate — the in-memory identity refusal above stays the only blocking
-        # authority. The fresh seam digests are reused so the raw candidate is
-        # not serialized again.
-        from ouroboros.model_send_seal import verify_sealed_candidate
-
-        verify_sealed_candidate(
-            reservation.drive_root,
-            task_id=task_id,
-            attempt_id=reservation.attempt_id,
-            candidate=candidate,
-            manifest_ref=persisted["manifest_ref"],
-            raw_sha256=fresh.candidate_raw_sha256,
-            raw_size_bytes=fresh.candidate_raw_size_bytes,
-        )
+        # One frozen send copy and one durable pre-send record. Disk read-back
+        # comparison is the explicit historical audit's work, not dispatch IO.
         if predicate is not None:
             try:
                 accepted = predicate(request)

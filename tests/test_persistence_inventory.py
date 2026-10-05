@@ -604,7 +604,15 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # journal's scan state, the ``records.jsonl`` row).
 # 312 -> 314 (target merge 8d612997c): the two paths the target added on its own
 # 308 -> 310 step land beside the memory change's four.
-EXPECTED_SCAN_PATHS = 314
+# 314 -> 315 (C4 restart/exit): ``state/owned_processes.json``, the installation's ownership set the
+# exit stop reads instead of walking data/state; its own section-2 row.
+# 315 -> 318 (C3 current obligations): state/obligations/*.json, its shared
+# state/obligations.lock, and state/migrations.json; section-2 rows own all three.
+# 318 -> 320 (owned-stop review fix): ``state/owned_processes.pending`` and its lock-free
+# ``*.*.json`` registrations written when the custody lock is held; one section-2 row.
+# 320 -> 321 (obligations rebuild): ``state/obligations/rebuild.owed``, left by a transition whose
+# set write failed so the next start rebuilds the sets; it joins the obligations section-2 row.
+EXPECTED_SCAN_PATHS = 321
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
@@ -810,6 +818,9 @@ STALE_ROW_EXEMPTIONS = frozenset({
     # "none in this tree ... nothing reads or recreates it". Confirmed by grep —
     # the string `project_source_locks` appears in no .py file.
     "state/project_source_locks",
+    # The retired compactor's archive: "none since the usage store" — kept as
+    # evidence, read only by the explicit history audit (model_send_seal).
+    "archive/usage_ledger/segment_*.jsonl",
 })
 
 

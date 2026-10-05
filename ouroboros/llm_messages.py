@@ -1,13 +1,13 @@
 """Transcript shaping for the wire and the reasoning-artifact contract.
 
 Providers disagree about where a system message may appear, whether a tool
-result may carry blocks, what a blind model does with an image, whose
-reasoning signatures they can validate, and how much of a leading system
-message their prompt cache can reuse. This module owns the send-copy
-transforms that answer those disagreements (``split_leading_system_prefix``
-included) and the predicates that decide when replayed reasoning is
-portable — never the canonical transcript, which every transform copies
-before touching.
+result may carry blocks, whose reasoning signatures they can validate, and how
+much of a leading system message their prompt cache can reuse; our own lanes
+that cannot carry image bytes leave a marker naming the lane. This module owns
+the send-copy transforms that answer those disagreements
+(``split_leading_system_prefix`` included) and the predicates that decide when
+replayed reasoning is portable — never the canonical transcript, which every
+transform copies before touching.
 """
 
 
@@ -26,6 +26,18 @@ from ouroboros.provider_models import normalize_model_identity
 # the leading system group keeps only those blocks there, each as its own system item
 # (``split_leading_system_prefix``). Host-only metadata: popped from every send copy.
 STABLE_PREFIX_BLOCKS_KEY = "_stable_prefix_blocks"
+
+
+def own_lane_image_marker(lane: str, caption: str = "") -> str:
+    """The text standing where an image was on a lane of ours that cannot carry image bytes.
+
+    It names our transport, never the model: the limit is ours (the local
+    llama.cpp lane has no vision handler; the GigaChat lane flattens content to
+    text), not evidence about what the model can see.
+    """
+    suffix = f" — {caption}" if caption else ""
+    return f"[image omitted: our {lane} transport lane cannot carry images{suffix}]"
+
 
 # Byte-stable provenance header of the projected host-context notice (no clocks, hashes
 # or ids: round N+1's send copy must remain a prefix extension of round N's).
@@ -299,11 +311,15 @@ class _MessageShapingMixin:
         return cleaned
 
     @staticmethod
-    def _replace_image_blocks_with_placeholder(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Replace image content-blocks with an explicit text placeholder for a
-        model that has NO native vision — a raw ``image_url`` sent to a blind model
-        is silently ignored or 404s. Mirrors the local llama.cpp and GigaChat lanes.
-        Returns a deep copy; the canonical transcript is untouched."""
+    def _replace_image_blocks_with_placeholder(messages: List[Dict[str, Any]], lane: str) -> List[Dict[str, Any]]:
+        """Replace image blocks with ``lane``'s marker on a lane of ours that cannot
+        carry image bytes (``own_lane_image_marker``). Whether a route receives an
+        image is the send policy's decision (``vision_routing``); this transport
+        limit only keeps base64 out of a text-only prompt. Returns a deep copy when
+        anything changes; the canonical transcript is untouched."""
+        if not any(isinstance(block, dict) and str(block.get("type") or "") in ("image_url", "image")
+                   for msg in messages if isinstance(msg.get("content"), list) for block in msg["content"]):
+            return messages
         cleaned = copy.deepcopy(messages)
         for msg in cleaned:
             content = msg.get("content")
@@ -311,9 +327,8 @@ class _MessageShapingMixin:
                 continue
             for idx, block in enumerate(content):
                 if isinstance(block, dict) and str(block.get("type") or "") in ("image_url", "image"):
-                    caption = str(block.get("_caption") or "").strip()
-                    suffix = f" — {caption}" if caption else ""
-                    content[idx] = {"type": "text", "text": f"[image omitted: model has no vision{suffix}]"}
+                    content[idx] = {"type": "text", "text": own_lane_image_marker(
+                        lane, str(block.get("_caption") or "").strip())}
         return cleaned
 
     @staticmethod
