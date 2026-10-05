@@ -152,12 +152,10 @@ def _events(root, kind):
 
 
 def _ledger(root):
-    rows = [json.loads(line) for line in (root / ua.LEDGER_REL).read_text().splitlines() if line.strip()]
-    by_attempt: dict = {}
-    for row in rows:
-        if row.get("kind") == "attempt":
-            by_attempt.setdefault(row["attempt_id"], []).append(row["state"])
-    return by_attempt
+    """Each attempt's current state, in write order (the usage store keeps one row per attempt)."""
+    from tests._usage_store_testing import ledger_rows
+
+    return {row["attempt_id"]: row["state"] for row in ledger_rows(root) if row.get("kind", "attempt") == "attempt"}
 
 
 def _main_plan():
@@ -297,8 +295,7 @@ def test_refusal_then_text_retry_answers_on_the_same_model_and_remembers_only_th
     assert provider.sent == [{DIGEST_A}, frozenset()]
     assert provider.captions == []  # every automatic caption candidate is the refusing route
     assert 'HTTP 400, code image_not_supported: \\"Image input is not supported for this model\\"' in provider.texts[1]
-    assert sorted(_ledger(root).values()) == [["reserved", "dispatched", "settled"],
-                                              ["reserved", "dispatched", "unresolved"]]
+    assert sorted(_ledger(root).values()) == ["settled", "unresolved"]
     usage = ctx.accumulated_usage
     assert list(usage[vr.REFUSED_IMAGES_KEY][vr.image_route_key(MAIN)]) == [DIGEST_A]
     # The retry records under the round's own role and account binding (``task_model_binding``), as it sent.
@@ -425,7 +422,7 @@ def test_a_retry_whose_candidate_still_carries_the_image_never_leaves_the_host(r
     assert msg is None and provider.sent == [{DIGEST_A}]  # the second candidate was refused before dispatch
     usage = ctx.accumulated_usage
     assert usage["_last_llm_error_kind"] == "bad_request" and usage["_last_llm_status_code"] == 400
-    assert sorted(_ledger(root).values()) == [["reserved", "dispatched", "unresolved"], ["reserved", "released"]]
+    assert sorted(_ledger(root).values()) == ["released", "unresolved"]  # the retry was released, never dispatched
     assert _events(root, "image_refusal_retry")[0]["outcome"] == "not_sent"
 
 
@@ -646,5 +643,5 @@ def test_the_real_transport_records_the_sent_images_and_retries_without_them(roo
     assert msg is not None and msg.get("content") == "seen as text"
     assert seen[0] is True and seen[-1] is False
     assert [list(images) for images in ctx.accumulated_usage[vr.REFUSED_IMAGES_KEY].values()] == [[DIGEST_A]]
-    finals = [states[-1] for states in _ledger(root).values()]  # request-wire recovery may add refused attempts
+    finals = list(_ledger(root).values())  # request-wire recovery may add refused attempts
     assert finals[-1] == "settled" and set(finals[:-1]) == {"unresolved"}
