@@ -353,7 +353,6 @@ def test_continue_pins_the_default_cap_on_the_predecessor_for_its_own_later_work
 def test_continue_refuses_when_the_default_cap_cannot_be_pinned(data_root, monkeypatch):
     """An unpinned choice is no choice: the Continue is refused (typed) and the same nonce retries later."""
     from ouroboros.task_results import load_task_result
-    from supervisor import continuation_admission
     from supervisor.continuation_admission import admit_continuation
     from tests._budget_pause_exact_helpers import _install_queue
     from tests.test_owner_continue import _interrupted, NONCE
