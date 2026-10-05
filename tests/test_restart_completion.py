@@ -29,6 +29,9 @@ def test_restart_waits_for_cleanup_and_transfers_once(monkeypatch, tmp_path, man
         def __init__(self, config):
             self.should_exit = False
 
+        def watch_launcher_stop(self):
+            pass
+
         def run(self, *, sockets):
             assert sockets[0].getsockname() == ("127.0.0.1", 9123)
             server._restart_requested.set()
@@ -161,6 +164,8 @@ class DrainEvent(threading.Event):
 class HeldServer:
     def __init__(self, config):
         self.should_exit = False
+    def watch_launcher_stop(self):
+        pass
     def run(self, **kwargs):
         server._restart_requested.set()
         if not uvicorn_returns:

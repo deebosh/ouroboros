@@ -45,7 +45,7 @@ from ouroboros.server_process import (  # noqa: F401
     _request_restart_exit, _restart_requested,
     _supervisor_stop, _exit_signalled,
     _SignalStopServer, _embedded_uvicorn_server,
-    capture_server_source_baseline, log,
+    capture_server_source_baseline, server_stop_source, log,
 )
 from ouroboros.server_routing_context import (  # noqa: F401
     _active_direct_roots,
@@ -1121,7 +1121,7 @@ def _boot_managed_update_tasks() -> None:
     """Finalize a pending update, restart after rollback, then refresh its feed."""
     try:
         from supervisor.git_ops import compute_managed_update_status
-        from supervisor.update_merge import finalize_managed_update_on_boot
+        from supervisor.update_merge import active_update_tx, finalize_managed_update_on_boot
 
         result = finalize_managed_update_on_boot(
             supervisor_ready=_wait_for_supervisor_update_finalize()
@@ -1140,9 +1140,9 @@ def _boot_managed_update_tasks() -> None:
                     send_with_budget(owner_chat, f"📦 Managed update: {stash_note}", role="system", system_type="managed_update_notice")
             except Exception:
                 log.debug("stash note owner notification failed", exc_info=True)
-        if result.get("rolled_back") is True:
-            # This generation imported the rejected candidate. Preserve queued roots
-            # through shutdown, then exec the restored code instead of limping on.
+        if result.get("rolled_back") is True and active_update_tx():
+            # Completed restore custody survives re-exec; the restored generation
+            # clears it without another checkout or restart.
             from supervisor.workers import close_repo_writer_admission
 
             close_repo_writer_admission("managed_update:rollback_restart")
@@ -1502,7 +1502,7 @@ async def lifespan(app):
                     {
                         "ts": utc_now_iso(),
                         "type": "server_shutdown",
-                        "cause": "restart_requested" if restart_requested else "external_signal",
+                        "cause": "restart_requested" if restart_requested else server_stop_source(),
                         "restart_exit": restart_requested,
                     },
                 )
@@ -1704,11 +1704,11 @@ def main() -> int:
         log_level="warning",
         ws_ping_interval=20,
         ws_ping_timeout=20,
-        # Bound the open HTTP/WS drain so the lifespan teardown (terminal custody) starts inside
-        # the launcher's stop budget instead of leaving terminalization to the next boot (#1142).
+        # Leave time for terminal custody inside the launcher stop budget (#1142).
         timeout_graceful_shutdown=SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SEC,
     )
     server = _SignalStopServer(config)
+    server.watch_launcher_stop()
     _uvicorn_exited = threading.Event()
 
     def _check_restart():

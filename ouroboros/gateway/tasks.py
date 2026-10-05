@@ -303,7 +303,7 @@ def _enqueue_api_task_durably(
     """Atomically enqueue, snapshot, and publish the scheduled task result."""
     from supervisor import queue
 
-    with queue._queue_lock:
+    with queue.prepared_root_billing(task), queue._queue_lock:  # the ledger read happens before the lock
         admitted = queue.enqueue_task(task)
         if isinstance(admitted, dict) and admitted.get("_admission_blocked"):
             admitted.update(_admission_never_admitted=True, _admission_owner_token=admission_token)
