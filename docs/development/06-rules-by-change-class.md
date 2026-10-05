@@ -342,10 +342,13 @@ and 23 (`delegated_transport`), both critical. The imperatives:
   the delegated snapshot, payload and acting `self_worktree` paths (boot-time
   `prune_orphans` and genesis excepted)
   (`tests/test_snapshot_file_inputs.py`, `tests/test_subagent_worktrees_lock_scope.py`).
-- `continue_from` refuses ONLY on the four floors of `delegate_continuation`
+- `continue_from` enforces the four floors of `delegate_continuation`
   (own task line through recorded relations, settled, no pending-ambiguous
-  apply, access not wider); every other fact is advice in the child's prompt and
-  a fact for the parent, never a gate and never `instructions`. A writing
+  apply, access not wider). Same-tree custody also refuses
+  `continuation_snapshot_missing`, `continuation_snapshot_released` or
+  `continuation_handover_busy`; engines lacking `continueFrom` refuse
+  `continuation_engine_unsupported`. Other facts are advice in the child's prompt
+  and facts for the parent, never gates or `instructions`. A writing
   continuation keeps its predecessor's undisposed snapshot: its claim and every
   disposition take that snapshot's one lock (`tests/test_delegate_continuation.py`).
 - Outcome honesty: a delegating parent must not produce a clean no-tool final
