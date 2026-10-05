@@ -384,8 +384,8 @@ def acquire_exclusive_file_lock(
                 if probe is None and isinstance(creation_error, FileExistsError) and isinstance(exc, FileNotFoundError):
                     report("contention", exc)  # Observed holder released its name before our probe.
                 elif probe is None and IS_WINDOWS and isinstance(exc, PermissionError):
-                    # Windows refuses to open a name while a holder deletes it (delete pending,
-                    # or the deleter's handle shares no access): that release is contention.
+                    # Windows refuses to open a name its holder is deleting (delete pending, or the
+                    # deleter's DELETE handle, which CPython's open does not share): that release is contention.
                     report("contention", exc)
                 else:
                     report("permission" if isinstance(exc, PermissionError) else "unknown", exc)
