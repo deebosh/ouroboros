@@ -101,7 +101,7 @@ def _analyze_screenshot(ctx: ToolContext, prompt: str = "Describe what you see i
         client = _get_llm_client()
         vlm_model = _resolve_vlm_model(client, model, ctx=ctx)
         if not vlm_model:
-            return _VLM_NO_VISION_MODEL_MSG
+            return _no_image_route(ctx, client, model)
         operation_id = new_call_id("vlm_analysis")
         emit_cognitive_operation_event(
             getattr(ctx, "event_queue", None),
@@ -145,7 +145,7 @@ def _analyze_screenshot(ctx: ToolContext, prompt: str = "Describe what you see i
             )
         propagate_model_error(e)
         log.warning("analyze_screenshot failed: %s", e, exc_info=True)
-        return f"⚠️ VLM_ANALYSIS_FAILED: {e}"
+        return _vlm_failure(ctx, "VLM_ANALYSIS_FAILED", e, locals().get("vlm_model") or model)
 
 
 _IMAGE_MAGIC: List[tuple] = [
@@ -317,13 +317,43 @@ def _image_payload_from_base64(image_base64: str, mime: str) -> Dict[str, str]:
     return _image_payload_from_bytes(raw, mime)
 
 
-_VLM_NO_VISION_MODEL_MSG = (
-    "⚠️ VLM_NO_VISION_MODEL: image analysis is unavailable — neither the active "
-    "model nor any configured vision slot (vision/light/main/fallback) accepts image "
-    "input. Do NOT retry the image. Instead inspect the page as TEXT/DOM "
-    "(browse_page output='html' or 'text') and the console/network for errors, or "
-    "switch_model to a vision-capable model, or ask the owner to configure one."
-)
+def _no_image_route(ctx: Any, client: Any, requested_model: str = "") -> str:
+    """Typed refusal when no route can take the image, naming why each was passed over.
+
+    ``VLM_NO_VISION_MODEL`` means every candidate is confirmed unable (its own
+    metadata says no, or our own lane cannot carry images), with the source; an
+    unknown route is never refused here because it is called."""
+    from ouroboros.vision_routing import describe_passed_over
+
+    _model, passed_over = _vlm_route(client, requested_model, ctx=ctx)
+    if not passed_over:
+        text = ("⚠️ VLM_NO_MODEL: no model is configured that could analyze the image. Name one with "
+                "vlm_query(model=...), or ask the owner to configure a vision, light or main model.")
+    else:
+        text = ("⚠️ VLM_NO_VISION_MODEL: every configured route is confirmed unable to take image input: "
+                f"{describe_passed_over(passed_over)}. Inspect the page as TEXT/DOM (browse_page "
+                "output='html' or 'text'), name a model that accepts images with vlm_query(model=...), "
+                "or ask the owner to configure a vision model.")
+    return _refuse(ctx, text, code="VLM_ERROR")
+
+
+def _vlm_failure(ctx: Any, label: str, error: BaseException, model: str) -> str:
+    """Typed VLM failure with the provider's own status and code from the call's capture.
+
+    A refusal by the chosen route is the route's answer, shown as is; nothing is
+    learned from it here."""
+    capture = getattr(error, "physical_attempt_capture", None)
+    status = getattr(capture, "provider_status_code", None) or getattr(error, "status_code", None)
+    meta = {
+        "model": str(model or ""),
+        "provider_status_code": status if isinstance(status, int) and not isinstance(status, bool) else None,
+        "provider_code": str(getattr(capture, "provider_code", "") or ""),
+        "provider_error": str(getattr(capture, "provider_error", "") or "")[:500],
+    }
+    return _publish_tool_result(ctx, ToolResult(
+        status="error", code="VLM_ERROR", text=f"⚠️ {label}: {error}",
+        meta={key: value for key, value in meta.items() if value not in (None, "")},
+    ))
 
 
 def _vision_capable_slot_candidates(client: Any, ctx: Any = None) -> List[str]:
@@ -361,27 +391,33 @@ def _vision_capable_slot_candidates(client: Any, ctx: Any = None) -> List[str]:
     return uniq
 
 
-def _resolve_vlm_model(client: Any, requested_model: str = "", *, ctx: Any = None) -> str:
-    """Resolve a VISION-CAPABLE model for an image sub-call, or "" when none is
-    available. A known text-only model returns a typed capability gap. Missing
-    subscription metadata remains unknown: the actual call can start its engine
-    or surface the provider's typed refusal, without losing the image. Otherwise
-    route to the first vision-capable
-    configured slot (active -> vision -> light -> main -> fallback) — a gemini light/main
-    is vision-capable, so this usually succeeds without any new model slot."""
-    from ouroboros.provider_models import supports_vision
+def _vlm_route(client: Any, requested_model: str = "", *, ctx: Any = None) -> Tuple[str, List[Tuple[str, str]]]:
+    """``(model, passed_over)`` for an image sub-call (``vision_routing.choose_image_model``).
+
+    An owner-switched vision route, an explicit ``model=`` and the configured
+    vision slot are called even when their metadata says no: the route answers,
+    and its refusal comes back typed. Otherwise the configured slots are
+    candidates (active -> vision -> light -> main -> fallback): a confirmed yes
+    first, then an unknown; a confirmed no and our own lanes that cannot carry
+    images are passed over."""
+    from ouroboros.vision_routing import choose_image_model
+
     wait = current_model_wait()
     override = wait.overrides.get("vision") if wait is not None else None
     if override:
-        return ("" if override.get("use_local") or supports_vision(
-            override["model"], model_role="vision") is False else override["model"])
+        if override.get("use_local"):
+            return "", [(str(override["model"]), "our local llama.cpp transport lane cannot carry images")]
+        return choose_image_model([override["model"]], ())
     requested = str(requested_model or "").strip()
     if requested:
-        return requested if supports_vision(requested, model_role="vision") is not False else ""
-    for candidate in _vision_capable_slot_candidates(client, ctx):
-        if supports_vision(candidate, model_role="vision") is not False:
-            return candidate
-    return ""
+        return choose_image_model([requested], ())
+    explicit = str(runtime_setting("OUROBOROS_MODEL_VISION", "") or "").strip()
+    return choose_image_model([explicit], _vision_capable_slot_candidates(client, ctx))
+
+
+def _resolve_vlm_model(client: Any, requested_model: str = "", *, ctx: Any = None) -> str:
+    """The model an image sub-call uses, or "" when no route can take the image."""
+    return _vlm_route(client, requested_model, ctx=ctx)[0]
 
 
 def _allowed_file_roots(ctx: Any = None, *, include_user_files: bool = True) -> List["pathlib.Path"]:
@@ -559,7 +595,7 @@ def _vlm_query(ctx: ToolContext, prompt: str, image_url: str = "", image_base64:
         client = _get_llm_client()
         vlm_model = _resolve_vlm_model(client, model, ctx=ctx)
         if not vlm_model:
-            return _VLM_NO_VISION_MODEL_MSG
+            return _no_image_route(ctx, client, model)
         operation_id = new_call_id("vlm_query")
         emit_cognitive_operation_event(
             getattr(ctx, "event_queue", None),
@@ -603,7 +639,7 @@ def _vlm_query(ctx: ToolContext, prompt: str, image_url: str = "", image_base64:
             )
         propagate_model_error(e)
         log.warning("vlm_query failed: %s", e, exc_info=True)
-        return f"⚠️ VLM_QUERY_FAILED: {e}"
+        return _vlm_failure(ctx, "VLM_QUERY_FAILED", e, locals().get("vlm_model") or model)
 
 
 def _emit_usage(ctx: ToolContext, usage: Dict[str, Any], model: str) -> None:

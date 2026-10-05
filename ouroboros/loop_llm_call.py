@@ -1160,22 +1160,22 @@ def _prepare_main_messages(
     model_role: str = "main",
     model_account_override: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    try:
-        from ouroboros.vision_routing import VisionRoutingContext, prepare_messages_for_send
+    from ouroboros import vision_routing
 
-        return prepare_messages_for_send(
+    try:
+        return vision_routing.prepare_messages_for_send(
             messages,
-            routing=VisionRoutingContext(
+            routing=vision_routing.VisionRoutingContext(
                 model=model, llm=llm, accumulated_usage=accumulated_usage,
                 drive_root=drive_root, task_id=task_id, event_queue=event_queue,
                 use_local=use_local, task_attempt=task_attempt, deadline_ts=deadline_ts,
                 model_role=model_role, model_account_override=model_account_override,
             ),
         )
-    except Exception as error:
+    except Exception as error:  # a failed projection never falls back to the canonical pixels
         propagate_model_error(error)
-        log.debug("vision routing preparation failed; falling back to canonical messages", exc_info=True)
-        return messages
+        log.warning("image preparation failed; images withheld per the image-input mode", exc_info=True)
+        return vision_routing.withhold_images(messages, error)
 
 
 def _send_main_candidate(

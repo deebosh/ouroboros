@@ -32,12 +32,12 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 SCAN_DIRS = ("ouroboros", "supervisor")
 SCAN_FILES = ("server.py",)
 
-# Readers whose None means "unknown", not "no".
-#
-# PENDING_C2 = True
-# The C2 commit (one projection policy over route evidence) may add successor
-# readers; each one joins this set in the same commit that introduces it.
-TRISTATE_READERS = frozenset({"supports_vision"})
+# Readers whose None means "unknown", not "no". A successor reader joins this set
+# in the commit that introduces it: ``image_input_from_row`` is the one catalog-row
+# parser and ``_image_input_verdict`` the policy's fail-soft read (``vision_routing``).
+# ``route_image_input`` returns an evidence record whose ``verdict`` attribute is out
+# of this lint's reach (see the module docstring).
+TRISTATE_READERS = frozenset({"supports_vision", "image_input_from_row", "_image_input_verdict"})
 
 # (repo-relative path, line number) -> why this site may treat unknown as no.
 ALLOWED: dict[tuple[str, int], str] = {}

@@ -315,10 +315,11 @@ def _load(drive_root: Any) -> Dict[str, Any]:
         data.setdefault("effort_floors", {})
         data.setdefault("rejected_params", {})
         data.setdefault("token_density", {})
+        data.setdefault("image_input", {})  # route-scoped catalog statements (vision_routing)
         return data
     return {
         "probes": {}, "owner_acks": {}, "effort_ceilings": {},
-        "effort_floors": {}, "rejected_params": {}, "token_density": {},
+        "effort_floors": {}, "rejected_params": {}, "token_density": {}, "image_input": {},
     }
 
 
