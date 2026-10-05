@@ -1,18 +1,16 @@
-"""The scheduled keyless `system-e2e-mock` CI job (owner 9A).
+"""The keyless `system-e2e-mock` CI job (owner 9A).
 
 `tests/system_e2e/` is gated three ways — the `integration` and `serial`
 markers plus the `OUROBOROS_E2E_DEEP` env var — precisely so that no existing
-CI pytest pass can reach it. That is what makes a suite nobody executes: the
-gates work, and then nothing opens them. This job is the one thing that does,
-and the plan's §8 pull-request lane was replaced by a daily schedule (owner
-9A) because the scenarios spawn real isolated servers and cost minutes.
+CI pytest pass can reach it. This job is the one thing that opens those gates,
+on manual dispatch and release tags; its daily schedule was removed on
+2026-10-05 because nobody read the nightly results (owner).
 
 Two properties are load-bearing enough to pin. The job must stay OFF push and
-pull_request, or the lane it was made cheap for becomes the slowest thing in
-every PR. And the daily schedule must not wake the PAID provider lane: three
-of `integration-test`'s branch conditions match the default branch ref a
-scheduled run carries, so without an explicit event guard adding `schedule:`
-to this workflow would spend real provider credit every night.
+pull_request, or it becomes the slowest thing in every PR. And no schedule may
+wake the PAID provider lane: three of `integration-test`'s branch conditions
+match the default branch ref a scheduled run carries, so the explicit event
+guard stays in case a schedule returns.
 """
 
 from __future__ import annotations
@@ -88,41 +86,22 @@ def _job_text(job: str) -> str:
     return block.group(1)
 
 
-MOCK_CRON = "37 4 * * *"
-
-
-def test_the_workflow_carries_daily_off_peak_schedules_each_owned_by_one_job():
+def test_the_workflow_carries_no_schedule_and_no_job_admits_one():
     workflow = _workflow()
-    schedule = _triggers(workflow).get("schedule") or []
-    crons = [str(entry["cron"]) for entry in schedule]
-    # Two crons: this keyless lane and the paid `e2e-live` stand
-    # (tests/test_e2e_live_ci_lane.py). A cron nobody binds to is a second
-    # nightly wake-up of every job gated on the bare event name.
-    assert crons == [MOCK_CRON, "17 3 * * *"], schedule
-    for entry in schedule:
-        minute, hour, day, month, weekday = str(entry["cron"]).split()
-        assert (day, month, weekday) == ("*", "*", "*"), entry
-        assert minute.isdigit() and hour.isdigit(), "one fixed daily time, not a range"
-        # On the hour is when everyone else's cron fires and GitHub's queue is
-        # deepest; an off-peak minute is the documented way to avoid the backlog.
-        assert int(minute) != 0, entry
-    # Every job that fires on `schedule` names ITS cron string, so neither cron
-    # wakes the other lane: a bare `github.event_name == 'schedule'` would.
+    # Owner, 2026-10-05: nobody read the nightly results and the paid stand
+    # spent money every night, so the workflow runs nothing on a timer. The
+    # `!= 'schedule'` guards (integration-test) stay for a schedule that returns.
+    assert "schedule" not in _triggers(workflow), _triggers(workflow)
     for name, job in workflow["jobs"].items():
         condition = " ".join(str(job.get("if", "")).split())
-        if "github.event_name == 'schedule'" not in condition:
-            continue  # `!= 'schedule'` guards (integration-test) keep a lane OFF both crons
-        assert "github.event.schedule ==" in condition, (name, condition)
-        assert "github.event_name == 'schedule' ||" not in condition, (name, condition)
+        assert "github.event_name == 'schedule'" not in condition, (name, condition)
 
 
 def test_the_scheduled_lane_never_runs_on_a_push_or_a_pull_request():
     job = _workflow()["jobs"][JOB]
     condition = " ".join(str(job["if"]).split())
     assert condition == (
-        f"(github.event_name == 'schedule' && github.event.schedule == '{MOCK_CRON}')"
-        " || github.event_name == 'workflow_dispatch'"
-        " || startsWith(github.ref, 'refs/tags/v')"
+        "github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')"
     )  # a release tag joins the lane to the release bar (batch №13 item 4); push/PR never, condition
     assert job["runs-on"] == "ubuntu-latest"
     # The budget must clear the suite, not merely exist. `> 0` accepted
