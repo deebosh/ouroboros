@@ -76,6 +76,21 @@ def test_import_runs_once_and_never_walks_again(tmp_path, monkeypatch):
     assert _indexed(root) == {first}
 
 
+def test_an_import_landing_after_the_stop_began_is_born_stamped(tmp_path, monkeypatch):
+    """The background import publishes after the generation's stop selected its targets: the inherited
+    targets are stored stamped, so the next start finishes them instead of skipping them."""
+    from ouroboros import owned_shutdown
+
+    monkeypatch.setattr(owned_shutdown, "_GENERATION_STOP", owned_shutdown._Stop())
+    root = tmp_path / "data"
+    inherited = _record(root / "task_drives/t1/state" / NAME, "inherited")
+    owned_shutdown.begin_owned_stop(root)
+    assert owned_shutdown.import_inherited_records(root) == 1
+    stored = json.loads(owned_shutdown.owned_processes_path(root).read_text(encoding="utf-8"))["records"]
+    [entry] = stored.values()
+    assert entry["record_path"] == str(inherited) and entry["stop_requested_at"]
+
+
 def test_the_inherited_walk_runs_off_the_ready_path(tmp_path, monkeypatch):
     """A first start answers before the walk ends: the retry never walks, the background import walks once."""
     import threading

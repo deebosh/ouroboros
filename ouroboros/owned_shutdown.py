@@ -310,15 +310,15 @@ def _stamp(root: Any, field: str, select: Callable[[Dict[str, Any]], bool], *,
         return changed
 
     if not _update(root, change, timeout_sec=timeout_sec):
-        # Contended: the stop acts on the last readable set, and a stop request still lands
-        # through the pending protocol, so a launcher kill leaves it recorded for the next start.
+        # Contended: the stop acts on the last readable set, and every stop request lands through
+        # the pending protocol (a stamp seen on a pending registration may exist only in this
+        # read), so a launcher kill leaves it recorded for the next start.
         selected = []
         for entry in _read_document(root)["records"].values():
             if select(entry):
-                if not entry.get(field):
-                    entry = {**entry, field: now}
-                    if field == "stop_requested_at":
-                        _write_pending(root, entry)
+                entry = {**entry, field: entry.get(field) or now}
+                if field == "stop_requested_at":
+                    _write_pending(root, entry)
                 selected.append(dict(entry))
     return selected
 
@@ -559,8 +559,8 @@ def import_inherited_records(drive_root: Any) -> Optional[int]:
 
     def change(document: Dict[str, Any]) -> bool:
         records = document.setdefault("records", {})
-        for record_id, entry in entries.items():
-            records.setdefault(record_id, entry)
+        for record_id, entry in entries.items():  # landing after a stop began, a target is born stamped
+            records.setdefault(record_id, _born_stamped(entry))
         document["inherited_import"] = {"at": utc_now_iso(), "records": len(entries)}
         return True
 

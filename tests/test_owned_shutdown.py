@@ -575,6 +575,41 @@ def test_a_contended_first_door_still_records_its_stop_requests(tmp_path, monkey
         _reap(proc)
 
 
+def test_a_pending_registration_is_stamped_durably_by_a_contended_first_door(tmp_path, monkeypatch):
+    """Registered while the custody lock was held (a pending file), then the first door is contended too:
+    the stamp a read gives that pending entry is persisted, so the next start still finishes the stop."""
+    from ouroboros import owned_shutdown
+    from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
+    from ouroboros.process_custody import ledger_path
+    from ouroboros.utils import jsonl_append_lock_path
+    from ouroboros import workspace_executor as executor
+
+    _budget(monkeypatch, 5.0)
+    monkeypatch.setattr(owned_shutdown, "_GENERATION_STOP", owned_shutdown._Stop())
+    monkeypatch.setattr(owned_shutdown, "_update", lambda root, change, *, timeout_sec=2.0, _real=owned_shutdown._update:
+                        _real(root, change, timeout_sec=min(timeout_sec, 0.2)))
+    data = tmp_path / "data"
+    proc = _sleeper()
+    lock_path = jsonl_append_lock_path(ledger_path(data))
+    fd = acquire_exclusive_file_lock(lock_path, timeout_sec=1.0)
+    try:
+        path = executor._register_process(data, {"record_type": "foreground", "executor_type": "local",
+                                                  "executor_id": "host", "host_pid": proc.pid})
+        assert list((data / "state" / owned_shutdown.PENDING_DIRNAME).glob("*.json"))
+        owned_shutdown.begin_owned_stop(data)
+        release_exclusive_file_lock(lock_path, fd)
+        fd = None
+        monkeypatch.setattr(owned_shutdown, "_GENERATION_STOP", owned_shutdown._Stop())  # the launcher's kill
+        assert _by_id(data)[path.stem]["stop_requested_at"]
+        counts = owned_shutdown.finish_unconfirmed_stops(data)
+        assert counts["retried"] == counts["confirmed"] == 1
+        proc.wait(timeout=10)
+    finally:
+        if fd is not None:
+            release_exclusive_file_lock(lock_path, fd)
+        _reap(proc)
+
+
 def test_a_reader_racing_a_fold_still_names_the_pending_registration(tmp_path, monkeypatch):
     """Another process folds a pending file into the document and deletes it while a lock-free reader
     runs: reading pending files before the document keeps the entry visible either way."""
