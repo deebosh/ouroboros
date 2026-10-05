@@ -65,6 +65,11 @@ def task_timing():
     return _TASK_TIMING.get()
 
 
+def without_finalization_timing(fields):
+    """Copy durable fields without the live, boot-relative timing sidecar."""
+    return {key: value for key, value in fields.items() if key != "_finalization_timing"}
+
+
 def mark_last_answer(usage):
     """Stamp the returned model response, before response persistence/accounting."""
     timing = task_timing()

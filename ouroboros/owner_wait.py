@@ -31,6 +31,7 @@ from dataclasses import asdict
 from typing import Any
 
 from ouroboros.artifacts import read_actor_source_bytes, store_actor_source_bytes
+from ouroboros.observability import without_finalization_timing
 from ouroboros.owner_mailbox import OwnerMailboxPeek
 from ouroboros.task_results import _TRULY_TERMINAL_STATUSES, load_task_result
 from ouroboros.utils import utc_now_iso
@@ -150,7 +151,7 @@ def continuation_state(ctx: Any, messages: list, trace: dict, usage: dict,
         "task_id": ctx.task_id, "task_attempt": int(ctx.task_attempt or 1),
         "messages": messages, "trace": trace,
         # Live timing cannot retain a monotonic origin across a reboot.
-        "usage": {key: value for key, value in usage.items() if key != "_finalization_timing"},
+        "usage": without_finalization_timing(usage),
         "cost_ceiling": asdict(cost_ceiling) if cost_ceiling is not None else None,
         "model_wait": model_state,
         "context_model_role": getattr(getattr(ctx, "context_fit_plan", None), "model_role", ""),
