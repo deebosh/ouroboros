@@ -104,9 +104,15 @@ deployment connects a destination of its own.
 - The server process writes `logs/server.log` (2 MB × 4) and its stderr. Each
   pool worker logs to its stderr only: the desktop launcher copies it into
   `logs/agent_stdout.log`, Docker keeps it as the container log.
-- Every Python process Ouroboros owns configures this logging at its real
+- The server and every pool worker configure this logging at their real
   start (`ouroboros/process_logging.py`), whatever the entry point (`python
-  server.py`, `ouroboros server`, Colab). An unexpected failure — a task
+  server.py`, `ouroboros server`, Colab); the desktop launcher keeps its own
+  `logs/launcher.log` and routes its uncaught exceptions there. Under
+  `OUROBOROS_WORKER_START_METHOD=fork` a worker inherits the server's handlers
+  instead (`docs/PERSISTENCE.md`). Not covered: whatever runs before that call
+  (the entry module's own imports), out-of-process extension children, the
+  startup historical-audit child, the local-model server and other helper
+  processes. An unexpected failure — a task
   exception, a worker crash, an unhandled gateway request (HTTP 500), an
   uncaught thread exception — is a stdlib `logging` record with its traceback,
   so a handler attached in that process receives it. Message text passes the

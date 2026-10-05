@@ -14,9 +14,10 @@ shared ``SecretRedactingLogFilter``; the module adds handlers beside any a
 process already has and never replaces them.
 
 The hooks route an unhandled exception of a thread, or of the main thread, into
-``logging`` instead of the interpreter's raw stderr print, so it is formatted and
-redacted like every other record and reaches whatever handler an operator or an
-in-process extension attached. A hook somebody installed earlier (a test runner,
+``logging`` instead of the interpreter's raw stderr print, so it is formatted like
+every other record (its message passes the redaction filter; the traceback itself is
+not redacted) and reaches whatever handler an operator or an in-process extension
+attached. A hook somebody installed earlier (a test runner,
 an error-tracking SDK) still runs after ours. An exception that escapes a
 multiprocessing child's target never reaches ``sys.excepthook`` (multiprocessing
 catches it first), which is why ``worker_main`` records its own crashes.

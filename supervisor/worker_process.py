@@ -269,7 +269,12 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
     # Before ANY import that resolves the update-tx marker through git_ops (see
     # _bind_worker_repo_root): a spawned child would otherwise gate on the hardcoded default repo.
     _bind_worker_repo_root(repo_dir, drive_root)
-    _configure_worker_logging()
+    try:
+        _configure_worker_logging()
+    except Exception:
+        import traceback as _tb_boot  # logging itself failed: stderr is all that is left
+
+        _tb_boot.print_exc()
     # Entry progress precedes extension loading and agent construction. If logging
     # fails, the parent retains the ordinary readiness window rather than losing the child.
     try:
@@ -337,10 +342,10 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
     try:
         from ouroboros.config import initialize_runtime_mode_baseline
         initialize_runtime_mode_baseline()
-    except Exception:
+    except Exception as _e:
         # Non-fatal: save_settings still has env-var fallback gating.
         try:
-            _log_worker_crash(wid, _drive, "init_baseline", None, _tb.format_exc())
+            _log_worker_crash(wid, _drive, "init_baseline", _e, _tb.format_exc())
         except Exception:
             pass
     # Guards BOTH extension entry points below: the spawn-time load and the
@@ -369,9 +374,9 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
         else:
             _repo_path = get_skills_repo_path()
             _reload_extensions(_drive, _load_settings, repo_path=_repo_path or None)
-    except Exception:
+    except Exception as _e:
         try:
-            _log_worker_crash(wid, _drive, "extension_reload", None, _tb.format_exc())
+            _log_worker_crash(wid, _drive, "extension_reload", _e, _tb.format_exc())
         except Exception:
             pass
     try:

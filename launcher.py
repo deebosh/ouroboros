@@ -135,9 +135,9 @@ logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, handlers=_handlers)
 # Shared SSOTs: redaction filter, uncaught exceptions into these handlers; quiet request-URL lines (credentials).
 try:
     from ouroboros.observability import SecretRedactingLogFilter as _RedactFilter
-    from ouroboros.process_logging import install_exception_hooks
     for _handler in _handlers:
         _handler.addFilter(_RedactFilter())
+    from ouroboros.process_logging import install_exception_hooks
     install_exception_hooks()
 except Exception:
     pass  # defensive: a broken observability import must not kill the launcher

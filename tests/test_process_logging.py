@@ -20,7 +20,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from supervisor import worker_process as _worker_process
+from tests.test_terminal_file_boundary import worker as _worker_loop
+
+worker = _worker_loop  # noqa: F811 - real worker loop fixture re-export
 REPO = pathlib.Path(__file__).resolve().parents[1]
+_REAL_LOG_WORKER_CRASH = _worker_process._log_worker_crash
 
 
 def _run(code: str, tmp_path: pathlib.Path, *, script: bool = False) -> subprocess.CompletedProcess:
@@ -125,6 +130,22 @@ def test_uncaught_main_thread_exception_is_logged_and_still_exits_nonzero(tmp_pa
 
 
 @pytest.mark.serial
+def test_a_main_thread_hook_installed_earlier_still_runs_after_the_record(tmp_path):
+    completed = _run("""
+        import sys
+        def recorder(exc_type, exc_value, exc_traceback):
+            print("CHAINED", exc_type.__name__, flush=True)
+        sys.excepthook = recorder
+        from ouroboros.process_logging import configure_process_logging
+        configure_process_logging(drive_logs=None)
+        raise RuntimeError("main-chained")
+    """, tmp_path)
+    assert completed.returncode == 1
+    assert "CHAINED RuntimeError" in completed.stdout
+    assert completed.stderr.count("RuntimeError: main-chained") == 1
+
+
+@pytest.mark.serial
 def test_a_hook_installed_earlier_still_runs_after_the_record(tmp_path):
     completed = _run("""
         import threading
@@ -166,8 +187,10 @@ def test_without_any_handler_the_interpreter_print_stays_in_charge(tmp_path):
 
 
 @pytest.mark.serial
-def test_worker_logging_is_configured_only_in_a_real_pool_child(tmp_path):
-    completed = _run("""
+@pytest.mark.skipif(sys.platform == "win32", reason="forkserver is POSIX-only; spawn is covered on every platform")
+@pytest.mark.parametrize("start_method", ["spawn", "forkserver"])
+def test_worker_logging_is_configured_only_in_a_real_pool_child(tmp_path, start_method):
+    completed = _run(f"""
         import logging, multiprocessing
         from supervisor.worker_process import _configure_worker_logging
 
@@ -180,7 +203,7 @@ def test_worker_logging_is_configured_only_in_a_real_pool_child(tmp_path):
         if __name__ == "__main__":
             _configure_worker_logging()  # not a pool child: the host process owns logging
             print("PARENT", sorted(type(h).__name__ for h in logging.getLogger().handlers))
-            context = multiprocessing.get_context("spawn")
+            context = multiprocessing.get_context({start_method!r})
             queue = context.Queue()
             child = context.Process(target=probe, args=(queue,))
             child.start()
@@ -221,7 +244,8 @@ def test_worker_crash_goes_through_the_shared_appender_and_the_log(tmp_path, cap
         raise RuntimeError("agent build failed")
     except RuntimeError as exc:
         worker_process._log_worker_crash(3, tmp_path, "make_agent", exc, traceback.format_exc())
-    rows = [json.loads(line) for line in (tmp_path / "logs" / "supervisor.jsonl").read_text(encoding="utf-8").splitlines()]
+    ledger = (tmp_path / "logs" / "supervisor.jsonl").read_text(encoding="utf-8")
+    rows = [json.loads(line) for line in ledger.splitlines()]
     assert rows[-1]["type"] == "worker_crash" and rows[-1]["phase"] == "make_agent"
     assert rows[-1]["worker_id"] == 3 and rows[-1]["error"] == "RuntimeError('agent build failed')"
     assert "agent build failed" in rows[-1]["traceback"]
@@ -268,3 +292,72 @@ def test_every_uvicorn_config_in_the_server_leaves_logging_to_the_root_handlers(
     for call in configs:
         keywords = {keyword.arg: keyword.value for keyword in call.keywords}
         assert isinstance(keywords.get("log_config"), ast.Constant) and keywords["log_config"].value is None
+
+
+def test_the_launcher_routes_its_uncaught_exceptions_through_the_shared_hooks():
+    """The frozen launcher keeps its own launcher.log handlers and shares only the
+    uncaught-exception hooks; the call sits after its redaction filter loop."""
+    tree = ast.parse((REPO / "launcher.py").read_text(encoding="utf-8"))
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == "install_exception_hooks"]
+    assert len(calls) == 1
+    imports = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+               and node.module == "ouroboros.process_logging"]
+    assert imports and all(alias.name == "install_exception_hooks" for node in imports for alias in node.names)
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("phase", ["init_baseline", "extension_reload"])
+def test_a_nonfatal_worker_startup_failure_keeps_its_exception(worker, monkeypatch, caplog, phase):
+    """Both non-fatal startup phases of the real worker loop hand the caught exception
+    to the crash record, so an attached error handler receives type, value and frames."""
+    import ouroboros.config as config
+    import ouroboros.extension_loader as extensions
+    from supervisor import worker_process
+
+    worker.task["type"] = "shutdown"
+    monkeypatch.setattr(worker_process, "_log_worker_crash", _REAL_LOG_WORKER_CRASH)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("synthetic startup failure")
+
+    if phase == "init_baseline":
+        monkeypatch.setattr(config, "initialize_runtime_mode_baseline", fail)
+    else:
+        monkeypatch.setattr(extensions, "reload_all", fail)
+    caplog.set_level(logging.ERROR, logger="supervisor.worker_process")
+    worker.run()
+    records = [r for r in caplog.records if r.name == "supervisor.worker_process" and phase in r.getMessage()]
+    assert len(records) == 1 and records[0].exc_info is not None
+    assert records[0].exc_info[0] is RuntimeError
+    ledger = (worker.root / "logs" / "supervisor.jsonl").read_text(encoding="utf-8")
+    rows = [json.loads(line) for line in ledger.splitlines()]
+    assert any(row.get("type") == "worker_crash" and row.get("phase") == phase for row in rows)
+
+
+@pytest.mark.parametrize("function_name", ["_apply_smart_update_fenced", "_apply_replace_recovery_fenced"])
+def test_a_failed_managed_update_is_recorded_once(monkeypatch, caplog, function_name):
+    """The update catch records the failure itself; its json_exception call names the
+    status, so the same exception is not recorded a second time."""
+    from ouroboros.gateway import control
+    from supervisor import update_merge
+
+    plan = {"available": True, "kind": "clean", "base_sha": "a" * 40, "target_sha": "b" * 40}
+    monkeypatch.setattr(update_merge, "plan_managed_update_merge", lambda **_kwargs: plan)
+    monkeypatch.setattr(update_merge, "acquire_update_lock", lambda: object())
+    monkeypatch.setattr(update_merge, "release_update_lock", lambda _value: None)
+    monkeypatch.setattr(update_merge, "active_update_tx", lambda: {})
+    monkeypatch.setattr(control.update_progress, "begin", lambda: None)
+    monkeypatch.setattr(control.update_progress, "_finish", lambda *_args: None)
+    monkeypatch.setattr(control, "_respawn_workers_after_failed_update", lambda: None)
+    error = RuntimeError("synthetic update failure")
+
+    def fail(_reason):
+        raise error
+
+    monkeypatch.setattr(control, "_quiesce_repo_writers", fail)
+    caplog.set_level(logging.WARNING)
+    response = getattr(control, function_name)(None, expected_base_sha="a" * 40, expected_target_sha="b" * 40)
+    assert response.status_code == 500
+    records = [r for r in caplog.records if r.exc_info and r.exc_info[1] is error]
+    assert len(records) == 1 and records[0].levelno == logging.ERROR
