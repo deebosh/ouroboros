@@ -493,17 +493,3 @@ def replay_evidence_rows(messages, evidence):
                      and (row.get("task_id"), row["quiz"].get("quiz_id")) in answered)
             and not (row.get("historical_terminal")
                      and terminals.get(row.get("task_id")) == row["historical_terminal"])]
-
-
-# What the chat reads from an inert `task_evidence` carrier beyond its own evidence
-# fields: whether the task is final and whether it was a direct turn. Review
-# projection, outcome axes, cost and retention stay on summary/final rows and in
-# the task result (#1505 copied the whole terminal truth; no screen read it there).
-EVIDENCE_CARRIER_TRUTH = ("outcome_final", "_is_direct_chat")
-
-
-def carrier_truth(message, truth):
-    """The terminal truth one history row takes: a carrier only its consumed keys, every other row all of it."""
-    if message.get("system_type") != "task_evidence":
-        return truth
-    return {key: truth[key] for key in EVIDENCE_CARRIER_TRUTH if key in truth}

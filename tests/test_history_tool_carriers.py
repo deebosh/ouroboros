@@ -313,7 +313,10 @@ def test_unreadable_archive_directory_reports_the_same_gap_on_every_carrier(tmp_
     assert listed.count("tools") == 1, "the one enumeration's gap is replayed to every task"
 
 
-def test_evidence_carrier_takes_only_the_terminal_facts_the_chat_reads(tmp_path):
+def test_a_carrier_that_is_the_tasks_only_terminal_row_keeps_the_whole_terminal_truth(tmp_path):
+    # web/modules/chat.js settles a reloaded card from the LAST row carrying task_terminal_status; for a speech-plus-tools
+    # task with no summary or progress row in the window that row is the carrier, so it must carry what the summary path
+    # reads (axes, review projection, reason, cancel origin, cost), or the card replays as a plain Done.
     truth = {"_schema_version": 1, "status": "completed", "chat_id": 1, "reason_code": "finished",
              "accounted_upper_bound_usd": 1.25, "cost_final": True, "metadata": {"initiator": "consciousness"},
              "review_projection": {"panels": []}, "model_execution": {"model": "m"}, "cancel_origin": {"by": "owner"}}
@@ -327,13 +330,6 @@ def test_evidence_carrier_takes_only_the_terminal_facts_the_chat_reads(tmp_path)
             if row.get("system_type") in {"task_evidence", "task_summary"}}
     carrier, summary = rows["bare"], rows["summarized"]
     assert carrier["system_type"] == "task_evidence" and summary["system_type"] == "task_summary"
-    # The facts the chat reads from a carrier (admitCardMetadata and the pass-0 scan) stay on it.
     assert carrier["task_terminal_status"] == "completed"
-    for row in (carrier, summary):
-        assert row["outcome_final"] is True and row["_is_direct_chat"] is False
-        assert row["tool_evidence"]["observations"][0]["key"] == f"tool:{row['task_id']}:{row['task_id']}-call"
-    whole_truth = ("review_projection", "outcome_axes", "outcome_phase", "model_execution", "cancel_origin", "reason_code",
-                   "initiator", "continuation_offer", "accounted_upper_bound_usd", "cost_final")
-    assert all(key in summary for key in whole_truth), [key for key in whole_truth if key not in summary]
-    assert not any(key in carrier for key in whole_truth), [key for key in whole_truth if key in carrier]
-    assert "history_retention" not in carrier
+    for key in ("review_projection", "outcome_axes", "reason_code", "cancel_origin", "model_execution"):
+        assert key in carrier and carrier[key] == summary[key], key

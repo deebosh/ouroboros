@@ -18,7 +18,7 @@ from ouroboros.gateway._helpers import (
 from ouroboros.gateway.cost_breakdown import make_cost_breakdown_endpoint  # noqa: F401 — historical import path (router)
 from ouroboros.gateway.history_paging import (
     HistoryCursorError, deferred_before, history_page_coverage, history_page_tokens, progress_quota_predicate,
-    replay_evidence_rows, room_view_fingerprint, select_history_page, latest_arrival, PROJECTION_FAILED, carrier_truth,
+    replay_evidence_rows, room_view_fingerprint, select_history_page, latest_arrival, PROJECTION_FAILED,
 )
 from ouroboros.cost_projection import carry_cost_meta, live_root_cost_projection
 from ouroboros.outcomes import normalize_outcome_axes
@@ -392,7 +392,7 @@ def _annotate_terminal_task_truth(
     """Project task truth AFTER quotas, paying only for represented/current tasks.
 
     Cost/axes/review use the in-window summary/latest progress; absent rows get
-    inert tool-evidence carriers (final/direct facts only). Results share the pre-floor lineage cache.
+    inert tool-evidence carriers. Results share the pre-floor lineage cache.
     Precomputed floor/anchored_children strip unanchored pre-floor child identity
     AFTER legacy injection, preventing orphaned Working parents. Anchoring is a
     live child, represented/live immediate parent or its transitive children
@@ -604,7 +604,7 @@ def _annotate_terminal_task_truth(
                 task_id not in summary_task_ids
                 and latest_progress_by_task.get(task_id) is message
             ):
-                message.update(carrier_truth(message, terminal_truth_by_task.get(task_id) or {}))
+                message.update(terminal_truth_by_task.get(task_id) or {})
             if (message.get("is_progress") or is_summary or message.get("system_type") == "task_evidence") and task_id in suggested_name_by_task:
                 message["suggested_name"] = suggested_name_by_task[task_id]
             # Floor-symmetric closed lineage window for chat FINALS: strip runs
