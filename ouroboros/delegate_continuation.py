@@ -274,7 +274,7 @@ def engine_continues(gateway: Any) -> bool:
 
 
 def start_binding(ctx: Any, drive: Any, token: str, *, gateway: Any, actor: Dict[str, Any], route: Any,
-                  authority: Any, target_root: str, invocation_id: str, text: str,
+                  authority: Any, target_root: str, invocation_id: str, text: str, source_binding: Dict[str, Any],
                   coordination_context: str = "", carrier: Any = None,
                   canonical_work_order_fingerprint: str = "") -> Tuple[ContinuationStart, Optional[Any]]:
     """``(continuation, refusal)`` for ONE start: the floors, the engine bit, the tree.
@@ -307,6 +307,9 @@ def start_binding(ctx: Any, drive: Any, token: str, *, gateway: Any, actor: Dict
     facts.update(workspace="same_snapshot" if adopted else "fresh", carrier_preference=preference or "auto")
     record = {"continuation_of": token}
     if adopted:
+        from ouroboros.delegate_source_coverage import inherit_source_obligations
+
+        inherit_source_obligations(entry, source_binding)
         record.update(capture_id=invocation_id, snapshot_task_id=entry.snapshot_task_id or entry.task_id)
     caller = coordination_context if bool(actor.get("compiled_work_order")) else text
     return ContinuationStart(

@@ -509,7 +509,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                 continuation, refusal = start_binding(
                     ctx, drive, continuation_token, gateway=gateway, actor=actor, route=route, authority=authority,
                     target_root=str(record_auth.get("target_root") or ""), invocation_id=invocation_id, text=text,
-                    coordination_context=_coordination_context, carrier=continue_carrier,
+                    coordination_context=_coordination_context, carrier=continue_carrier, source_binding=actor_facts,
                     canonical_work_order_fingerprint=str(_canonical_work_order_fingerprint or ""))
                 if refusal:
                     return refusal

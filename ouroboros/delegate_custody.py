@@ -420,6 +420,7 @@ from ouroboros.delegate_registration_policy import (
 
 from ouroboros.delegate_source_coverage import (
     apply_source_delivery_confirmation,
+    apply_source_range_receipt,
     _merge_verified_source_range,
     merge_source_delivery_confirmations,
     _source_range_receipt_valid,
@@ -551,16 +552,7 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
     elif kind == PATCH_APPLY_RESOLVED:
         custody.patch_apply_pending = False
     elif kind == SOURCE_RANGE_VERIFIED:
-        if _source_range_receipt_valid(
-            custody,
-            start_char=row.get("start_char"),
-            end_char=row.get("end_char"),
-            complete_sha256=row.get("complete_sha256"),
-            source=row.get("source"),
-            text_sha256=row.get("text_sha256"),
-            text_chars=row.get("text_chars"),
-        ):
-            _merge_verified_source_range(custody, row.get("start_char"), row.get("end_char"))
+        apply_source_range_receipt(custody, row)
     elif kind == SOURCE_RANGE_DELIVERY_CONFIRMED:
         apply_source_delivery_confirmation(custody, row)
     elif kind == PATCH_DISPOSED:
