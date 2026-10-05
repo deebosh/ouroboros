@@ -221,8 +221,7 @@ async def api_extensions_index(request: Request) -> JSONResponse:
         payload = await asyncio.to_thread(_build_extensions_index, drive_root, repo_path)
         return JSONResponse(payload)
     except Exception as exc:
-        log.exception("api_extensions_index failure")
-        return json_exception(exc)
+        return json_exception(exc, context="api_extensions_index failure")
 
 
 async def api_skill_daemons(_request: Request) -> JSONResponse:

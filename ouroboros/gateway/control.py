@@ -1102,7 +1102,7 @@ def _apply_smart_update_fenced(
             return _apply_clean_merge_fenced(request, plan2, tx)
         return _start_assisted_merge_fenced(plan2, tx)
     except Exception as exc:
-        log.warning("managed smart update failed after writer fence", exc_info=True)
+        log.error("managed smart update failed after writer fence", exc_info=True)
         from supervisor.update_merge import active_update_tx as _active_tx
 
         pending = _active_tx()
@@ -1122,7 +1122,7 @@ def _apply_smart_update_fenced(
                 f"managed update failed: {type(exc).__name__}: {exc}",
             )
         _respawn_workers_after_failed_update()
-        return json_exception(exc)
+        return json_exception(exc, 500)  # recorded once above, with its stack
     finally:
         release_update_lock(lock_fh)
 
@@ -1249,14 +1249,14 @@ def _apply_replace_recovery_fenced(
         write_update_tx(tx)
         return _restart_response(request, strategy="replace", plan=plan2)
     except Exception as exc:
-        log.warning("managed replace recovery failed after writer fence", exc_info=True)
+        log.error("managed replace recovery failed after writer fence", exc_info=True)
         if active_update_tx():
             return _rollback_fenced_update(
                 "replace_update_exception",
                 f"managed recovery failed: {type(exc).__name__}: {exc}",
             )
         _respawn_workers_after_failed_update()
-        return json_exception(exc)
+        return json_exception(exc, 500)  # recorded once above, with its stack
     finally:
         release_update_lock(lock_fh)
 
