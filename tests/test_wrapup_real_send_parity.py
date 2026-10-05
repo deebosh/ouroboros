@@ -263,3 +263,51 @@ def test_a_closed_dispatch_window_is_a_deadline_not_drift(monkeypatch, tmp_path)
 
     assert calls == [True], "a deadline refusal is never retried"
     assert "never reached" not in result[0]
+
+
+@pytest.mark.parametrize("mode", ["nano", "max"])
+def test_the_forced_lookahead_and_send_share_one_measurement_allowance_and_identity(monkeypatch, tmp_path, mode):
+    """A10: the priced wrap-up copy and the admitted forced send are measured ONCE under one bound
+    Main context, so a rendered Nano gets the window's reply (not the whole ceiling) on both, their
+    clock-free identity still matches, and a direct or drift send measures the same bytes to the same
+    allowance. Max keeps the ceiling on both (the quiet side)."""
+    from dataclasses import replace
+
+    from ouroboros import loop_forced_finalization as forced
+    from tests.test_context_fit_v664 import _plan
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "unused")
+    plan = replace(_plan(preferred=mode, window=128_000, known=True), initial_mode=mode)
+    owner_ctx = SimpleNamespace(context_fit_plan=plan, active_context_mode=mode, task_metadata={}, model_turn_state=None)
+    captured = []
+
+    def execute(request, send, before_dispatch):
+        captured.append(request)
+        raise _Captured()
+
+    _patch_execute_candidate(monkeypatch, llm_module, execute)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    messages = [{"role": "system", "content": "policy " * 2_000}, {"role": "user", "content": "wrap up " * 40_000}]
+    ctx = _ctx(drive_logs=logs, llm=LLMClient(api_key="unused"), active_model=plan.model, task_type="task",
+               tools=SimpleNamespace(_ctx=owner_ctx), messages=[dict(message) for message in messages], tool_schemas=_TOOLS)
+    with usage_accounting.usage_scope(usage_accounting.UsageScope(
+        drive_root=tmp_path, task_id="task1", root_task_id="task1",
+    )):
+        request, prepared = task_pacing.prepared_wrapup_candidate(ctx, copy.deepcopy(messages), allow_server_web_search=False)
+        assert (owner_ctx._forced_physical_context is not None) and owner_ctx._forced_physical_context.rendered_mode == mode
+        forced._call_forced_model_once(ctx, initial_messages=prepared, admitted_request=request)
+        assert owner_ctx._forced_physical_context is None  # consumed by the admitted send
+        ctx.messages = prepared
+        forced._call_forced_model_once(ctx)  # a direct / drift send: its own fresh measurement of the same bytes
+    assert len(captured) == 2, "both forced sends reached the physical executor"
+    admitted, direct = captured
+    assert admitted.max_completion_tokens == direct.max_completion_tokens == request.max_completion_tokens
+    assert admitted.candidate_clock_free_sha256 == request.candidate_clock_free_sha256 is not None
+    if mode == "nano":
+        assert 8_192 < request.max_completion_tokens < 65_536  # the 128K window's room, not the ceiling
+    else:
+        assert request.max_completion_tokens == 65_536
+    # Main's PLANNED allowance is measured on the canonical transcript, the sent one on the sealed
+    # candidate (the wire projection differs by a few hundred tokens at most, well inside the slack).
+    assert abs(ctx.accumulated_usage["_context_reply_allowance_tokens"] - request.max_completion_tokens) < 1_000
