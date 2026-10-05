@@ -556,15 +556,15 @@ def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody, *, gateway=
         finally:
             if owned_gateway is not None:
                 owned_gateway.close()
-    if entry is None or not entry.execution_root:
-        return None
+    if entry is None or not entry.execution_root or (entry.superseded_by and not entry.patch_captured):
+        return None  # a superseded run's snapshot now holds its successor's work
     from ouroboros.headless import (
         ARTIFACT_STATUS_READY_NO_CHANGES,
         ARTIFACT_STATUS_READY_WITH_CHANGES,
     )
 
     ready = {ARTIFACT_STATUS_READY_WITH_CHANGES, ARTIFACT_STATUS_READY_NO_CHANGES}
-    cap_dir = custody.delegated_capture_dir(drive, entry.task_id, entry.snapshot_id or entry.run_id)
+    cap_dir = custody.delegated_capture_dir(drive, entry.task_id, custody.capture_key(entry))
     manifest_path = cap_dir / "workspace_patch.json"
     if manifest_path.exists():
         try:

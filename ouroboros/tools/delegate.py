@@ -125,7 +125,7 @@ from ouroboros.delegate_shared import (  # noqa: F401
 # (same objects) because sibling code and the tests address it on THIS surface.
 # `_fail` is NOT re-imported from it — the one shared refusal author is
 # `delegate_shared._fail`, which delegate_integration itself imports.
-from ouroboros.delegate_continuation import start_binding
+from ouroboros.delegate_continuation import NO_CONTINUATION, replayed_custody, start_binding
 from ouroboros.tools.delegate_integration import (  # noqa: F401
     _CAPTURE_DELEGATED_SNAPSHOT,
     _capture_block,
@@ -250,7 +250,8 @@ def _presence_delegate_read_refusal(ctx: ToolContext) -> Optional[ToolResult]:
 
 def _start_request(ctx: ToolContext, route: "DelegationRoute", authority: "DelegatedRunShape",
                    root: str, text: str, seconds: int, instructions: str, execution_root: str = "",
-                   *, directory_options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                   *, directory_options: Optional[Dict[str, Any]] = None,
+                   continuation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The POST body for one delegated run, built from the derived SHAPE.
 
     Extracted so the caller stays inside the method-size gate, and so the body has ONE
@@ -263,6 +264,7 @@ def _start_request(ctx: ToolContext, route: "DelegationRoute", authority: "Deleg
     contract-derived instructions can change between calls, so the caller decides
     whether to recompute them or replay the recorded ones (the retry path never calls
     this function at all — it replays the stored canonical body verbatim).
+    ``continuation`` carries the engine's ``continueFrom`` (+ ``continueCarrier``) keys.
     """
     target = route.resolved_target()  # ABI-4: one typed read; strings only at the wire
     request: Dict[str, Any] = {
@@ -309,6 +311,7 @@ def _start_request(ctx: ToolContext, route: "DelegationRoute", authority: "Deleg
             request[key] = value
     if seconds:
         request["maxSeconds"] = seconds
+    request.update(continuation or {})
     return request
 
 
@@ -331,16 +334,24 @@ def _processing_start_request(request, actor, gateway, route):
 
 
 def _start_argument_refusal(ctx: ToolContext, text: str, selector_root: str, retry_of: Any,
-                            bucket: Any, skill_name: Any, continue_from: Any) -> Tuple[str, Optional[ToolResult]]:
+                            bucket: Any, skill_name: Any, continue_from: Any,
+                            continue_carrier: Any = None) -> Tuple[str, Optional[ToolResult]]:
     """``(continuation_token, refusal)``: every refusal a start's ARGUMENTS earn before
     the daemon is touched, in their historical order. Each is a definite no-run: an
-    empty prompt, a malformed exact-resource selector, a deadline already behind the
-    nanny (``definitely_unrun`` = the producer's own no-run verdict, P2), and the
-    continuation selector shapes one call cannot combine: a retry replays an old
-    key byte-identically while a continuation is a NEW intention over a settled
-    run, and a skill-payload selector run keeps its own target semantics."""
-    if not text.strip():
+    empty prompt (a continuation may carry none: the engine resumes the stopped work
+    and the host states the facts), a malformed exact-resource selector, a deadline
+    already behind the nanny (``definitely_unrun`` = the producer's own no-run
+    verdict, P2), and the continuation selector shapes one call cannot combine: a
+    retry replays an old key byte-identically while a continuation is a NEW
+    intention over a settled run, and a skill-payload selector run keeps its own
+    target semantics."""
+    if not text.strip() and not str(continue_from or "").strip():
         return "", _fail("delegate_start", "empty_prompt", "prompt is required")
+    if continue_carrier is not None and (not str(continue_from or "").strip()
+                                         or continue_carrier not in ("auto", "packet")):
+        return "", _fail("delegate_start", "continuation_carrier_invalid",
+                         "continue_carrier is 'auto' or 'packet' and applies only with continue_from.",
+                         definitely_unrun=True)
     refusal = _payload_selector_refusal(selector_root, retry_of, bucket, skill_name)
     if refusal:
         return "", refusal
@@ -367,7 +378,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                     retry_of: Optional[str] = None, root: Optional[str] = None,
                     bucket: Optional[str] = None, skill_name: Optional[str] = None,
                     directory_strategy: Optional[str] = None, scope_paths: Optional[list] = None,
-                    continue_from: Optional[str] = None,
+                    continue_from: Optional[str] = None, continue_carrier: Optional[str] = None,
                     _resolved_binding: Any = None,
                     _canonical_work_order_fingerprint: str = "",
                     _work_order_source_request: Any = None,
@@ -380,7 +391,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
     text = str(prompt or "")
     selector_root = str(root or "").strip()
     continuation_token, argument_refusal = _start_argument_refusal(
-        ctx, text, selector_root, retry_of, bucket, skill_name, continue_from)
+        ctx, text, selector_root, retry_of, bucket, skill_name, continue_from, continue_carrier)
     if argument_refusal:
         # This argument boundary precedes daemon access, provisioning and any start.
         return _replace_tool_result(argument_refusal, meta_updates={"operation_outcome": "completed_no_effect"})
@@ -398,7 +409,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
     invocation_id = snapshot_id = baseline_sha = target_root = authority_source = ""
     binding_fingerprint = ""
     processing_info: Dict[str, Any] = {}
-    resource_ref, directory_options, continuation = {}, {}, {}
+    resource_ref, directory_options, continuation = {}, {}, NO_CONTINUATION
     retry_token = str(retry_of or "").strip()
     source_binding = prepare_work_order_start_binding(
         ctx, drive, retry_token, _canonical_work_order_fingerprint, text,
@@ -408,7 +419,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
     work_order_fingerprint = source_binding["fingerprint"]
     recovering = source_binding["recovering"]
     actor, actor_refusal = prepare_delegate_start_actor(
-        ctx, drive, recovering=recovering, invocation_id=retry_token,
+        ctx, drive, recovering=recovering, invocation_id=retry_token, continuing=continuation_token,
         work_order_fingerprint=work_order_fingerprint, authority_fingerprint=source_binding["authority_fingerprint"],
     )
     if actor_refusal:
@@ -426,7 +437,8 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
         invocation_id = retry_token
         # A replay presents the recorded body byte-identically, so its cap
         # basis is the recorded one too — never re-derived from today's clocks.
-        seconds_basis = str((custody.invocation_record(drive, retry_token) or {}).get("max_seconds_basis") or "")
+        recorded = custody.invocation_record(drive, retry_token) or {}
+        seconds_basis, continuation = str(recorded.get("max_seconds_basis") or ""), replayed_custody(recorded)
         if directory_strategy is not None or scope_paths is not None:
             return _fail("delegate_start", "retry_selector_conflict",
                          "A retry replays its recorded directory strategy and scope; omit new geometry arguments.")
@@ -449,7 +461,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
         assignment = "" if bool(actor.get("compiled_work_order")) else _assignment_instructions(ctx)
         payload_skill = str(((payload_auth or {}).get("resource_ref") or {}).get("skill_name") or "")
         instructions = _host_instructions(
-            authority, assignment, payload_skill=payload_skill, coordination_context=_coordination_context,
+            authority, assignment, payload_skill=payload_skill, coordination_context="" if continuation_token else _coordination_context,
         )
 
     access = authority.access
@@ -493,14 +505,14 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                     return root_error
             invocation_id = custody.new_invocation_id()
             root = record_auth["target_root"]
-            if continuation_token:  # #1196: gated from durable custody, before any snapshot exists
-                continuation, continuation_block, refusal = start_binding(
-                    ctx, drive, continuation_token, actor=actor, route=route, authority=authority,
-                    target_root=str(record_auth.get("target_root") or ""),
+            if continuation_token:  # gated from durable custody, before any snapshot exists
+                continuation, refusal = start_binding(
+                    ctx, drive, continuation_token, gateway=gateway, actor=actor, route=route, authority=authority,
+                    target_root=str(record_auth.get("target_root") or ""), invocation_id=invocation_id, text=text,
+                    coordination_context=_coordination_context, carrier=continue_carrier,
                     canonical_work_order_fingerprint=str(_canonical_work_order_fingerprint or ""))
                 if refusal:
                     return refusal
-                instructions += continuation_block
             if authority.access in SESSION_ACCESS_PROFILES:
                 target_root = record_auth["target_root"]
                 authority_source = record_auth["source"]
@@ -519,7 +531,8 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                     from ouroboros.delegate_directory import git_directory_options_refusal
                     if error := git_directory_options_refusal(target_root, directory_strategy, scope_paths):
                         return _fail("delegate_start", "directory_execution_unavailable", error, definitely_unrun=True)
-                    snapshot, snap_error = _provision_snapshot(ctx, drive, target_root, invocation_id)
+                    snapshot, snap_error = ((continuation.snapshot, None) if continuation.snapshot
+                                            else _provision_snapshot(ctx, drive, target_root, invocation_id))
                 if snap_error:
                     _settle_refused_provision(ctx, gateway, snap_error, invocation_id, history_facts)
                     return snap_error
@@ -553,19 +566,19 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             if authority.access == "full":
                 gateway.ensure_full_access(scope_root)
             seconds = bound.seconds
-            request_body = _start_request(ctx, route, authority, scope_root, text,
-                                          seconds, instructions, execution_root,
+            request_body = _start_request(ctx, route, authority, scope_root, continuation.prompt or text,
+                                          seconds, instructions, execution_root, continuation=continuation.request,
                                           **({"directory_options": directory_options} if directory_options else {}))
             request_body, processing_info = _processing_start_request(request_body, actor, gateway, route)
             history_facts["access"] = request_body["access"]
             key = custody.idempotency_key(getattr(ctx, "task_id", ""), route.route_id,
                                           access, authority.mode, authority.isolation,
-                                          root, text, request_body["instructions"])
+                                          root, request_body["prompt"], request_body["instructions"])
         lineage = getattr(ctx, "task_metadata", {}) or {}
         lineage = lineage if isinstance(lineage, dict) else {}
         snapshot_facts = dict(snapshot_id=snapshot_id, baseline_sha=baseline_sha, target_root=target_root,
                               authority_source=authority_source, resource_ref=resource_ref,
-                              execution_binding_fingerprint=binding_fingerprint)
+                              execution_binding_fingerprint=binding_fingerprint, **continuation.custody)
         requested, claim_refusal = claimed_start_request(
             drive, claim_target=(target_root if not recovering and authority_source == "skill_payload" else ""),
             actor_ctx=ctx, enforce_actor_idle=not recovering,
@@ -644,7 +657,6 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
         drive, run_id, ctx, route, authority,
         key=key, access=access, root=root, seconds=seconds,
         invocation_id=invocation_id, project_id=project_id,
-        continuation_of=str(continuation.get("continuation_of") or ""),
         project_owned=bool(owned_project_id), project_persistent=project_persistent,
         **actor_facts, **snapshot_facts, processing=processing_info,
         capture_mode=("engine_directory" if resource_ref.get("workspace_kind") == "directory" else
@@ -656,7 +668,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
     return _started_payload(handle, run_id, route, access, authority, root,
                             durable=durable, recovering=recovering, invocation_id=invocation_id,
                             snapshot_id=snapshot_id, target_root=target_root, baseline_sha=baseline_sha,
-                            resource_ref=resource_ref, processing=processing_info, continuation=continuation,
+                            resource_ref=resource_ref, processing=processing_info, continuation=continuation.facts,
                             max_seconds=seconds, max_seconds_basis=seconds_basis,
                             engine_version=str(getattr(gateway, "engine_version", "") or ""),
                             snapshot_facts=_snapshot_facts(snapshot))
@@ -725,8 +737,7 @@ def _started_payload(handle: Dict[str, Any], run_id: str, route: Any, access: st
         payload["processing"] = processing
     if continuation:
         # The binding facts, stated where the nanny reads them: which settled run
-        # this continues, its confirmed cause, its explicit disposition, and that
-        # NO session state was transferred (#1196).
+        # this continues, its cause, its tree and the advice its child was given.
         payload["continuation"] = dict(continuation)
     if snapshot_facts:
         payload["snapshot"] = snapshot_facts
@@ -736,7 +747,8 @@ def _started_payload(handle: Dict[str, Any], run_id: str, route: Any, access: st
         payload["execution_root"] = root
         payload["authority_target_root"] = target_root
         payload["baseline_id"] = baseline_sha
-        payload["baseline_manifest_read"] = {"root": "artifact_store", "path": f"delegated_runs/{snapshot_id}/baseline_manifest.json"}
+        if not (snapshot_facts or {}).get("reused_from_run"):  # a reused snapshot's manifest is its first run's
+            payload["baseline_manifest_read"] = {"root": "artifact_store", "path": f"delegated_runs/{snapshot_id}/baseline_manifest.json"}
     if isinstance(resource_ref, dict) and resource_ref.get("workspace_kind") == "directory":
         direct = resource_ref.get("strategy") == "direct"
         payload.update(authority_target_root=target_root,
@@ -772,6 +784,8 @@ def _snapshot_facts(handle: Any) -> Dict[str, Any]:
     it took to provision (#1241). Facts only — nothing refuses or truncates on them."""
     if handle is None:
         return {}
+    if getattr(handle, "adopted_from", ""):
+        return {"reused_from_run": handle.adopted_from}  # a continuation's predecessor snapshot
     file_baseline = getattr(handle, "file_baseline", {}) or {}
     return {"entries": int(getattr(handle, "entry_count", 0) or 0),
             "untracked_files": len(getattr(handle, "untracked_baseline", {}) or {}) + len(file_baseline),
@@ -800,7 +814,8 @@ def _retire_orphaned_registration(ctx: ToolContext, gateway: Any, project_id: st
     presents the same key and lands on whatever the daemon really has. Written even
     with no registration to retire, because the invocation's fate is its own fact.
     """
-    if snapshot_id and definite_refusal:
+    if snapshot_id and definite_refusal and not any(  # a continuation's predecessor snapshot stays its run's
+            run.snapshot_id == snapshot_id for run in custody.replay(custody.custody_root(ctx)).values()):
         # The C1 execution snapshot THIS attempt provisioned. Only a definite refusal
         # proves no run can be live against it; an unknown outcome keeps it — the
         # pending invocation names it durably, and the startup GC reconciles it.

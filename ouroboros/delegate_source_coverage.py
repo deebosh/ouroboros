@@ -214,13 +214,14 @@ def record_started_custody(
     snapshot_id: str, execution_binding_fingerprint: str, target_root: str,
     baseline_sha: str, authority_source: str,
     resource_ref: Dict[str, Any], capture_mode: str, processing: Mapping[str, Any] | None = None,
-    continuation_of: str = "", max_seconds_basis: str = "",
+    continuation_of: str = "", capture_id: str = "", snapshot_task_id: str = "", max_seconds_basis: str = "",
 ) -> bool:
     """Write the one STARTED custody row, including the source binding.
 
     ``continuation_of`` names the prior run this start explicitly continues
-    after that run's confirmed wall-clock expiry (#1196); it rides the STARTED
-    row so the lineage replays with every other start fact. ``max_seconds_basis``
+    (``delegate_continuation``); ``capture_id``/``snapshot_task_id`` bind a run
+    that continues IN that run's snapshot. They ride the STARTED row so the
+    lineage and the hand-over replay with every other start fact. ``max_seconds_basis``
     records HOW ``seconds`` was decided (``delegate_registration_policy.CAP_BASIS_*``)
     beside the cap itself, so a later expiry can be told apart from the nanny's
     own deadline or lifetime.
@@ -265,6 +266,8 @@ def record_started_custody(
         isolation=authority.isolation,
         delegated=authority.delegated,
         continuation_of=str(continuation_of or ""),
+        capture_id=str(capture_id or ""),
+        snapshot_task_id=str(snapshot_task_id or ""),
     )
     return custody_module.record_started(
         drive,

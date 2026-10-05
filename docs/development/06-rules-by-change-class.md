@@ -342,6 +342,12 @@ and 23 (`delegated_transport`), both critical. The imperatives:
   the delegated snapshot, payload and acting `self_worktree` paths (boot-time
   `prune_orphans` and genesis excepted)
   (`tests/test_snapshot_file_inputs.py`, `tests/test_subagent_worktrees_lock_scope.py`).
+- `continue_from` refuses ONLY on the four floors of `delegate_continuation`
+  (own task line through recorded relations, settled, no pending-ambiguous
+  apply, access not wider); every other fact is advice in the child's prompt and
+  a fact for the parent, never a gate and never `instructions`. A writing
+  continuation keeps its predecessor's undisposed snapshot: its claim and every
+  disposition take that snapshot's one lock (`tests/test_delegate_continuation.py`).
 - Outcome honesty: a delegating parent must not produce a clean no-tool final
   answer while direct children run undecided. Hold finish until an exact disposition
   or explicit unfinished stop; reminder counts never terminate the task. Keep selected
