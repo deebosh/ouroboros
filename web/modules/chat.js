@@ -3408,8 +3408,14 @@ export function createChatInstance({
     // `Load more history` only ever reads older messages; the present is the one ↓
     // (owner decisions 2026-09-14, 2026-10-05). A page counts the room's own rows,
     // so only the server's per-request read ceiling can land one empty: keep
-    // reading until rows land or the room's history ends.
+    // reading until rows land or the room's history ends. When the newest read has
+    // moved past the pager's chain (the room grew while open), the chain is first
+    // re-anchored at that read, so the same press goes on into the missing older rows.
     async function loadHistoryAtEdge(direction) {
+        if (direction === 'older' && historyWindow?.horizonGap && !historyPager.getState().canNewer) {
+            const rebased = await historyPager.latest();
+            if (destroyed || rebased.status !== 'applied') return rebased;
+        }
         let result;
         do {
             result = await historyPager[direction]();

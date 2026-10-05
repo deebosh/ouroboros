@@ -22,8 +22,7 @@ from typing import Any, Callable, Dict, NamedTuple, Optional
 _CHAT_ID = re.compile(rb'"chat_id":\s*"?(-?\d+)')
 _TASK_ID = re.compile(rb'"(?:task_id|parent_task_id|root_task_id)":\s*"([^"\\]+)"')
 _OWNER_ROW = re.compile(rb'"direction":\s*"in"')
-# A summary holds a few hundred ids (up to a few hundred KB for an archive dense with the
-# owner's own rows); an install holds hundreds of archives per stream.
+# A summary holds a few hundred ids; an install holds hundreds of archives per stream.
 _CACHE_LIMIT = 4096
 _cache: Dict[tuple, "SegmentSummary"] = {}
 _cache_lock = threading.Lock()
@@ -32,7 +31,7 @@ _cache_lock = threading.Lock()
 class SegmentSummary(NamedTuple):
     chat_ids: frozenset
     task_ids: frozenset
-    owner_rows: frozenset  # ``project_dialogue`` source identities of the owner's rows
+    owner_rows: frozenset  # (chat id, text hash) of the owner's rows: every source identity shares both
 
 
 def _summarize(data: bytes) -> SegmentSummary:
@@ -47,7 +46,7 @@ def _summarize(data: bytes) -> SegmentSummary:
                 except ValueError:
                     continue  # the reader discloses the parse gap when it reads this archive
                 if isinstance(row, dict):
-                    owner_rows.update(_entry_source_identities(row))
+                    owner_rows.update((key[0], key[3]) for key in _entry_source_identities(row))
     return SegmentSummary(
         chat_ids=frozenset(int(value) for value in _CHAT_ID.findall(data)),
         task_ids=frozenset(value.decode("utf-8", "replace") for value in _TASK_ID.findall(data)),
@@ -93,7 +92,7 @@ def room_segment_lens(thread_id: int, project_chat_ids: set, source_refs: list,
     from ouroboros.project_dialogue import _source_ref_identity  # lazy: gateway -> dialogue
 
     bound = frozenset(task for task, chat in bindings_by_task.items() if chat == thread_id)
-    origins = frozenset(key for ref in source_refs if isinstance(ref, dict)
+    origins = frozenset((key[0], key[3]) for ref in source_refs if isinstance(ref, dict)
                         if (key := _source_ref_identity(ref)) is not None)
 
     def may_hold(summary: SegmentSummary) -> bool:

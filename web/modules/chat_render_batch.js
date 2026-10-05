@@ -17,7 +17,8 @@ export const feedIsEmpty = messages => Array.from(messages.children).every(node 
  * History chrome only; the chat instance retains navigation and reading state.
  *
  * `Load more history` only ever loads OLDER messages and shows only while there
- * are older ones (owner decisions 2026-09-14, 2026-10-05). Whether a newer page is
+ * are older ones, including those a newer read revealed behind the reader's chain
+ * (owner decisions 2026-09-14, 2026-10-05). Whether a newer page is
  * cached is a fact about the bounded page cache, not about what the reader can
  * see, so it never drives this button: a released newer page returns through a
  * positive gesture at an unambiguous island edge, and the floating scroll-to-latest
@@ -67,7 +68,7 @@ export function createHistoryControls(messagesDiv, statusHost = null) {
             const host = statusHost && (error || incomplete || approximate || hydrating) ? statusHost : root;
             if (note.parentNode !== host) host.appendChild(note);
             note.classList.toggle('chat-history-status', host === statusHost);
-            const buttonHidden = !error && !snapshot.canOlder && !hydrating;
+            const buttonHidden = !error && !snapshot.canOlder && !coverage.horizonGap && !hydrating;
             const fields = [
                 [button, { textContent: loading ? 'Loading…'
                     : changedView ? 'Refresh history' : error ? 'Retry loading messages' : 'Load more history',

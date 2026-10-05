@@ -341,8 +341,8 @@ function navigationHarness({ pendingWork }) {
     const instance = () => {
         const inst = {
             page: { hidden: false, isConnected: true, dataset: {} }, generation: 0, draft: 'Yes, after the tag',
-            refreshes: 0, destroyed: false,
-            hasPendingWork: () => pendingWork, hasPaintedHistory: () => true, showLatest() {},
+            refreshes: 0, destroyed: false, latestShown: 0,
+            hasPendingWork: () => pendingWork, hasPaintedHistory: () => true, showLatest() { this.latestShown += 1; },
             cancelHistoryPaint() { this.generation += 1; },
             destroy() { this.destroyed = true; this.page.isConnected = false; },
             refreshHistory({ revision }) {
@@ -382,9 +382,11 @@ for (const pendingWork of [true, false]) {
         await flush();
         assert.equal(h.held.length, 1, 'the question detail read is held');
         assert.deepEqual(h.acked, [], 'landing on the question is not reading');
+        assert.equal(h.built[0].latestShown, 0, 'a question opened from Main lands on the question');
         h.api.close();
         await h.api.open();
         const [first, reopened] = [h.built[0], h.built.at(-1)];
+        assert.equal(reopened.latestShown, 1, 'an ordinary reopen lands at the newest message (owner decision 2026-10-05)');
         assert.equal(reopened === first, pendingWork, pendingWork ? 'the survivor is reused' : 'a new room is built');
         assert.equal(first.destroyed, !pendingWork);
         assert.deepEqual(h.acked, [['p1', 5]], 'the reader at the newest message has read, the reveal still held');

@@ -220,12 +220,42 @@ test('delayed latest cannot certify newer retained recent rows until the physica
     assert.ok(f.bubbles().some(node => node.dataset.historyId === 'chat:190'));
     assert.match(f.note().textContent, /Shown messages may have gaps/);
     assert.doesNotMatch(f.note().textContent, /Beginning/);
-    // The gap lies toward the present, so ↓ closes it with one latest read;
-    // `Load more history` only ever reads older pages (owner decision 2026-10-05).
-    globalThis.document.byId.get('chat-scroll-bottom').click();
-    await settle(); await settle();
-    assert.equal(f.reads.length, 5, '↓ asked for the present');
-    f.reads[4].ok(covered(100, 200, 200, 190));
-    await settle(); await settle();
+    const stale = f.instance.refreshHistory({ revision: 4 });
+    await settle();
+    const fill = f.clickRetry();
+    await settle(); f.reads[5].ok(covered(100, 200, 200, 190)); await fill;
+    f.reads[4].ok(covered(180, 200, 200, 195)); await stale;
+    assert.equal(f.bubbles().some(node => node.dataset.historyId === 'chat:195'), false,
+        'an ordinary read superseded by latest cannot mount unowned stale rows');
     assert.equal(f.note().textContent, 'Beginning of saved history');
+});
+
+test('a room that grew past one window while open offers its older rows, and one press reads them', async t => {
+    // Opened while empty (a new Project): the pager's chain is that one complete read.
+    // The room then grows past a window; a later recent read starts beyond the chain.
+    const f = fixture(t);
+    const covered = (from, to, upper, ids, next = null, cursor = `p:${from}`) => ({
+        ...page(ids.map(id => row(`chat:${id}`, `Row ${id}`))), page_cursor: cursor, next_cursor: next, has_more: Boolean(next),
+        window: { complete: !next, truncated_by: next ? ['quota'] : [] },
+        coverage: { v: 1, view: 'room', upper: { chat: upper, progress: 0 }, spans: {
+            chat: { from, to, chain: 'retained', gaps: [] },
+            progress: { from: 0, to: 0, chain: 'empty', gaps: [] },
+        } },
+    });
+    const first = f.instance.refreshHistory({ revision: 1 });
+    await settle(); f.reads[0].ok(covered(0, 10, 10, [])); await first;
+    assert.equal(f.button().hidden, true, 'an empty complete room has nothing older');
+    const grown = f.instance.refreshHistory({ revision: 2 });
+    await settle(); f.reads[1].ok(covered(60, 100, 100, [80, 90], 'before:60')); await grown;
+    assert.equal(f.button().hidden, false, 'rows between the old chain and the newest read are older history to offer');
+    const press = f.clickRetry();
+    await settle(); assert.equal(f.reads.length, 3, 'the press first re-anchors the chain at the newest read');
+    f.reads[2].ok(covered(60, 100, 100, [80, 90], 'before:60', 'p:latest'));
+    await settle(); await settle();
+    assert.equal(f.reads.length, 4, 'and the same press goes on into the older rows');
+    f.reads[3].ok(covered(10, 60, 100, [20, 50]));
+    await press; await settle();
+    const shown = f.bubbles().map(node => node.dataset.historyId);
+    assert.ok(shown.includes('chat:20') && shown.includes('chat:50'), shown);
+    assert.equal(f.button().hidden, true, 'the beginning is reached');
 });

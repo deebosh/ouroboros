@@ -133,7 +133,8 @@ the answer.
   bounds the warm read, not the cold fold, so a durable compact projection
   stays the next step); the bounded filtered tail reader
   `ouroboros/jsonl_tail.py` (doubling live tail, three newest archives,
-  coverage facts) for per-task recent activity; the per-archive room
+  coverage facts) for per-task recent activity, other tail endpoints and the
+  history reader's unavailable-source fallback; the per-archive room
   summaries of `ouroboros/gateway/history_segments.py` (one byte scan per
   closed archive, keyed by inode/size/mtime) that let a Project history read
   skip archives instead of parsing them; the

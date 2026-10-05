@@ -281,6 +281,9 @@ def room_membership(chat_id: int, project_chat_ids: set, source_refs: list,
                     bindings: Dict[str, int]):
     """Canonical room membership shared by history and evidence readers.
 
+    ``gateway.history_segments.room_segment_lens`` mirrors the Project admissions
+    below to skip archives; change both together.
+
     Presentation-only hiding and cross-room question pointers belong to the UI
     caller. A room source retains the actual cognitive result as well.
     """
