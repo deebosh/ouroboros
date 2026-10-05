@@ -383,6 +383,10 @@ def acquire_exclusive_file_lock(
             except Exception as exc:
                 if probe is None and isinstance(creation_error, FileExistsError) and isinstance(exc, FileNotFoundError):
                     report("contention", exc)  # Observed holder released its name before our probe.
+                elif probe is None and IS_WINDOWS and isinstance(exc, PermissionError):
+                    # Windows refuses to open a name while a holder deletes it (delete pending,
+                    # or the deleter's handle shares no access): that release is contention.
+                    report("contention", exc)
                 else:
                     report("permission" if isinstance(exc, PermissionError) else "unknown", exc)
                     log.debug("Failed to inspect/remove stale lock %s", lock_path, exc_info=True)
@@ -1042,11 +1046,7 @@ def tcp_keepalive_socket_options() -> List[tuple]:
     Dead-socket rationale and per-platform fallback: ARCHITECTURE §6 transport."""
     import socket
 
-    from ouroboros.config import (
-        TCP_KEEPALIVE_IDLE_SEC,
-        TCP_KEEPALIVE_INTERVAL_SEC,
-        TCP_KEEPALIVE_PROBE_COUNT,
-    )
+    from ouroboros.config import TCP_KEEPALIVE_IDLE_SEC, TCP_KEEPALIVE_INTERVAL_SEC, TCP_KEEPALIVE_PROBE_COUNT
 
     options: List[tuple] = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
     idle_name = "TCP_KEEPIDLE" if IS_LINUX else ("TCP_KEEPALIVE" if IS_MACOS else "")
