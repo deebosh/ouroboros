@@ -281,6 +281,28 @@ def test_lane_spend_reads_the_usage_store_of_a_store_era_lane(tmp_path):
     assert run_live_lanes.lane_spend(tmp_path / "absent") == (0.0, 0)
 
 
+def test_lane_spend_of_a_journal_era_seed_is_its_journal_never_zero(tmp_path):
+    """``--seed`` may name a commit before the store: that lane writes the journal, and the run-wide budget must see
+    its spend (a zero would release the reservation and admit another paid attempt past the cap)."""
+    data = tmp_path / "data"
+    (data / "state").mkdir(parents=True)
+    rows = [{"attempt_id": "a", "state": "reserved", "cost_usd": None},
+            {"attempt_id": "a", "state": "settled", "cost_final": True, "cost_usd": 0.5},
+            {"attempt_id": "b", "state": "settled", "cost_final": True, "cost_usd": 0.25},
+            {"attempt_id": "c", "state": "settled", "cost_final": True, "cost_usd": None},
+            {"attempt_id": "d", "state": "settled", "cost_final": False, "cost_usd": 9.0}]
+    (data / "state" / "usage_attempts.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    assert run_live_lanes.lane_spend(data) == (0.75, 1)
+    # Through the run-wide ledger: the settled journal-era lane's $0.75 stays spent, so a second $1 attempt under
+    # a $1 cap is refused instead of being admitted against a zero.
+    budget = run_live_lanes.RunBudget(cap_usd=1.0, per_task_usd=1.0)
+    assert budget.admit(("SW1", 1), 1, data, dispatch_index=0)[0] is True
+    budget.settle(("SW1", 1))  # the lane finished: its durable spend replaces its reservation
+    admitted, facts = budget.admit(("SW1", 2), 1, tmp_path / "next", dispatch_index=1)
+    assert admitted is False and facts["spent_usd"] == 0.75
+
+
 def _ask(budget, job, root_tasks, root, waits: list | None = None, *, index: int = 0):
     """``admit`` on its own thread (it may block): ``(thread, box)``; ``box["r"]`` is the answer."""
     box: dict = {}

@@ -608,7 +608,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # exit stop reads instead of walking data/state; its own section-2 row.
 # 315 -> 318 (C3 current obligations): state/obligations/*.json, its shared
 # state/obligations.lock, and state/migrations.json; section-2 rows own all three.
-EXPECTED_SCAN_PATHS = 318
+# 318 -> 320 (owned-stop review fix): ``state/owned_processes.pending`` and its lock-free
+# ``*.*.json`` registrations written when the custody lock is held; one section-2 row.
+EXPECTED_SCAN_PATHS = 320
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

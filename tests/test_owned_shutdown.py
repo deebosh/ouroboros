@@ -343,6 +343,146 @@ def test_a_live_process_under_an_unproven_identity_is_never_signalled(tmp_path, 
         _reap(proc)
 
 
+def test_a_ledgered_process_whose_identity_cannot_be_measured_is_never_signalled(tmp_path, monkeypatch):
+    """Retention may keep a row whose start time is unmeasurable (a fresh Windows service); the stop's signal
+    needs the explicit stop's measured identity, so such a row stays recorded and its pid is never signalled.
+    The measured case is stopped (test_a_record_under_a_task_drive_is_stopped_at_exit)."""
+    from ouroboros import owned_shutdown
+    from ouroboros import platform_layer
+    from ouroboros.process_custody import record_process
+
+    _budget(monkeypatch, 0.5)
+    data = tmp_path / "data"
+    proc = _sleeper()
+    try:
+        record_process(data, pid=proc.pid, cmd="fixture", purpose="service:demo", scope="task",
+                       owner_task_id="t1", reap_process_group=False)
+        record_id = f"pid-{proc.pid}"
+
+        def unmeasured(document):
+            fingerprint = document["records"][record_id]["ledger_entry"]["fingerprint"]
+            fingerprint.pop("start_time_boot", None)
+            fingerprint["start_time"] = ""
+            return True
+
+        assert owned_shutdown._update(owned_shutdown.installation_root(data), unmeasured)
+        signals = []  # the stop runs on its own threads: record calls, never raise inside them
+        for name in ("kill_pid_tree", "kill_process_group_id"):
+            monkeypatch.setattr(platform_layer, name, lambda *a, _name=name, **_k: signals.append((_name, a)))
+        outcome = owned_shutdown.stop_owned_work(data)
+        assert signals == [] and outcome["unconfirmed"] == [record_id] and proc.poll() is None
+        assert _by_id(data)[record_id]["unconfirmed_since"]
+    finally:
+        _reap(proc)
+
+
+def test_the_shutdown_entry_records_every_pending_stop_before_any_wait(tmp_path, monkeypatch):
+    """A door stamps at entry; if the launcher kills the server before the stop itself runs, the
+    next start still finds the stop requested and finishes it."""
+    from ouroboros import owned_shutdown
+    from ouroboros import workspace_executor as executor
+
+    _budget(monkeypatch, 5.0)
+    data = tmp_path / "data"
+    proc = _sleeper()
+    try:
+        path = executor._register_process(data, {"record_type": "foreground", "executor_type": "local",
+                                                  "executor_id": "host", "host_pid": proc.pid})
+        owned_shutdown.begin_owned_stop(data)
+        assert _by_id(data)[path.stem]["stop_requested_at"]
+        # The launcher's kill: this generation's stop never ran; the next start is a new process.
+        monkeypatch.setattr(owned_shutdown, "_GENERATION_STOP", owned_shutdown._Stop())
+        counts = owned_shutdown.finish_unconfirmed_stops(data)
+        assert counts["retried"] == counts["confirmed"] == 1
+        proc.wait(timeout=10)
+        assert path.stem not in _by_id(data)
+    finally:
+        _reap(proc)
+
+
+def test_the_grace_starts_at_the_first_door_and_no_lock_is_awaited_after_it(tmp_path, monkeypatch):
+    """The stop's deadline is the one the first door started; past it the stop takes no fresh lock wait
+    (a held custody lock costs one attempt, not two 2 s waits) and leaves the target stamped."""
+    from ouroboros import owned_shutdown
+    from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
+    from ouroboros.process_custody import ledger_path
+    from ouroboros.utils import jsonl_append_lock_path
+    from ouroboros import workspace_executor as executor
+
+    _budget(monkeypatch, 1.0)
+    data = tmp_path / "data"
+    proc = _sleeper()
+    lock_path = jsonl_append_lock_path(ledger_path(data))
+    fd = None
+    try:
+        path = executor._register_process(data, {"record_type": "foreground", "executor_type": "local",
+                                                  "executor_id": "host", "host_pid": proc.pid})
+        owned_shutdown.begin_owned_stop(data)  # the grace starts at this door
+        time.sleep(1.1)  # other owners used the whole grace before the stop runs
+        fd = acquire_exclusive_file_lock(lock_path, timeout_sec=1.0)
+        assert fd is not None
+        started = time.monotonic()
+        outcome = owned_shutdown.stop_owned_work(data)
+        # A deadline restarted at the stop would wait ~1 s on the held lock; an expired one waits for nothing.
+        assert time.monotonic() - started < 0.5
+        assert outcome["state"] == "unconfirmed" and path.stem in outcome["unconfirmed"]
+        assert _by_id(data)[path.stem]["stop_requested_at"]  # the next start retries it
+    finally:
+        if fd is not None:
+            release_exclusive_file_lock(lock_path, fd)
+        _reap(proc)
+
+
+def test_a_registration_under_a_held_custody_lock_is_never_lost(tmp_path, monkeypatch):
+    """Another writer holds the custody lock while a launch registers: the entry lands as a lock-free
+    pending file, every read sees it, the next update folds it in, and the exit stops the process."""
+    from ouroboros import owned_shutdown
+    from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
+    from ouroboros.process_custody import ledger_path
+    from ouroboros.utils import jsonl_append_lock_path
+    from ouroboros import workspace_executor as executor
+
+    _budget(monkeypatch, 5.0)
+    monkeypatch.setattr(owned_shutdown, "_update", lambda root, change, *, timeout_sec=2.0, _real=owned_shutdown._update:
+                        _real(root, change, timeout_sec=min(timeout_sec, 0.2)))
+    data = tmp_path / "data"
+    proc = _sleeper()
+    lock_path = jsonl_append_lock_path(ledger_path(data))
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = acquire_exclusive_file_lock(lock_path, timeout_sec=1.0)
+    try:
+        assert fd is not None
+        path = executor._register_process(data, {"record_type": "foreground", "executor_type": "local",
+                                                  "executor_id": "host", "host_pid": proc.pid})
+        pending = list((data / "state" / owned_shutdown.PENDING_DIRNAME).glob("*.json"))
+        assert len(pending) == 1 and path.stem in _by_id(data)  # named while the lock is held
+        release_exclusive_file_lock(lock_path, fd)
+        fd = None
+        outcome = owned_shutdown.stop_owned_work(data)
+        assert outcome["state"] == "completed" and outcome["confirmed"] == 1
+        proc.wait(timeout=10)
+        assert path.stem not in _by_id(data)
+        assert not list((data / "state" / owned_shutdown.PENDING_DIRNAME).glob("*.json"))  # folded, then forgotten
+    finally:
+        if fd is not None:
+            release_exclusive_file_lock(lock_path, fd)
+        _reap(proc)
+
+
+def test_a_forget_of_a_pending_registration_does_not_resurrect_it(tmp_path):
+    from ouroboros import owned_shutdown
+
+    data = tmp_path / "data"
+    entry = {"record_id": "gone", "kind": "foreground", "host_pid": 0, "birth": "b", "drive_root": str(data),
+             "record_path": str(data / "missing.json"), "stop_requested_at": None, "unconfirmed_since": None}
+    pending_dir = data / "state" / owned_shutdown.PENDING_DIRNAME
+    pending_dir.mkdir(parents=True)
+    (pending_dir / "gone.x.json").write_text(json.dumps(entry), encoding="utf-8")
+    assert "gone" in _by_id(data)
+    assert owned_shutdown._forget(data, ["gone"])
+    assert "gone" not in _by_id(data) and not list(pending_dir.glob("*.json"))
+
+
 def test_the_ledger_compaction_forgets_dropped_rows(tmp_path):
     from ouroboros import owned_shutdown
     from ouroboros.process_custody import _read_ledger_records, _rewrite_ledger, record_process

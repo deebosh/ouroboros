@@ -114,10 +114,14 @@ cannot be read is `UsageLedgerCorrupt` for every caller and is never replaced.
 
 ## 6. One-time import
 
-The supervisor runs `migrate_from_journal(root)` at boot before any worker
-exists (liveness phase `startup:usage_store`). A reader that finds no store (a
-tool, a test, an install whose supervisor has not started) runs the same
-import itself; a caller arriving while it runs waits only its own budget.
+The server runs `migrate_from_journal(root)` at lifespan start on every door
+(a providerless install included), before any request, worker or supervisor;
+the supervisor's liveness phase `startup:usage_store` then finds it completed.
+A display read (`allow_stale=True`) never imports: while a journal awaits that
+job it reports the store unavailable, and with no journal it creates the empty
+store. A non-display reader that finds no store (a tool or a test without a
+server) runs the same import itself; a caller arriving while it runs waits
+only its own budget.
 
 1. Decide the tier; build the schema in a sibling file.
 2. Read `state/usage_attempts.jsonl` once with the validated journal reader

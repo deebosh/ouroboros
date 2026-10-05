@@ -19,7 +19,7 @@ from starlette.routing import Route, Mount
 import uvicorn
 from ouroboros.server_control import (PanicIngress, execute_panic_stop as _execute_panic_stop_impl,
                                       restart_current_process as _restart_current_process_impl)
-from ouroboros.owned_shutdown import finish_unconfirmed_stops, stop_owned_work
+from ouroboros.owned_shutdown import begin_owned_stop, finish_unconfirmed_stops, stop_owned_work
 from ouroboros.server_auth import (
     NetworkAuthGate,
     get_network_auth_startup_warning,
@@ -1303,6 +1303,11 @@ async def lifespan(app):
         finish_unconfirmed_stops(lifespan_drive_root)
         from ouroboros.startup_migrations import prepare_startup_state
         prepare_startup_state(lifespan_drive_root, repo_dir=REPO_DIR, strict=False)
+        try:  # the one journal import, on every door (providerless included), before any request
+            usage_store.migrate_from_journal(lifespan_drive_root)
+        except Exception:
+            log.critical("Usage store import failed at startup; money reads report it unavailable "
+                         "until it succeeds", exc_info=True)
 
     # Source-mode must seed native skills too, matching packaged launcher layout.
     try:
@@ -1467,6 +1472,7 @@ async def lifespan(app):
         yield
     finally:
         _supervisor_stop.set()  # first: the loop must know a teardown owns what follows
+        begin_owned_stop(lifespan_drive_root)  # the grace starts here; pending stops are recorded before any wait
         log.info("Server shutting down...")
         # Let the loop leave its current tick BEFORE workers are killed and the
         # bridge/Manager go down: a tick still running would otherwise respawn
@@ -1591,6 +1597,7 @@ def _restart_cleanup_kwargs() -> dict:
 
 def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
     """Kill child processes, workers, companions, and runtime port holders."""
+    begin_owned_stop(DATA_DIR)  # the grace starts here; pending stops are recorded before any wait
     try:
         from supervisor.workers import kill_workers
         cleanup_kwargs = _restart_cleanup_kwargs()

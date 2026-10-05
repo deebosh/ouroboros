@@ -7,13 +7,18 @@ ledgered spawns enter through ``process_custody.record_process`` and leave when 
 compaction drops their row or a stop confirms their exit. The per-drive records and the PID
 ledger stay the custody they were (the reaper reads the ledger); the set is the address the
 exit reads instead of walking ``data/state``. One document, atomic replace, written under
-the canonical ledger's append lock.
+the canonical ledger's append lock. A registration that cannot take that lock is never lost:
+it lands as one lock-free file in ``state/owned_processes.pending/``, which every read merges
+and the next locked update folds in (the directory holds only such contended registrations).
 
-``stop_owned_work`` is the generation's one stop. The first caller starts it; a later caller
-joins it until completion or the shared deadline and never starts a second one. Before any
-wait it stamps ``stop_requested_at`` on every target, then stops through the existing typed
-kill helpers, forgets what the existing liveness predicates confirm, stamps the rest
-``unconfirmed_since`` at the deadline and returns: the exit owner exits. A target recorded
+``begin_owned_stop`` is called first by every shutdown door (owner Restart, the lifespan
+teardown, the emergency exit): it starts the generation's one grace deadline and stamps
+``stop_requested_at`` on every target before any other owner waits, so a launcher kill at the
+grace still leaves every pending stop recorded. ``stop_owned_work`` is the generation's one
+stop. The first caller starts it; a later caller joins it until completion or the shared
+deadline and never starts a second one. It stops through the existing typed kill helpers,
+forgets what the existing liveness predicates confirm, stamps the rest ``unconfirmed_since``
+without waiting for a lock once the deadline passed, and returns: the exit owner exits. A target recorded
 after the stop began (the owner Restart stops before the server exits) is born stamped. The
 next start's ``finish_unconfirmed_stops`` retries every stamped record under the same bound
 before admission and before any extension or replacement process starts; what it cannot
@@ -35,6 +40,7 @@ from ouroboros.utils import append_jsonl, atomic_write_json, jsonl_append_lock_p
 log = logging.getLogger(__name__)
 
 OWNED_PROCESSES_FILENAME = "owned_processes.json"
+PENDING_DIRNAME = "owned_processes.pending"
 _SCHEMA_VERSION = 1
 _EXECUTOR_KINDS = ("foreground", "service")
 _POLL_SEC = 0.05  # liveness re-check granularity of process_custody.stop_ledgered_processes
@@ -46,7 +52,8 @@ class _Stop:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.done = threading.Event()
-        self.deadline: Optional[float] = None
+        self.deadline: Optional[float] = None  # set by the first shutdown door (begin or stop)
+        self.started = False
         self.outcome: Optional[Dict[str, Any]] = None
 
 
@@ -87,9 +94,27 @@ def owned_processes_path(root: Any) -> pathlib.Path:
     return pathlib.Path(root) / "state" / OWNED_PROCESSES_FILENAME
 
 
-def _read_document(root: Any) -> Dict[str, Any]:
-    """The stored set. Absent or unreadable reads as an empty set without the import mark,
-    so the next start indexes the records on disk again (an unreadable file is logged)."""
+def _pending_files(root: Any) -> Dict[pathlib.Path, Dict[str, Any]]:
+    """The contended registrations not folded yet (normally none): file -> entry."""
+    found: Dict[pathlib.Path, Dict[str, Any]] = {}
+    try:
+        paths = sorted((pathlib.Path(root) / "state" / PENDING_DIRNAME).glob("*.json"))
+    except OSError:
+        return found
+    for path in paths:
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # a torn write never names a process; its registrant reported the failure
+        if isinstance(entry, dict) and entry.get("record_id"):
+            found[path] = entry
+    return found
+
+
+def _read_document(root: Any, *, pending: Optional[Dict[pathlib.Path, Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """The stored set plus the contended registrations not folded yet. Absent or unreadable
+    reads as an empty set without the import mark, so the next start indexes the records on
+    disk again (an unreadable file is logged)."""
     from ouroboros.utils import read_text_across_replace
 
     path = owned_processes_path(root)
@@ -101,7 +126,9 @@ def _read_document(root: Any) -> Dict[str, Any]:
         log.critical("Owned-process set %s is unreadable; it names nothing until rewritten", path, exc_info=True)
         document = None
     if not isinstance(document, dict) or not isinstance(document.get("records"), dict):
-        return {"schema_version": _SCHEMA_VERSION, "records": {}}
+        document = {"schema_version": _SCHEMA_VERSION, "records": {}}
+    for entry in (pending if pending is not None else _pending_files(root)).values():
+        _put(document, entry)
     return document
 
 
@@ -115,22 +142,25 @@ def executor_record_paths(drive_root: Any, kind: str) -> List[pathlib.Path]:
             if entry.get("kind") == kind and entry.get("record_path")]
 
 
-def _update(root: Any, change: Callable[[Dict[str, Any]], bool]) -> bool:
+def _update(root: Any, change: Callable[[Dict[str, Any]], bool], *, timeout_sec: float = 2.0) -> bool:
     """Apply ``change(document)`` under the canonical ledger's append lock; write when it changed."""
     from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
     from ouroboros.process_custody import ledger_path
 
     root = pathlib.Path(root)
     lock_path = jsonl_append_lock_path(ledger_path(root))
-    lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=2.0, stale_sec=10.0, owner_aware_stale=True)
+    lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=timeout_sec, stale_sec=10.0, owner_aware_stale=True)
     if lock_fd is None:
         log.warning("Owned-process set of %s unchanged: the process-custody lock is unavailable", root)
         return False
     try:
-        document = _read_document(root)
-        if change(document):
+        pending = _pending_files(root)
+        document = _read_document(root, pending=pending)
+        if change(document) or pending:
             document["schema_version"] = _SCHEMA_VERSION
             atomic_write_json(owned_processes_path(root), document, trailing_newline=True)
+        for path in pending:  # folded into the document just written
+            path.unlink(missing_ok=True)
         return True
     except Exception:
         log.warning("Owned-process set of %s could not be updated", root, exc_info=True)
@@ -189,10 +219,26 @@ def _executor_entry(path: Any, record: Dict[str, Any]) -> Dict[str, Any]:
     return entry
 
 
+def _publish(root: Any, entry: Dict[str, Any]) -> bool:
+    """Add ``entry`` to the set; under contention, as a lock-free pending file instead."""
+    if _update(root, lambda document: _put(document, entry)):
+        return True
+    import uuid
+
+    try:
+        pending_dir = pathlib.Path(root) / "state" / PENDING_DIRNAME
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(pending_dir / f"{entry['record_id']}.{uuid.uuid4().hex}.json", entry, trailing_newline=True)
+        return True
+    except Exception:
+        log.warning("Owned process %s is not in the ownership set", entry["record_id"], exc_info=True)
+        return False
+
+
 def record_executor_process(path: Any, record: Dict[str, Any]) -> bool:
     """Add one executor/tracked-command record (``_register_process``); False when not indexed."""
     entry = _executor_entry(path, record)
-    return _update(installation_root(entry["drive_root"]), lambda document: _put(document, entry))
+    return _publish(installation_root(entry["drive_root"]), entry)
 
 
 def forget_executor_process(path: Any) -> bool:
@@ -226,7 +272,7 @@ def record_ledgered_process(drive_root: Any, entry: Dict[str, Any]) -> bool:
         "stop_requested_at": None,
         "unconfirmed_since": None,
     }
-    return _update(installation_root(drive), lambda document: _put(document, record))
+    return _publish(installation_root(drive), record)
 
 
 def forget_ledgered_pids(drive_root: Any, pids: Iterable[int]) -> bool:
@@ -236,7 +282,8 @@ def forget_ledgered_pids(drive_root: Any, pids: Iterable[int]) -> bool:
                    drive_root=str(drive))
 
 
-def _stamp(root: Any, field: str, select: Callable[[Dict[str, Any]], bool]) -> List[Dict[str, Any]]:
+def _stamp(root: Any, field: str, select: Callable[[Dict[str, Any]], bool], *,
+           timeout_sec: float = 2.0) -> List[Dict[str, Any]]:
     """Stamp ``field`` (first time only) on the selected records; return them as stored."""
     now, selected = utc_now_iso(), []
 
@@ -251,7 +298,7 @@ def _stamp(root: Any, field: str, select: Callable[[Dict[str, Any]], bool]) -> L
             selected.append(dict(entry))
         return changed
 
-    if not _update(root, change):
+    if not _update(root, change, timeout_sec=timeout_sec):
         # The stop still acts on the last readable set when its stamp cannot persist.
         selected = [dict(entry) for entry in _read_document(root)["records"].values() if select(entry)]
     return selected
@@ -310,11 +357,18 @@ def _stop_ledgered(root: Any, entry: Dict[str, Any], deadline: float, retained: 
         return _fingerprint_matches(row) or _service_group_survives_leader(row)
 
     if alive():
-        # The reaper's authority and kill shape; installation daemon subtrees are spared.
+        # Liveness may tolerate an unmeasurable start time (retention); a signal needs the
+        # explicit stop's measured identity, or a recorded group that still has members.
+        # Anything else stays recorded and is never signalled. Installation daemon
+        # subtrees are spared, as by the reaper.
         pid, pgid = _int(row.get("pid")), _int(row.get("pgid"))
-        if pgid > 0:
+        measured = _fingerprint_matches(row, require_measured=True)
+        group = pgid > 0 and (measured or _service_group_survives_leader(row))
+        if not (measured or group):
+            return False
+        if group:
             kill_process_group_id(pgid, **({"exclude_pids": retained} if retained else {}))
-        if pgid <= 0 or (retained and pid_is_alive(pid)):
+        if measured and (pgid <= 0 or (retained and pid_is_alive(pid))):
             kill_pid_tree(pid, exclude_pids=retained or None)
         while alive():
             if time.monotonic() >= deadline:
@@ -363,7 +417,10 @@ def _stop_records(root: Any, entries: List[Dict[str, Any]], deadline: float, *,
     named = _read_document(root)["records"]
     remaining = sorted(entry["record_id"] for entry in entries if entry["record_id"] in named)
     if remaining:
-        _stamp(root, "unconfirmed_since", lambda entry: entry.get("record_id") in remaining)
+        # After the deadline no fresh lock wait: one attempt. Every pending stop already carries
+        # ``stop_requested_at``, which the next start retries whether or not this stamp lands.
+        _stamp(root, "unconfirmed_since", lambda entry: entry.get("record_id") in remaining,
+               timeout_sec=max(0.0, deadline - time.monotonic()))
     return remaining
 
 
@@ -391,7 +448,8 @@ def _memory_owners(root: pathlib.Path) -> List[tuple]:
 
 def _run_stop(root: pathlib.Path, deadline: float) -> Dict[str, Any]:
     started = time.monotonic()
-    targets = _stamp(root, "stop_requested_at", _is_stop_target)  # persisted before any wait
+    targets = _stamp(root, "stop_requested_at", _is_stop_target,  # persisted before any wait
+                     timeout_sec=max(0.0, min(2.0, deadline - started)))
     from ouroboros.workspace_executor import _services_snapshot
 
     held = frozenset(str(record.durable_record_path) for record in _services_snapshot()
@@ -410,13 +468,33 @@ def _run_stop(root: pathlib.Path, deadline: float) -> Dict[str, Any]:
             "elapsed_sec": round(time.monotonic() - started, 3)}
 
 
+def begin_owned_stop(drive_root: Any = None) -> None:
+    """A shutdown door was entered: start the generation's one grace deadline (if no door did
+    yet) and persist ``stop_requested_at`` on every target before any other owner waits."""
+    stop = _GENERATION_STOP
+    with stop.lock:
+        if stop.deadline is None:
+            stop.deadline = time.monotonic() + _stop_budget_sec()
+    try:
+        if drive_root is None:
+            from ouroboros.config import resolve_data_dir
+
+            drive_root = resolve_data_dir()
+        _stamp(installation_root(drive_root), "stop_requested_at", _is_stop_target)
+    except Exception:
+        log.warning("Owned-work stop requests not stamped at shutdown entry; the stop stamps them",
+                    exc_info=True)
+
+
 def stop_owned_work(drive_root: Any = None) -> Dict[str, Any]:
     """Start the generation's one stop, or join the running one until it completes or its deadline."""
     stop = _GENERATION_STOP
     with stop.lock:
-        starting = stop.deadline is None
+        starting = not stop.started
         if starting:
-            stop.deadline = time.monotonic() + _stop_budget_sec()
+            stop.started = True
+            if stop.deadline is None:
+                stop.deadline = time.monotonic() + _stop_budget_sec()
         deadline = stop.deadline
     if not starting:
         stop.done.wait(max(0.0, deadline - time.monotonic()))

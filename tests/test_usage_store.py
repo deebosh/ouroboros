@@ -330,6 +330,38 @@ def test_the_import_is_idempotent_and_reports_its_timing_and_counts(root):
     assert [row["phase"] for row in _supervisor_rows(root)] == ["completed", "already_completed"]
 
 
+def test_a_display_read_never_imports_a_waiting_journal(root):
+    """A display read (the providerless /api/state, the loop's status) while the journal awaits the lifecycle
+    import reports the store unavailable and leaves the journal alone; the lifecycle job imports it."""
+    journal = write_journal(root, _journal_rows())
+    source = journal.read_bytes()
+    with pytest.raises(ledger.UsageLockUnavailable):
+        ua.usage_writer_snapshot(root, allow_stale=True)
+    assert journal.read_bytes() == source and not (root / usage_store.STORE_REL).exists()
+    assert usage_store.migrate_from_journal(root)["status"] == "completed"  # the lifecycle job
+    assert ua.usage_writer_snapshot(root, allow_stale=True)  # now a plain addressed read
+
+
+def test_a_display_read_on_a_fresh_install_creates_the_empty_store(root):
+    """No journal means nothing to import: the display read is served (zero spend), never unavailable."""
+    assert not (root / ledger.LEDGER_REL).exists()
+    with usage_store.read(root, allow_stale=True) as txn:
+        assert txn.marker() is not None
+    assert (root / usage_store.STORE_REL).exists()
+
+
+def test_the_server_imports_the_journal_at_lifespan_start_on_every_door():
+    """The import runs where the other lifecycle jobs run (before any request, worker or supervisor), so a
+    providerless install that never starts the supervisor imports too."""
+    import inspect
+
+    import server
+
+    source = inspect.getsource(server.lifespan)
+    assert source.index("prepare_startup_state(") < source.index("usage_store.migrate_from_journal(") \
+        < source.index("yield")
+
+
 def test_an_import_interrupted_before_publication_is_redone_from_scratch(root, monkeypatch):
     journal = write_journal(root, _journal_rows())
     stale = root / "state" / "usage.sqlite.import-99999-deadbeef"

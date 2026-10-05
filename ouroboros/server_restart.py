@@ -140,7 +140,9 @@ def _stop_owned_work(ctx: Any) -> list:
     from ouroboros.cancel_intents import request_cancel
     from ouroboros.claudexor_daemon import read_owned_gateway
     from ouroboros.delegate_custody import reconcile_orphaned_runs
+    from ouroboros.owned_shutdown import begin_owned_stop
 
+    begin_owned_stop(DATA_DIR)  # the grace starts here; every pending stop is recorded before any wait
     stopped = _owned_live_task_ids(ctx)
     for task_id in stopped:
         try:

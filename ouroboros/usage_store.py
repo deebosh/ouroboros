@@ -710,14 +710,19 @@ def _typed(exc: sqlite3.Error) -> UsageAccountingError:
 def read(root: pathlib.Path | str, *, allow_stale: bool = False):
     """A read transaction: ``allow_stale`` is a display read (the short display
     wait, then the fact is reported unavailable). The server's lifecycle job
-    imports the journal before any worker exists; a reader that finds no store
-    (a tool, a test, an install whose supervisor has not started) runs that
-    one import itself, and a reader arriving while it runs waits only its own
-    budget, then reports the store unavailable."""
+    imports the journal at lifespan start, on every door, before any request or
+    worker. A display read never imports: while a journal still awaits that job
+    it reports the store unavailable (never zero); with no journal it creates the
+    empty store, which reads nothing. A non-display reader that finds no store (a
+    tool or a test without a server) runs the one import itself, and a reader
+    arriving while it runs waits only its own budget, then reports the store
+    unavailable."""
     from ouroboros.runtime_limits import USAGE_DISPLAY_LOCK_TIMEOUT_SEC
 
     if allow_stale:
-        return hold(root, timeout_sec=USAGE_DISPLAY_LOCK_TIMEOUT_SEC, write=False)
+        root = pathlib.Path(root)
+        awaiting = _identity(root / STORE_REL) is None and (root / LEDGER_REL).is_file()
+        return hold(root, timeout_sec=USAGE_DISPLAY_LOCK_TIMEOUT_SEC, write=False, migrate=not awaiting)
     return hold(root, timeout_sec=USAGE_LOCK_TIMEOUT_SEC, write=False)
 
 
