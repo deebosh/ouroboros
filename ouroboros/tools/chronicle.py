@@ -2,8 +2,11 @@
 
 The mind writes its own records; the host signs them (``focus_signature``) and
 expands what a page covers. A page names a range of its room (``from``/``to``
-row addresses) or a set of tasks; the host turns that request into the exact
-SET of the room's rows BEFORE the publication lock (the lock is not re-entrant
+row addresses), the room's open rows up to an address (``to`` alone: the rows
+the view counts as open, ``memory_inventory.open_room_rows``, so what pages
+already seal and what came after stay out) or a set of tasks; the host turns
+that request into the exact SET of the room's rows BEFORE the publication
+lock (the lock is not re-entrant
 and reading the chain needs none), adds the room's notes of those tasks,
 counts each row's source class, stamps every covered task with the host's own
 facts and verifies the quotes the writer chose. A refusal names the current
@@ -196,14 +199,19 @@ def _task_rows(root: Path, room: str, task_ids: Iterable[Any]) -> List[Tuple[Dic
 def _expand(root: Path, room: str, lineage: Dict[str, Any], *, from_addr: Any = None, to_addr: Any = None,
             task_ids: Any = None) -> Tuple[Dict[str, Any], Dict[str, Any], List[Tuple[Dict[str, Any], Dict[str, Any], int]]]:
     if task_ids is not None and (from_addr or to_addr):
-        raise ValueError("covers is either {from, to} or {task_ids}, not both")
+        raise ValueError("covers is either {from, to}, {to} or {task_ids}, not both")
     if task_ids is not None:
         if not isinstance(task_ids, (list, tuple)):
             raise ValueError("covers.task_ids is a list of task ids")
         found, request, mode = _task_rows(root, room, task_ids), {"task_ids": [str(t) for t in task_ids]}, "tasks"
+    elif to_addr and not from_addr:  # "up to here": the room's open rows, as the view counts them, to the address
+        open_rows = {address["row_sha256"] for address, _meta, _pos in memory_inventory.open_room_rows(root, room)}
+        found = [entry for entry in chat_chain.iter_room_rows(root, room, to_addr=to_addr)
+                 if entry[0]["row_sha256"] in open_rows]
+        request, mode = {"to": to_addr}, "open_to"
     else:
         if not from_addr or not to_addr:
-            raise ValueError("covers is {from, to} (row addresses, inclusive) or {task_ids}")
+            raise ValueError("covers is {from, to} (row addresses, inclusive), {to} (the open rows up to it) or {task_ids}")
         found = list(chat_chain.iter_room_rows(root, room, from_addr=from_addr, to_addr=to_addr))
         request, mode = {"from": from_addr, "to": to_addr}, "range"
     seen, rows = set(), []
@@ -212,7 +220,7 @@ def _expand(root: Path, room: str, lineage: Dict[str, Any], *, from_addr: Any = 
             seen.add(entry[0]["row_sha256"])
             rows.append(entry)
     if not rows:
-        raise ValueError(f"covers resolve to no row of room {room}")
+        raise ValueError(f"covers resolve to no {'open ' if mode == 'open_to' else ''}row of room {room}")
     tasks = list(dict.fromkeys([str(row.get("task_id")) for _a, row, _p in rows if row.get("task_id")]
                                + (list(request.get("task_ids") or []))))
     store = _existing_store(root)
@@ -236,8 +244,9 @@ def page_covers(root: Any, room_id: Any, *, from_addr: Any = None, to_addr: Any 
     """The exact row set a page request names, with its coverage facts and the rows read.
 
     ``{"covers", "coverage_facts", "rows": [(address, row), ...]}``. ``from_addr``/``to_addr``
-    bound the room's stream inclusively; ``task_ids`` takes those tasks' rows and the
-    owner's words bound to them. Unresolved bounds raise ``chat_chain.RowAddressError``.
+    bound the room's stream inclusively; ``to_addr`` alone takes the room's open rows up to it;
+    ``task_ids`` takes those tasks' rows and the owner's words bound to them. Unresolved bounds
+    raise ``chat_chain.RowAddressError``.
     """
     covers, facts, rows = _expand(Path(root), str(room_id), row_lineage(Path(root)), from_addr=from_addr,
                                   to_addr=to_addr, task_ids=task_ids)
@@ -297,7 +306,7 @@ def check_quotes(root: Any, quotes: Any) -> Tuple[bool, Optional[int]]:
 def _write_page(ctx: Any, root: Path, store: ChronicleStore, author: Dict[str, Any], a: Dict[str, Any]) -> str:
     covers_arg = a["covers"]
     if not isinstance(covers_arg, dict):
-        return _arg_error(ctx, "a page needs covers: {from, to} row addresses or {task_ids}")
+        return _arg_error(ctx, "a page needs covers: {from, to} row addresses, {to} alone or {task_ids}")
     room, lineage = _room(ctx, root, a["room_id"]), row_lineage(root)
     try:
         covers, facts, rows = _expand(root, room, lineage, from_addr=covers_arg.get("from"),
@@ -885,7 +894,7 @@ def chronicle_tools() -> List[ToolEntry]:
         "room_id": room,
         "text": {"type": "string", "description": "The record in my own words. No length limit; it is read back through memory_read pages."},
         "covers": {"type": "object", "additionalProperties": False,
-                   "description": "page: {from, to} row addresses (inclusive, this room's rows between them) or {task_ids} (those tasks' rows and the owner's words bound to them). The host expands it into the exact row set; rows another page already seals are refused (already_sealed).",
+                   "description": "page: {from, to} row addresses (inclusive, this room's rows between them), {to} alone (every row of this room still open up to that address, the ones the view counts as open — the host leaves out what pages already seal and what came after; it defines the page's coverage, not proof that the rows were read) or {task_ids} (those tasks' rows and the owner's words bound to them). The host expands it into the exact row set; rows another page already seals are refused (already_sealed).",
                    "properties": {"from": address, "to": address, "task_ids": {"type": "array", "items": string}}},
         "member_ids": {"type": "array", "items": string, "description": "part: adjacent unfolded records of one kind in one room; default room is theirs."},
         "quotes": quotes,
