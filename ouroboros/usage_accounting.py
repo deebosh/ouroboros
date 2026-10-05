@@ -262,6 +262,9 @@ class PhysicalAttemptContext:
     capacity_total_tokens: Optional[int]
     context_target_miss: bool
     automatic_pass_used: bool
+    # Main's calibration (real tokens per estimated token) of the measurement above;
+    # the send finalizer sizes the reply with it. None on rows written before it existed.
+    measurement_density: Optional[float] = None
 @dataclass(frozen=True)
 class AttemptRequest:
     model: str

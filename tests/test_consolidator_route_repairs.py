@@ -174,7 +174,7 @@ def test_exact_account_density_is_read_from_the_existing_evidence_store(tmp_path
     capacity.window = 18000
     evidence = _prime(capacity)
     ce.record_token_density(tmp_path, MODEL, route_fp=evidence.route_fp,
-                            prompt_chars=400000, prompt_tokens=200000, basis="bounded_proxy")
+                            prompt_chars=400000, prompt_tokens=200000, basis=ce.MAIN_DENSITY_BASIS)
     density = context_fit._route_calibration_ratio(None, evidence.route_fp, MODEL)
     assert density == 2.0
     llm = _LLM()

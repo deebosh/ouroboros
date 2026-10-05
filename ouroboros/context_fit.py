@@ -41,19 +41,6 @@ ContextProfile = Literal["owner_max", "owner_low", "owner_nano", "task_local_low
 MeasurementBasis = Literal["fresh_route_usage", "fresh_model_usage", "cold_estimate"]
 
 
-@dataclass(frozen=True)
-class CallContextFit:
-    """Arithmetic for one prepared physical input, never dispatch authority."""
-
-    effective_max_tokens: int
-    strict_bound_proven: bool
-    fit_status: str
-    missing_evidence: Tuple[str, ...]
-    input_tokens: int
-    bound_tokens: Optional[int]
-    free_tokens: Optional[int]
-
-
 def project_tool_result_batch(
     results: List[Dict[str, Any]], messages: List[Dict[str, Any]], tool_schemas: list,
     *, drive_root: pathlib.Path, task_id: str,
@@ -121,48 +108,6 @@ def project_tool_result_batch(
     return rows, {"status": "projected" if final.get("accepted") is True else "minimum_view_unfit", "fit": final}
 
 
-def resolve_call_context_fit(
-    *, input_tokens: int, input_is_exact: bool, caller_max_tokens: int,
-    total_target_tokens: Optional[int], route_capacity_tokens: Optional[int],
-    minimum_free_tokens: int, tokenizer_template_provenance: Optional[Mapping[str, Any]],
-    output_limit_enforced: bool, reasoning_included_in_limit: Optional[bool],
-    route_capacity_confirmed: bool = False,
-) -> CallContextFit:
-    """Choose one output allowance after actual route/template preparation.
-
-    Positive capacity values are sizing observations; only the adapter's
-    separately attested facts establish a strict claim. Unknown evidence never
-    prohibits a route. Callers keep their existing recovery/admission policy;
-    this function creates no send, retry, reservation, or continuation identity.
-    """
-    if input_tokens < 0 or caller_max_tokens < 0 or minimum_free_tokens < 0:
-        raise ValueError("context measurements and token allowances must be nonnegative")
-    bounds = [int(value) for value in (total_target_tokens, route_capacity_tokens)
-              if value is not None and value > 0]
-    bound = min(bounds) if bounds else None
-    free = bound - input_tokens if bound is not None else None
-    effective = min(caller_max_tokens, max(0, free)) if free is not None else caller_max_tokens
-    missing = []
-    if not input_is_exact:
-        missing.append("exact_input_measurement")
-    if not tokenizer_template_provenance:
-        missing.append("tokenizer_template_provenance")
-    if not route_capacity_confirmed or not route_capacity_tokens:
-        missing.append("confirmed_serving_capacity")
-    if not output_limit_enforced:
-        missing.append("enforced_output_limit")
-    if reasoning_included_in_limit is not True:
-        missing.append("reasoning_within_measured_window")
-    fit_status = ("unknown_capacity" if free is None else "unfit" if free < 0
-                  else "insufficient_headroom" if free < minimum_free_tokens else "fits")
-    # An estimate alone cannot prescribe a zero-output physical request. Keep
-    # the caller's allowance and disclose that the proposed view needs fitting.
-    if not input_is_exact and effective == 0 and caller_max_tokens > 0:
-        effective = caller_max_tokens
-    return CallContextFit(effective, fit_status == "fits" and not missing,
-                          fit_status, tuple(missing), input_tokens, bound, free)
-
-
 @dataclass(frozen=True)
 class ContextFitProjection:
     """One deterministic Low/Max rendering of a shared immutable context core."""
@@ -172,7 +117,6 @@ class ContextFitProjection:
     estimated_tokens: int
     calibrated_tokens: int
     calibration_ratio: float
-    fits_known_window: Optional[bool]
     user_content_json: Optional[str] = None
     # The memory view's fact of this projection (``memory_floor.view_receipt``): role,
     # room, floor steps and boundaries, block sizes; empty without a view (declared input).
@@ -201,8 +145,8 @@ class MainFitMeasurement:
     round_id: str
     profile: ContextProfile
     rendered_mode: Literal["max", "low", "nano"]
-    estimated_input_tokens: int
-    response_reserve_tokens: int
+    estimated_input_tokens: int  # calibrated: the estimate times the fresh density
+    response_reserve_tokens: int  # the reply floor the fit leaves (Nano: min(8,192, ceiling); else the ceiling)
     target_total_tokens: Optional[int]
     capacity_total_tokens: Optional[int]
     measurement_basis: MeasurementBasis
@@ -213,6 +157,10 @@ class MainFitMeasurement:
     # Low-water margin the goal carries ABOVE the deficit (0 without a deficit):
     # the pass is deficit-triggered but sized to land below the boundary.
     low_water_margin_tokens: int = 0
+    raw_input_tokens: int = 0  # the same estimate before the density
+    # The reply allowance Main PLANS for this candidate (``context_budget.reply_allowance_tokens``);
+    # the send finalizer computes the sent value on the sealed candidate with the same rule.
+    reply_allowance_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -270,7 +218,8 @@ class ContextFitPlan:
             contents, start = _view_projections(
                 self.core, {form: json.loads(self.projection(form).system_content_json)[0]["text"] for form in books},
                 self.user_content_json, preferred=self.preferred_mode, start=start_mode, tool_schemas=tool_schemas,
-                window_tokens=window_tokens, known_window=known_window, output_reserve=output_reserve, ratio=ratio)
+                window_tokens=window_tokens, known_window=known_window, output_reserve=output_reserve, ratio=ratio,
+                resident=True)  # a running task's list, enable_tools additions included
 
         def project(projection: Optional[ContextFitProjection]) -> Optional[ContextFitProjection]:
             if projection is not None and projection.mode in contents:
@@ -279,8 +228,7 @@ class ContextFitPlan:
                                      memory_facts=facts, estimated_tokens=_request_tokens(
                                          system, projection.user_content_json or self.user_content_json))
             calibrated = int(int(projection.estimated_tokens or 0) * ratio) if projection is not None else 0
-            return projection and replace(projection, calibrated_tokens=calibrated, calibration_ratio=ratio, fits_known_window=_fits_window(
-                projection.mode, calibrated, window_tokens, known_window, output_reserve, self.preferred_mode))
+            return projection and replace(projection, calibrated_tokens=calibrated, calibration_ratio=ratio)
 
         return replace(self, initial_mode=start, window_tokens=window_tokens, output_reserve_tokens=output_reserve,
                        max_projection=project(self.max_projection), low_projection=project(self.low_projection),
@@ -528,15 +476,21 @@ def tool_schema_tokens(tools: Optional[List[Dict[str, Any]]]) -> int:
 
 
 def bounded_prompt_tokens_for_payload(prompt_payload: Dict[str, Any], fallback_chars: int) -> int:
-    """The density witness's basis: the fit estimator's own token count for a
-    request payload (messages + tools, images at the proxy), or ``fallback_chars
-    // 4`` when there is no message list. Kept beside the estimator so the two
-    can never diverge; ``estimate_message_chars`` dropped tool_call objects and
-    made density ~1.4x high on the tool-heavy shape (measure_main_fit multiplies
-    THIS quantity)."""
+    """The density witness's basis (``capability_evidence.MAIN_DENSITY_BASIS``): the
+    fit estimator's own token count for a request payload (messages + tools,
+    images at the proxy, a top-level ``system`` — the Messages API's separate
+    field — counted as a leading system message), or ``fallback_chars // 4``
+    when there is no message list. Kept beside the estimator so the two can
+    never diverge; ``estimate_message_chars`` dropped tool_call objects and made
+    density ~1.4x high on the tool-heavy shape, and an uncounted ``system``
+    over-sized the direct-Anthropic reply by its whole length (measure_main_fit
+    and the send finalizer multiply THIS quantity)."""
     try:
         messages = prompt_payload.get("messages")
         if isinstance(messages, list):
+            system = prompt_payload.get("system")
+            if isinstance(system, (str, list)) and system:
+                messages = [{"role": "system", "content": system}, *messages]
             return int(estimate_context_prompt_tokens(
                 messages, prompt_payload.get("tools") or prompt_payload.get("functions")))
     except Exception:
@@ -660,23 +614,25 @@ def measure_main_fit(
     A positive deficit triggers at most one reclaim pass per route+round; the
     requested goal is deficit + ``reclaim_low_water_margin`` so the pass lands
     below the boundary instead of exactly at it (``RECLAIM_LOW_WATER_DIVISOR``).
+    Both deficits count the reply floor the fit leaves (Nano: ``min(8192, C)``);
+    the reply the candidate will actually get is ``reply_allowance_tokens``.
     """
     from ouroboros.capability_evidence import (
         canonical_evidence_root, is_known, resolve_main_token_density,
     )
-    from ouroboros.context_budget import OWNER_LOW_TARGET_TOKENS, OWNER_NANO_TARGET_TOKENS, NANO_MIN_HEADROOM_TOKENS
+    from ouroboros.context_budget import (
+        OWNER_LOW_TARGET_TOKENS, OWNER_NANO_TARGET_TOKENS, NANO_MIN_HEADROOM_TOKENS, reply_allowance_tokens,
+    )
 
     if drive_root is None:
         drive_root = canonical_evidence_root()
     density, basis = resolve_main_token_density(drive_root, plan.route_fp, plan.model)
     density = float(density)
-    estimated_input = int(math.ceil(estimate_context_prompt_tokens(
-        messages,
-        tools,
-        provider=plan.provider,
-        reasoning_effort=reasoning_effort,
-    ) * density))
-    reserve = NANO_MIN_HEADROOM_TOKENS if profile.endswith("_nano") else int(plan.output_reserve_tokens or 0)
+    raw_input = int(estimate_context_prompt_tokens(messages, tools, provider=plan.provider, reasoning_effort=reasoning_effort))
+    estimated_input = int(math.ceil(raw_input * density))
+    ceiling = int(plan.output_reserve_tokens or 0)
+    nano = profile.endswith("_nano")
+    reserve = min(NANO_MIN_HEADROOM_TOKENS, ceiling) if nano else ceiling
     total = estimated_input + reserve
     target = (OWNER_NANO_TARGET_TOKENS if profile == "owner_nano"
               else OWNER_LOW_TARGET_TOKENS if profile == "owner_low" else None)
@@ -704,6 +660,10 @@ def measure_main_fit(
         capacity_deficit_tokens=capacity_deficit,
         reclaim_goal_tokens=goal,
         low_water_margin_tokens=margin,
+        raw_input_tokens=raw_input,
+        reply_allowance_tokens=reply_allowance_tokens(
+            caller_max_tokens=ceiling, nano=nano, owner_nano=profile == "owner_nano",
+            input_tokens=estimated_input, raw_input_tokens=raw_input, window_tokens=capacity),
     )
     if goal > 0 and not automatic_pass_used:
         action: Literal["send", "reclaim_once", "send_target_miss"] = "reclaim_once"
@@ -812,13 +772,6 @@ def main_output_reserve_tokens(*, use_local: bool) -> int:
     return MAIN_LOOP_MAX_TOKENS
 
 
-def _fits_window(mode: str, calibrated: int, window: int, known: bool, reserve: int, owner: str) -> Optional[bool]:
-    from ouroboros.context_budget import context_mode_limits
-
-    target, reserve = context_mode_limits(mode, owner, reserve)  # only the owner's Nano frames it (Low's is elastic)
-    return calibrated + reserve <= (min(target, int(window or 0)) if target and mode == "nano" else int(window or 0)) if known else None
-
-
 def _request_tokens(system_content: List[Dict[str, Any]], user_content_json: str) -> int:
     return estimate_context_prompt_tokens([{"role": "system", "content": system_content},
                                            {"role": "user", "content": json.loads(user_content_json)}])
@@ -826,12 +779,15 @@ def _request_tokens(system_content: List[Dict[str, Any]], user_content_json: str
 
 def _view_projections(core: ContextCore, governance: Mapping[str, str], user_content_json: str, *, preferred: str,
                       tool_schemas: Optional[List[Dict[str, Any]]], window_tokens: int, known_window: bool, output_reserve: int,
-                      ratio: float, start: Optional[str] = None) -> Tuple[Dict[str, Tuple[List[Dict[str, Any]], Dict]], str]:
+                      ratio: float, start: Optional[str] = None, resident: bool = False,
+                      ) -> Tuple[Dict[str, Tuple[List[Dict[str, Any]], Dict]], str]:
     """Each mode's ``(system content, view receipt)`` and the mode the task starts in.
 
     ``governance`` is block A by book form. A mode's fixed part is its request without my memory
-    plus the schemas it sends (Nano's selection); view and starting mode are ``memory_floor.mode_views``
-    of the core's snapshot, so a new route re-renders both from the same capture.
+    plus the schemas it sends: the owner-mode selection of ``tool_schemas`` on the first request,
+    or, ``resident``, the list a running task already sends (an ``enable_tools`` addition counts,
+    whatever the mode). View and starting mode are ``memory_floor.mode_views`` of the core's
+    snapshot, so a new route re-renders both from the same capture.
     """
     form = {mode: "low" if core.compact_reference_docs or mode == "nano" else mode for mode in ("max", "low", "nano")}
     if not core.memory_view_json:
@@ -839,7 +795,8 @@ def _view_projections(core: ContextCore, governance: Mapping[str, str], user_con
     from ouroboros import memory_floor
     from ouroboros.memory_view import snapshot_from_json
     from ouroboros.tool_policy import select_tool_schemas
-    sent = {mode: select_tool_schemas(tool_schemas or [], context_mode=mode) for mode in form}  # what each mode sends
+    names = [schema["function"]["name"] for schema in tool_schemas or []] if resident else None
+    sent = {mode: select_tool_schemas(tool_schemas or [], context_mode=mode, schema_names=names) for mode in form}
     fixed = {mode: _request_tokens(_system_blocks(core, governance[form[mode]]), user_content_json)
              + tool_schema_tokens(list(sent[mode].schemas)) for mode in form}
     views, start = memory_floor.mode_views(snapshot_from_json(core.memory_view_json), preferred=preferred, start=start,
@@ -900,16 +857,22 @@ def build_context_fit_plan(
         preferred=preferred, tool_schemas=tool_schemas, window_tokens=int(evidence.window_tokens or 0),
         known_window=known_window, output_reserve=output_reserve, ratio=ratio)
 
+    from ouroboros.context_budget import OWNER_NANO_TARGET_TOKENS, context_mode_limits
+    from ouroboros.tool_policy import select_tool_schemas
+
+    # The task-input pointer is decided on the calibrated Nano request: the schemas it sends and its reply floor.
+    nano_sent_tokens = tool_schema_tokens(list(select_tool_schemas(tool_schemas or [], context_mode="nano").schemas))
+    nano_reserve = context_mode_limits("nano", preferred, output_reserve)[1]
+
     def _projection(mode: str) -> ContextFitProjection:
         nonlocal input_source
-        from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_NANO_TARGET_TOKENS
 
         system_content, memory_facts = contents[mode]
         system_content_json = json.dumps(system_content, ensure_ascii=False, sort_keys=True)
         estimated = _request_tokens(system_content, core.user_content_json)
         user_projection = None
         target = OWNER_NANO_TARGET_TOKENS if mode == "nano" else None
-        if preferred == "nano" and target is not None and estimated + NANO_MIN_HEADROOM_TOKENS > target:
+        if preferred == "nano" and target is not None and math.ceil((estimated + nano_sent_tokens) * ratio) + nano_reserve > target:
             # The original owner input stays exact in the captured core and
             # existing source store. Only its initial Nano delivery changes;
             # this is neither the external-assignment compiler nor a summary.
@@ -933,14 +896,12 @@ def build_context_fit_plan(
                     estimated = source_estimate
             except (OSError, ValueError, KeyError):
                 log.warning("Exact task input source could not be retained; preserving complete input", exc_info=True)
-        calibrated = int(estimated * ratio)
         return ContextFitProjection(
             mode=mode,
             system_content_json=system_content_json,
             estimated_tokens=estimated,
-            calibrated_tokens=calibrated,
+            calibrated_tokens=int(estimated * ratio),
             calibration_ratio=ratio,
-            fits_known_window=_fits_window(mode, calibrated, evidence.window_tokens, known_window, output_reserve, preferred),
             user_content_json=user_projection,
             memory_facts=memory_facts,
         )

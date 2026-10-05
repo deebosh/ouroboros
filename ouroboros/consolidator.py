@@ -14,6 +14,7 @@ import pathlib
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ouroboros import chat_chain
+from ouroboros._usage_response import OUTPUT_LIMIT_FINISH_REASONS, response_finish_reason
 from ouroboros.utils import append_jsonl, utc_now_iso, extract_trailing_json_object
 
 log = logging.getLogger(__name__)
@@ -499,11 +500,9 @@ def _call_consolidation_llm(
                         "kind": "source_incomplete", "label": label,
                         "message": "The complete retained source was not delivered; originals are preserved.",
                         "source_ref": knowledge.required_source, "response_ref": response_ref}]}
-                # OpenAI-family lanes report the cut in usage.response_finish_reason;
-                # the native Anthropic lane puts stop_reason on the message itself.
-                cut_markers = {str(usage.get("response_finish_reason") or "").lower(),
-                               str(msg.get("stop_reason") or "").lower()}
-                if cut_markers & {"length", "max_tokens"}:
+                # The shared finish reader: usage.response_finish_reason (OpenAI-family lanes),
+                # then the message's own finish_reason / stop_reason (native Anthropic).
+                if str(response_finish_reason(usage, msg)[1] or "").strip().lower() in OUTPUT_LIMIT_FINISH_REASONS:
                     # A summary cut at the output ceiling is silent truncation
                     # (BIBLE P1): keep the originals rather than a clipped memory.
                     usages.pop()
