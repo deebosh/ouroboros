@@ -175,10 +175,9 @@ SM1 stub rehearsal is separately gated by `integration`, `serial` and
 `OUROBOROS_E2E_DEEP=mock`; it starts a real server and the hermetic suite, so
 ordinary focused/default tests must not accidentally launch it.
 
-The existing `.github/workflows/ci.yml` `e2e-live` job runs on its own nightly
-03:17 UTC cron or explicit `e2e_live=true` dispatch, never an ordinary dispatch,
-push, PR or tag. The cron fires on default-branch metadata but checks out
-`ouroboros`; dispatch uses its selected SHA. It runs one SM1 attempt with
+The existing `.github/workflows/ci.yml` `e2e-live` job runs only on an explicit
+`e2e_live=true` dispatch, never an ordinary dispatch, schedule, push, PR or tag
+(no schedule since 2026-10-05, owner); it uses the dispatch's selected SHA. It runs one SM1 attempt with
 `--self-mod --total-budget 30 --per-task-usd 15`, reserving $30 for its two
 roots. The owner supplies `OUROBOROS_E2E_LIVE_OPENROUTER_KEY`; its absence
 produces the honest green summary `skipped: secret
@@ -186,4 +185,5 @@ OUROBOROS_E2E_LIVE_OPENROUTER_KEY not configured`, not a claimed run.
 Upload the manifest, index, lane results and screenshots even on failure.
 The summary renders verdicts or the typed refusal/error without changing
 the stand's exit verdict. Browser PR proof and the keyless system-E2E
-schedule retain their separate existing CI owners.
+lane (manual dispatch and release tags) retain their separate existing CI
+owners.

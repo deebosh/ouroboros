@@ -1,13 +1,10 @@
-"""The paid `e2e-live` CI job: the live E2E stand (devtools/e2e_live) on a nightly
-cron or an OPTED-IN manual dispatch, sized to a $30 cap, skipped honestly without
-its secret.
+"""The paid `e2e-live` CI job: the live E2E stand (devtools/e2e_live) on an
+OPTED-IN manual dispatch only (no schedule since 2026-10-05, owner), sized to a
+$30 cap, skipped honestly without its secret.
 
-Pinned as a contract, not as text: the job fires only on its OWN cron string or a
-dispatch whose `e2e_live` input is true (never a plain dispatch — the pre-tag
-3-OS matrix must not spend money — nor push, pull_request, tag, or the keyless
-lane's cron); the input changes no other job's gate; the nightly checks out and
-seeds the `ouroboros` branch tip (a schedule fires on the default branch, the
-promoted release line) while a dispatch seeds its own sha; it names
+Pinned as a contract, not as text: the job fires only on a dispatch whose
+`e2e_live` input is true (never a plain dispatch — the pre-tag 3-OS matrix must
+not spend money — nor push, pull_request, tag or any schedule); the input changes no other job's gate; the dispatch checks out and seeds its own sha; it names
 exactly one secret, `OUROBOROS_E2E_LIVE_OPENROUTER_KEY`, gated through a
 non-secret job-level env (GitHub rejects `secrets.*` inside `if:`); a missing
 secret is one step-summary line and a green exit, not a red run and not a
@@ -40,7 +37,6 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 CI_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 JOB = "e2e-live"
 SECRET = "OUROBOROS_E2E_LIVE_OPENROUTER_KEY"
-LIVE_CRON = "17 3 * * *"
 DISPATCH_INPUT = "e2e_live"
 NIGHTLY_REF = "ouroboros"
 SKIP_LINE = f"skipped: secret {SECRET} not configured"
@@ -82,8 +78,8 @@ def _stand_args() -> dict[str, str | None]:
 def test_the_paid_lane_fires_only_on_its_own_cron_or_an_opted_in_dispatch():
     workflow = _workflow()
     triggers = workflow.get("on") or workflow.get(True)
-    crons = [str(entry["cron"]) for entry in triggers["schedule"]]
-    assert LIVE_CRON in crons, crons
+    # No schedule (owner, 2026-10-05): the paid stand runs only on its opt-in.
+    assert "schedule" not in triggers, triggers
     # The opt-in: a boolean dispatch input, OFF by default, naming the cost and
     # the secret. A plain `gh workflow run CI --ref <branch>` (the pre-tag 3-OS
     # matrix) therefore never runs the paid lane.
@@ -94,8 +90,7 @@ def test_the_paid_lane_fires_only_on_its_own_cron_or_an_opted_in_dispatch():
     assert "$30" in spec["description"] and SECRET in spec["description"], spec
     condition = " ".join(str(_job()["if"]).split())
     assert condition == (
-        f"(github.event_name == 'workflow_dispatch' && github.event.inputs.{DISPATCH_INPUT} == 'true')"
-        f" || (github.event_name == 'schedule' && github.event.schedule == '{LIVE_CRON}')"
+        f"github.event_name == 'workflow_dispatch' && github.event.inputs.{DISPATCH_INPUT} == 'true'"
     )
     # The input gates THIS job only: no other job reads dispatch inputs, so the
     # `github.event_name == 'workflow_dispatch'` gates elsewhere keep firing on
