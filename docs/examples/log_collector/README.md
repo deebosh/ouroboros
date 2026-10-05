@@ -1,8 +1,10 @@
 # Ship Ouroboros record metadata with a log collector
 
-Verified on 2026-10-05 with Vector 0.58.0 (macOS arm64) against Ouroboros at the commit that added this
-example: `vector validate` and `vector test` on this file, then a running Vector over a real data root
-while the real writer rotated its logs. The pilot's results are in the pull request that added the example.
+Verified on 2026-10-06 with Vector 0.58.0 (macOS arm64) against the Ouroboros source of the pull request
+that added this example: `vector validate` and `vector test` on this file; a running Vector over a scratch
+data root that Ouroboros's own writer filled and its own rotator rotated (at a lower size), stopped and
+restarted midway; and a running Vector over the data root of an isolated Ouroboros server. The results are
+in that pull request.
 
 Ouroboros sends no telemetry. This example is for a deployment that wants its own monitoring: a collector
 next to Ouroboros (a sidecar container, a host agent) reads the local JSONL records and forwards only
@@ -23,9 +25,9 @@ passport). The collector follows it:
   (one day) keeps the tail off older history: to ship that, run a one-time backfill over the archive.
 - `state/headless_tasks/*/data/logs/events.jsonl`: the model rounds, errors and task starts of subagents
   and forked-memory tasks are written there, not to the main `events.jsonl`. These drives are deleted
-  once the task is finished and older than `OUROBOROS_GC_RETENTION_DAYS` (default 7), so the collector
-  must be running to keep them. Their `tools.jsonl` is skipped on purpose: the main `tools.jsonl`
-  holds the same rows.
+  once the task is finished and older than `OUROBOROS_GC_RETENTION_DAYS` (default 7), or at once for a
+  cancelled subagent, so the collector must be running to keep them. Their `tools.jsonl` is skipped on
+  purpose: the main `tools.jsonl` holds the same rows.
 
 ## What it forwards
 
@@ -33,10 +35,10 @@ Only the passport's anchor rows (the `anchors` list), and of them only metadata:
 statuses, durations, token counts. The `allowed` list drops everything else, including the
 content-bearing fields the passport names (`args`, `result_preview`, `task`, `outcome_axes`,
 `artifact_bundle`, `error`, `traceback`, ...). Extend it only with fields the passport lists for the row
-types you need; a field it does not list may change without notice. A `task_received` row keeps only its
-type and time, because the task id sits inside the content-bearing `task`; join through
-`task_results/<task_id>.json` or the task's other rows. Each row also gets `log` and `plane` (canonical or
-the task's own drive), so tools rows can be deduplicated by `(invocation_id, type)` if you read drives too.
+types you need; a field it does not list may change without notice. A `task_received` row keeps its type,
+time and `task_id`, taken from `task.id`; the rest of `task` is content. Each row also gets `log` (events,
+tools or supervisor) and `child_drive` (true for a row read from a subagent's or forked-memory task's own
+drive). If you add the drives' `tools.jsonl`, drop duplicate tools rows by `(invocation_id, type)`.
 The example is a starting point, not a delivery guarantee: a collector that is stopped past retention or
 past `ignore_older_secs` misses rows.
 
@@ -61,6 +63,11 @@ so a restart resumes where it stopped.
 
 ## Collector defaults that lose Ouroboros rows
 
+- Vector keeps one file open for every file the globs match, old archive generations that
+  `ignore_older_secs` skips included, and Ouroboros never deletes the archive. Give the collector an
+  open-file limit well above the number of archive files (`LimitNOFILE` in a systemd unit,
+  `--ulimit nofile=` for a container), or narrow the archive globs once the backlog is shipped; at the
+  limit Vector cannot open the new generations.
 - Vector discards lines longer than `max_line_bytes` (102,400 by default). Ouroboros rows reach about
   300 KB, so the example raises it.
 - Fluent Bit's `tail` input stops monitoring a file at a line longer than `buffer_max_size` (32 KB by

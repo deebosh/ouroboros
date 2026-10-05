@@ -43,8 +43,9 @@ transforms:
                  "status_code", "retry_same_request", "phase", "exitcode", "busy_task_id", "signal",
                  "stalled_sec"]
       . = filter(row) -> |key, _value| { includes(allowed, key) }
+      if row.type == "task_received" { .task_id = row.task.id }  # the id only; the rest of `task` is content
       .log = replace(replace(replace(path, r'^.*/', ""), r'\.jsonl$', ""), r'_.*$', "")  # archive/<log>_<stamp>
-      .plane = if contains(path, "/state/headless_tasks/") { "drive_logs" } else { "canonical" }
+      .child_drive = contains(path, "/state/headless_tasks/")  # a subagent's or forked-memory task's own drive
 sinks:
   ouroboros_metadata_file:     # replace with your destination (Loki, Elasticsearch, an OTLP endpoint, ...)
     type: file
@@ -52,31 +53,65 @@ sinks:
     path: /var/lib/vector/ouroboros-metadata.jsonl
     encoding:
       codec: json
-tests:
-  - name: content, money and non-anchor rows never leave
+tests:  # one input per test: a condition passes when any output event meets it
+  - name: an archived tools row keeps only its metadata
     inputs:
       - insert_at: ouroboros_metadata
         type: log
         log_fields:
           file: /srv/ouroboros/data/archive/tools_20261005T120000_1.jsonl
           message: '{"ts":"2026-10-05T00:00:00+00:00","type":"tool_call","task_id":"t1","tool":"run_command","invocation_id":"i1","args":{"cmd":"echo hi"},"result_preview":"hi","status":"ok","is_error":false,"elapsed_ms":12}'
-      - insert_at: ouroboros_metadata
-        type: log
-        log_fields:
-          file: /srv/ouroboros/data/state/headless_tasks/t2/data/logs/events.jsonl
-          message: '{"ts":"2026-10-05T00:00:01+00:00","type":"task_done","task_id":"t2","status":"completed","outcome_axes":{"objective":{"status":"fail","detail":"secret plan"}},"artifact_bundle":{"files":["/home/u/x"]},"accounted_upper_bound_usd":0.5}'
-      - insert_at: ouroboros_metadata
-        type: log
-        log_fields:
-          file: /srv/ouroboros/data/logs/events.jsonl
-          message: '{"ts":"2026-10-05T00:00:02+00:00","type":"history_retention","task_id":"t3","text":"not an anchor"}'
     outputs:
       - extract_from: ouroboros_metadata
         conditions:
           - type: vrl
             source: |
-              assert!(.type == "tool_call" || .type == "task_done")
-              assert!(.ts != null && .task_id != null)
-              assert!(!exists(.args) && !exists(.result_preview) && !exists(.message))
-              assert!(!exists(.outcome_axes) && !exists(.artifact_bundle) && !exists(.accounted_upper_bound_usd))
-              assert!((.log == "tools" && .plane == "canonical") || (.log == "events" && .plane == "drive_logs"))
+              assert_eq!(.type, "tool_call")
+              assert_eq!(.invocation_id, "i1")
+              assert_eq!(.elapsed_ms, 12)
+              assert!(!exists(.args) && !exists(.result_preview) && !exists(.message) && !exists(.file))
+              assert_eq!(.log, "tools")
+              assert_eq!(.child_drive, false)
+  - name: a child-drive task_done row drops its content and money
+    inputs:
+      - insert_at: ouroboros_metadata
+        type: log
+        log_fields:
+          file: /srv/ouroboros/data/state/headless_tasks/t2/data/logs/events.jsonl
+          message: '{"ts":"2026-10-05T00:00:01+00:00","type":"task_done","task_id":"t2","status":"completed","outcome_axes":{"objective":{"status":"fail","detail":"secret plan"}},"artifact_bundle":{"files":["/home/u/x"]},"cancel_origin":{"reason":"why"},"accounted_upper_bound_usd":0.5}'
+    outputs:
+      - extract_from: ouroboros_metadata
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.type, "task_done")
+              assert_eq!(.status, "completed")
+              assert!(!exists(.outcome_axes) && !exists(.artifact_bundle) && !exists(.cancel_origin))
+              assert!(!exists(.accounted_upper_bound_usd))
+              assert_eq!(.log, "events")
+              assert_eq!(.child_drive, true)
+  - name: a task start keeps only its task id
+    inputs:
+      - insert_at: ouroboros_metadata
+        type: log
+        log_fields:
+          file: /srv/ouroboros/data/logs/events.jsonl
+          message: '{"ts":"2026-10-05T00:00:03+00:00","type":"task_received","task":{"id":"t4","text":"the owner task text"}}'
+    outputs:
+      - extract_from: ouroboros_metadata
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.type, "task_received")
+              assert_eq!(.task_id, "t4")
+              assert!(!exists(.task))
+              assert_eq!(.child_drive, false)
+  - name: a row that is not an anchor never leaves
+    inputs:
+      - insert_at: ouroboros_metadata
+        type: log
+        log_fields:
+          file: /srv/ouroboros/data/logs/events.jsonl
+          message: '{"ts":"2026-10-05T00:00:02+00:00","type":"history_retention","task_id":"t3","text":"not an anchor"}'
+    no_outputs_from:
+      - ouroboros_metadata

@@ -2,8 +2,8 @@
 
 Every guaranteed field of every anchor row is proved against its real writer: by the dict
 literals in the named writer modules, or, for tools rows (composed from several dicts plus
-lineage), by driving the real tool loop. Within a contract version guaranteed fields may only
-be added.
+lineage), by driving the real tool loop. Within a contract version the guaranteed fields are
+fixed; a new field is optional.
 """
 from __future__ import annotations
 
@@ -166,7 +166,7 @@ def test_a_timed_out_tool_writes_the_wait_end_and_then_its_settlement(tmp_path):
     registry = _Registry(tmp_path, slow)
     _, logs = _call(registry, tmp_path, timeout=1)
     release.set()
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 30  # generous under a loaded host; the loop ends at the third row
     while time.monotonic() < deadline and len(_rows(logs / "tools.jsonl")) < 3:
         time.sleep(0.05)
     rows = _rows(logs / "tools.jsonl")
@@ -192,6 +192,23 @@ def test_a_refused_browser_call_settles_with_the_guaranteed_fields(tmp_path):
     [row] = _rows(logs / "tools.jsonl")
     assert row["type"] == "tool_call" and row["status"] == "refused"
     assert "args" not in row and "tool_call_id" not in row  # both optional: absent on this path
+    _assert_row(row)
+
+
+def test_unknown_tool_counts_are_written_as_null_and_declared_nullable(tmp_path):
+    """A task that ended without loop evidence has unknown tool counts: the metrics row carries
+    null, never 0, so the passport must declare those guaranteed fields nullable."""
+    from types import SimpleNamespace
+
+    from ouroboros.post_task_synthesis import task_tool_metrics
+    from ouroboros.utils import append_jsonl
+    from supervisor.events_worker_reports import _handle_task_metrics
+
+    ctx = SimpleNamespace(DRIVE_ROOT=tmp_path, RUNNING={}, PENDING=[], append_jsonl=append_jsonl,
+                          bridge=SimpleNamespace(push_log=lambda _row: None))
+    _handle_task_metrics({"task_id": "t1", **task_tool_metrics({"loop_evidence_unavailable": True})}, ctx)
+    [row] = _rows(tmp_path / "logs" / "supervisor.jsonl")
+    assert row["tool_calls"] is None and row["tool_errors"] is None
     _assert_row(row)
 
 

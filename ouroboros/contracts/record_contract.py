@@ -17,7 +17,7 @@ sets are deliberately narrow and fixed within ``RECORD_CONTRACT_VERSION``; a
 new field arrives as optional, and an optional field is present today with no
 promise. Promoting, removing or renaming a guaranteed field, or changing its
 meaning, needs a successor version and a migration note
-(docs/architecture/11-frozen-contracts-v1.md §11.4). A field this module does
+(docs/architecture/11-frozen-contracts-v1.md §11.3). A field this module does
 not list may change without notice. tests/test_record_contract.py checks every
 guaranteed field against its writer.
 """
@@ -102,11 +102,12 @@ ANCHOR_ROWS: tuple[AnchorRow, ...] = (
     AnchorRow(
         "task_done", "events", "canonical",
         "The supervisor accepted a task's terminal; task_results/<task_id>.json stays the lifecycle authority.",
-        _fields("ts type task_id task_type chat_id status reason_code"),
+        _fields("ts type task_id task_type chat_id status reason_code"), nullable=_fields("reason_code"),
         optional=_fields(_COST_META + " outcome_axes _is_direct_chat root_phase_checkpoint artifact_status "
                                       "total_rounds prompt_tokens completion_tokens review_status review_projection "
                                       "model_execution artifact_bundle cancel_origin typed_routing_action"),
-        content=_fields("outcome_axes review_projection artifact_bundle"), natural_key=("task_id", "type", "ts"),
+        content=_fields("outcome_axes review_status review_projection artifact_bundle cancel_origin"),
+        natural_key=("task_id", "type", "ts"),
     ),
     AnchorRow(
         "task_error", "events", "drive_logs",
@@ -116,8 +117,10 @@ ANCHOR_ROWS: tuple[AnchorRow, ...] = (
     ),
     AnchorRow(
         "task_metrics_event", "supervisor", "canonical",
-        "Duration and tool counts of a task that reached the pipeline's own finalization.",
+        "Duration and tool counts of a task that reached the pipeline's own finalization; the counts are null "
+        "(unknown, never 0) for a task that ended without loop evidence.",
         _fields("ts type task_id task_type duration_sec tool_calls tool_errors reason_code"),
+        nullable=_fields("tool_calls tool_errors"),
         optional=_fields("outcome_axes routing_tool_calls completion_tool_calls tool_call_counts chat_id "
                          "parent_task_id root_task_id"),
         content=_fields("outcome_axes"), natural_key=("task_id", "type", "ts"),
@@ -132,11 +135,15 @@ ANCHOR_ROWS: tuple[AnchorRow, ...] = (
     ),
     AnchorRow(
         "llm_round", "events", "drive_logs",
-        "One settled logical model round of a task's main loop. duration_ms spans it from its first started "
-        "frame to settlement: retries, fallbacks and in-round waits included, the context fit before it and "
-        "the tools after it excluded. ledger_attempt_ids are the settling call's attempts (physical_attempt_id "
-        "the last); earlier failed attempts are llm_api_error rows with the same round_id. A Claudexor "
-        "operation id rides inside `claudexor`.",
+        "One settled logical model round of a task's main loop. duration_ms spans it on the monotonic clock "
+        "from its first started frame to settlement: retries, fallbacks and in-round waits count however long "
+        "they take, the context fit before it and the tools after it do not, time the machine slept may not, "
+        "and a budget pause restarts it. A forced final answer after a round that never settled reuses its "
+        "round_id and includes those failed attempts. ledger_attempt_ids are the settling call's attempts "
+        "(physical_attempt_id the last); earlier failed attempts are llm_api_error rows or non-anchor rows "
+        "(COVERAGE_GAPS) with the same round_id. first_request_at and first_answer_at are the execution's "
+        "first request and first answer, repeated on later rounds. A Claudexor operation id rides inside "
+        "`claudexor`.",
         _fields("ts type task_id execution_id round_id llm_call_id round model provider prompt_tokens "
                 "completion_tokens cached_tokens cache_write_tokens duration_ms ledger_attempt_ids "
                 "physical_attempt_id"),
@@ -148,8 +155,9 @@ ANCHOR_ROWS: tuple[AnchorRow, ...] = (
     ),
     AnchorRow(
         "llm_usage", "events", "canonical",
-        "A compatibility projection of every model call's usage, reviews and tool models included; "
-        "accounting_authority names the ledger. Never a money source (ACCOUNTING_RULE).",
+        "A compatibility projection of a model call's usage as the supervisor received it: main-loop, review "
+        "and tool-model calls (COVERAGE_GAPS names calls that write none); accounting_authority names the "
+        "ledger. Never a money source (ACCOUNTING_RULE).",
         _fields("ts type task_id root_task_id parent_task_id delegation_role category model provider "
                 "prompt_tokens completion_tokens cached_tokens cache_write_tokens accounting_authority "
                 "ledger_attempt_ids"),
@@ -217,8 +225,9 @@ ANCHOR_ROWS: tuple[AnchorRow, ...] = (
     ),
     AnchorRow(
         "supervisor_loop_stall_end", "supervisor", "canonical",
-        "The stalled supervisor loop ticked again; where its thread spent the stall.",
-        _fields("ts type stalled_sec phase"),
+        "The stalled supervisor loop ticked again; where its thread spent the stall. phase is null when the "
+        "loop had published no facts.",
+        _fields("ts type stalled_sec phase"), nullable=_fields("phase"),
         optional=_fields("loop_thread_cpu_sec cpu_interval_sec samples top_frames last_stack"),
         content=_fields("top_frames last_stack"), natural_key=("type", "ts"),
     ),
@@ -254,17 +263,19 @@ ENVELOPE_RULE = (
 )
 
 ROTATION_RULE = (
-    "Each canonical JSONL log is renamed atomically into the archive once it reaches 800,000 bytes, checked on "
-    "every supervisor loop turn under the writers' append lock, and a fresh live file is created; a busy lock "
-    "postpones the rotation. Read the live file first, then <log>_*.jsonl in the archive sorted by name "
-    "(never parse the stamp), and drop the just-rotated generation by inode; a tailer that was down must read "
-    "the archive generations it missed. Child-drive logs are never rotated."
+    "Each canonical JSONL log is renamed atomically into the archive once it passes the rotation size (about "
+    "800 KB today; the size is not part of this contract), checked on every supervisor loop turn under the "
+    "writers' append lock, and a fresh live file is created; a busy lock postpones the rotation. Read the "
+    "live file first, then <log>_*.jsonl in the archive sorted by name (never parse the stamp), and drop the "
+    "just-rotated generation by inode; a tailer that was down must read the archive generations it missed. "
+    "Child-drive logs are never rotated."
 )
 
 REPLICA_RULE = (
-    "Only tools rows are written twice: the task's log directory and the canonical tools.jsonl receive the "
-    "same row. Read tools rows from the canonical file, or drop duplicates by (invocation_id, type); a legacy "
-    "row without invocation_id is a duplicate only when the whole row is equal. No other anchor row is mirrored."
+    "Only tools rows are written twice: when the task's log directory is not the canonical one, it and the "
+    "canonical tools.jsonl receive the same row. Read tools rows from the canonical file, or drop duplicates "
+    "by (invocation_id, type); a legacy row without invocation_id is a duplicate only when the whole row is "
+    "equal. No other anchor row is mirrored."
 )
 
 LEGACY_RULE = (
@@ -278,15 +289,16 @@ LEGACY_RULE = (
 
 ACCOUNTING_RULE = (
     "Money comes only from the validated accounting views, named by API rather than storage. Totals: GET "
-    "/api/state `accounting` and GET /api/cost-breakdown; respect available and integrity_degraded, and "
-    "unavailable means unknown, never $0. Per task: GET /api/tasks/{task_id} `cost_breakdown` for roots and "
-    "the cost fields of task_done, task_cost_finalized and the task result; respect cost_accounting_status, "
-    "ledger_integrity_degraded, cost_final and non_final_rows. Those are snapshots and upper bounds as of their "
-    "row, not additive transactions: task_cost_finalized supersedes task_done for the same task, and a "
-    "parent's _with_children figure already contains its children. Never sum llm_usage (cost is often null and "
-    "the row is a projection) or llm_round cost_usd, and never read or tail the money store, whose file is an "
-    "implementation detail. The views carry no as-of time: a contended display read may serve the last "
-    "validated snapshot."
+    "/api/state `accounting` and GET /api/cost-breakdown `accounting`; respect available (both) and "
+    "integrity_degraded (/api/state), and unavailable means unknown, never $0. Per task: GET "
+    "/api/tasks/{task_id} `cost_breakdown` for roots and the cost fields of task_done, task_cost_finalized "
+    "and the task result; respect cost_accounting_status, ledger_integrity_degraded, cost_final and "
+    "non_final_rows. Those are snapshots and upper bounds as of their row, not additive transactions: "
+    "task_cost_finalized supersedes task_done for the same task, and a parent's _with_children figure already "
+    "contains its children. Never sum llm_usage (cost is often null and the row is a projection) or llm_round "
+    "cost_usd, and never read or tail the money store, whose file is an implementation detail. The views "
+    "carry no as-of time: an answer reflects the store when it was read, and a read that cannot reach the "
+    "store within a short wait reports unavailable rather than an older figure."
 )
 
 COVERAGE_GAPS = (
@@ -294,7 +306,10 @@ COVERAGE_GAPS = (
     "Worker rows (llm_round, llm_api_error, task_received, task_error) of a task with a child drive vanish "
     "with the drive after retention; canonical rows and the archive stay. Ship child drives before then.",
     "llm_round covers a task's main loop only: review, search, vision and memory calls appear only as "
-    "llm_usage, without a duration; a round that never settles has only llm_api_error rows.",
+    "llm_usage, without a duration. A round that never settles has no llm_round: its failed attempts are "
+    "llm_api_error rows or the non-anchor rows named below.",
+    "Skill reviews started from the Skills page write no llm_usage row; their usage is in the accounting "
+    "views only.",
     "A terminal whose supervisor handler failed has no task_done: supervisor.jsonl worker_event_handler_error "
     "records it, and task_results stays the authority.",
     "tools rows carry no chat_id; task_done carries no root_task_id (join task_results or task_cost_finalized).",
