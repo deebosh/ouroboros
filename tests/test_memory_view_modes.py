@@ -91,7 +91,7 @@ def test_where_even_f1_to_f5_leave_too_much_peoples_words_go_last_other_rooms_fi
     assert "F2" in mine and "F6" not in mine and "F7" not in mine
     tight = steps(fixed + 65_536 + 9_000)  # after F1-F5 and F2 the words still do not fit
     assert list(tight) == ["F1", "F3", "F4", "F2", "F6", "F7"]  # every live room shows words: no F1b
-    some = steps(fixed + 65_536 + 13_000)  # other rooms' words make room before this room's
+    some = steps(fixed + 65_536 + 14_000)  # other rooms' words make room before this room's
     assert "F6" in some and "F7" not in some
 
 

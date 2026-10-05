@@ -186,21 +186,40 @@ def test_the_one_folded_rule_removes_a_pointer_only_when_every_row_is_sealed_and
     assert "legacy-b01-r1'" not in _story(tmp_path) and f"part {part}" in _story(tmp_path)
 
 
-def test_the_status_line_lives_while_old_memory_is_open_and_names_what_is_left(tmp_path):
+def test_the_story_always_ends_with_the_pages_line_and_the_progress_line_only_while_folding(tmp_path):
+    """The story's last line is permanent: my pages (and the date I last sealed one), a helper's drafts,
+    the parts — zeros say zeros, a helper's draft is not mine, a page folded into a part still counts.
+    The folding progress is a separate line that leaves when the old memory is all folded."""
     rooms = shared.world(tmp_path)
-    status = [line for line in _story(tmp_path).split("\n") if line.startswith("Story status:")]
-    assert len(status) == 1 and "folded 0 of 2 blocks; 6 retold records are still open (12 rows," in status[0]
-    assert "helper route " in status[0] and "pages sealed by me: 0." in status[0]
+    lines = _story(tmp_path).split("\n")
+    assert lines[-2] == "Pages sealed by me: 0; drafted by a helper: 0; parts: 0." and lines[-3] == ""
+    assert lines[-1].startswith("Story status: the helper retelling is folded 0 of 2 blocks; 6 retold records are still open "
+                                "(12 rows,") and "helper route " in lines[-1] and "pages sealed" not in lines[-1]
+    _page(tmp_path, str(rooms["alpha"]), 6, 7, author=HELPER)
+    assert _story(tmp_path).split("\n")[-2] == "Pages sealed by me: 0; drafted by a helper: 1; parts: 0."
     _fold_block_zero(tmp_path, rooms)
-    _page(tmp_path, str(rooms["alpha"]), 6, 7)
     _page(tmp_path, str(rooms["beta"]), 8, 9)
     _part(tmp_path, "1", ["legacy-b01-r1"])
+    _part(tmp_path, "1", [_page(tmp_path, "1", 10, 11)])
     done = _story(tmp_path)
     assert "Story status:" not in done and "Old memory retold" not in done  # the visible end of the transition
+    store = ChronicleStore(tmp_path)
+    latest = max(str(record["ts"])[:10] for record in store.records(kinds=("page",)) if record["author"]["kind"] == "mind")
+    assert done.split("\n")[-1] == f"Pages sealed by me: 5 (latest {latest}); drafted by a helper: 1; parts: 2."
+    # All folded through parts alone: no page yet, and the line says so instead of falling silent.
+    quiet = tmp_path / "quiet"
+    quiet.mkdir()
+    quiet_rooms = shared.world(quiet)
+    for unit in ("b00-r1", f"b00-r{quiet_rooms['alpha']}", "b00-r777", "b01-r1", f"b01-r{quiet_rooms['alpha']}",
+                 f"b01-r{quiet_rooms['beta']}"):
+        _part(quiet, unit.split("-r")[1], [f"legacy-{unit}"])
+    assert "Story status:" not in _story(quiet)
+    assert _story(quiet).split("\n")[-1] == "Pages sealed by me: 0; drafted by a helper: 0; parts: 6."
     fresh = tmp_path / "fresh"
     fresh.mkdir()
     shared.world(fresh, legacy=False)
-    assert "Story status:" not in _story(fresh) and "No page or part is sealed yet." in _story(fresh)
+    assert _story(fresh).split("\n")[-3:] == [mv._STORY_INTRO, "", "Pages sealed by me: 0; drafted by a helper: 0; parts: 0."]
+    assert "Story status:" not in _story(fresh) and "No page or part is sealed yet." not in _story(fresh)
 
 
 def test_a_helper_refusal_receipt_is_one_line_after_the_status_and_absent_without_one(tmp_path):

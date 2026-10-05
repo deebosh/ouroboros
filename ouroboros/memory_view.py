@@ -86,13 +86,14 @@ def _minute(value: Any) -> str:
     return moment.strftime("%Y-%m-%d %H:%M")
 
 
-def _period(span: Any) -> str:
-    """``start → end`` of a source time span, minutes in UTC; a span with unknown bounds says so."""
+def _period(span: Any, note: str = "") -> str:
+    """``start → end`` of a source time span, minutes in UTC, then ``note`` (a ``Period``'s: a block's period is
+    labelled as the block's); a span with unknown bounds says so."""
     span = _mapping(span)
     if not span.get("start") and not span.get("end"):
         return "period unknown"
     text = f"{_minute(span.get('start') or '?')} → {_minute(span.get('end') or '?')}"
-    return text + " (incomplete)" if span.get("incomplete") else text
+    return (text + " (incomplete)" if span.get("incomplete") else text) + note
 
 
 def _labeler(root: pathlib.Path) -> Callable[..., str]:
@@ -343,13 +344,8 @@ def _fixes(store: ChronicleStore, record: Mapping[str, Any], fixes: Mapping[str,
             for member in members for fix in fixes.get(str(member), ())]
 
 
-def _dated(period: memory_inventory.Period) -> str:
-    """A page's or part's period as the view prints it: its room's own rows, a block's labelled as the block's."""
-    return _period(period.span) + period.note()
-
-
 def _story_pages(store: ChronicleStore, label: Callable[..., str],
-                 units: Mapping[str, memory_inventory.LegacyUnit]) -> Tuple[List[Dict[str, Any]], int]:
+                 units: Mapping[str, memory_inventory.LegacyUnit]) -> List[Dict[str, Any]]:
     """Every acting page and part not folded into a part, all rooms, by the first row of its own room then sequence."""
     fixes: Dict[str, List[Dict[str, Any]]] = {}
     for record in store.records(kinds=("correction", "decision")):
@@ -358,22 +354,19 @@ def _story_pages(store: ChronicleStore, label: Callable[..., str],
                 {"kind": "correction" if record["kind"] == "correction" else "rejection",
                  "text": record.get("text"), "reason": record.get("reason")})
     rooms = sorted({str(record["room_id"]) for record in store.records(kinds=("page", "part"))})
-    keyed, mine = [], 0
+    keyed = []
     for room in rooms:
         for record in store.room_records(room):
-            if record["kind"] not in ("page", "part"):
-                continue
-            mine += record["kind"] == "page" and _mapping(record.get("author")).get("kind") == "mind"
-            if record.get("folded_into"):
+            if record["kind"] not in ("page", "part") or record.get("folded_into"):
                 continue
             period = memory_inventory.record_period(store, record, units)
             keyed.append(((period.first, record["sequence"]), {
                 "kind": record["kind"], "id": record["id"], "room_id": room,
                 "label": str(_mapping(record.get("metadata")).get("room_label") or label(room)),
-                "period": _dated(period), "text": str(record.get("current_text") or ""),
+                "period": _period(period.span, period.note()), "text": str(record.get("current_text") or ""),
                 "status": str(record.get("status") or ""), "signer": draft_signer(record.get("author")),
                 "stamp": _stamp_summary(record.get("host_stamp")), "fixes": _fixes(store, record, fixes), "quotes": record.get("quotes") or []}))
-    return [entry for _key, entry in sorted(keyed, key=lambda pair: pair[0])], mine
+    return [entry for _key, entry in sorted(keyed, key=lambda pair: pair[0])]
 
 
 def _capture_story(store: ChronicleStore, root: pathlib.Path, label: Callable[..., str], *,
@@ -405,10 +398,10 @@ def _capture_story(store: ChronicleStore, root: pathlib.Path, label: Callable[..
             read = _mapping(_mapping(_mapping(unit.refusal.get("response_ref")).get("read")).get("arguments"))
             refusals.append({"id": unit.record_id, "label": entry["label"], "period": entry["period"],
                              "kind": str(unit.refusal.get("kind") or "refused"), "path": str(read.get("path") or "")})
-    pages, mine = _story_pages(store, label, {unit.record_id: unit for unit in units})
+    pages = _story_pages(store, label, {unit.record_id: unit for unit in units})
     progress = memory_inventory.legacy_progress(units)
     open_units = [unit for unit in units if not unit.folded]
-    status = {"folded": progress["folded"], "total": progress["periods"], "pages_by_me": mine,
+    status = {"folded": progress["folded"], "total": progress["periods"], **memory_inventory.story_counts(store),
               "open_records": len(open_units), "open_rows": sum(unit.rows for unit in open_units),
               "open_chars": sum(unit.retelling_chars for unit in open_units), "helper_route": ""}
     if status["folded"] < status["total"]:
@@ -587,7 +580,7 @@ def _origins(root: pathlib.Path, room: str, lane_rows: List[Entry]) -> List[Dict
 def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, label: Callable[..., str],
                   entries: List[Entry], notes: Mapping[str, List[Dict[str, Any]]],
                   lineage: Mapping[str, Any], whole: Any = frozenset()) -> Dict[str, Any]:
-    """The current room: its head, page (retold records, pages under parts, notes), origin words and lanes.
+    """The current room: its head and standing facts, page (retold records, pages under parts, notes), origin words, lanes.
 
     A retold record my story already shows whole (``whole``: the first block, to an integrating focus) is not repeated.
     """
@@ -595,6 +588,7 @@ def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
     records = store.room_records(room)
     sample = next((meta for _address, meta, _pos in reversed(entries) if meta.get("transport")), None)
     facts: Dict[str, Any] = {"room_id": room, "label": label(room, sample), "head": store.room_head(room),
+                             "facts": memory_inventory.room_facts(store, room, entries, lineage, len(notes.get(room, ()))),
                              "legacy": [], "under_parts": [], "notes": [], "origins": [], "since": "",
                              "lane1": [], "lane2": []}
     if spec.room_page:
@@ -612,9 +606,9 @@ def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
                             "of": LEGACY_ROOM_LABEL if str(record.get("room_id")) == LEGACY_ROOM_ID else ""}
                            for record in retold if not getattr(unit := units.get(record["id"]), "folded", False)
                            and record["id"] not in whole]
-        own = {} if spec.story else {e["id"]: {**e, "part": None} for e in _story_pages(store, label, units)[0] if e["room_id"] == room}  # story order: the floor takes the oldest first
+        own = {} if spec.story else {e["id"]: {**e, "part": None} for e in _story_pages(store, label, units) if e["room_id"] == room}  # story order: the floor takes the oldest first
         facts["under_parts"] = [own.get(record["id"]) or {"id": record["id"], "kind": record["kind"], "part": record["folded_into"],
-                                 "period": _dated(memory_inventory.record_period(store, record, units)), "text": str(record.get("current_text") or "")}
+                                 "period": _period((p := memory_inventory.record_period(store, record, units)).span, p.note()), "text": str(record.get("current_text") or "")}
                                 for record in (records if spec.story else store.pages_of_room(room)) if record["kind"] in ("page", "part") and (record.get("folded_into") or record["id"] in own)]
         facts["notes"] = list(notes.get(room, ()))
     if spec.origin_words and room.lstrip("-").isdigit() and int(room) in memory_inventory.membership_facts(
@@ -626,25 +620,22 @@ def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
     return facts
 
 
-def _live_rooms(root: pathlib.Path, spec: ViewSpec, label: Callable[..., str], by_room: Mapping[str, List[Entry]],
-                notes: Mapping[str, List[Dict[str, Any]]], lineage: Mapping[str, Any]) -> List[Dict[str, Any]]:
-    """Every other room with open rows or notes not yet sealed, oldest last activity first."""
+def _live_rooms(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, label: Callable[..., str],
+                by_room: Mapping[str, List[Entry]], notes: Mapping[str, List[Dict[str, Any]]],
+                lineage: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """Every other room with open rows or notes not yet sealed, oldest last activity first, with its standing facts."""
     rooms = []
     for room in sorted((set(by_room) | set(notes)) - {spec.room_id}):
         entries = by_room.get(room, [])
-        classed = [(entry, row_class(entry[1], pos=entry[2], **lineage)) for entry in entries]
-        people = [(entry, cls) for entry, cls in classed if cls["lane"] == 1 and cls["author"].get("kind") == "human"]
         words = []
-        if spec.live_rooms == "lines_with_words" and people:
-            texts = _row_texts(root, [entry for entry, _cls in people])
+        if spec.live_rooms == "lines_with_words":
+            people = [(entry, cls) for entry in entries if (cls := row_class(entry[1], pos=entry[2], **lineage))["lane"] == 1
+                      and cls["author"].get("kind") == "human"]
+            texts = _row_texts(root, [entry for entry, _cls in people]) if people else {}
             words = [_spoken(entry, cls["author"], texts) for entry, cls in people]
         sample = next((meta for _address, meta, _pos in reversed(entries) if meta.get("transport")), None)
         rooms.append({"room_id": room, "label": label(room, sample), "key": entries[-1][2] if entries else -1,
-                      "first": _minute(entries[0][1].get("ts")) if entries else "",
-                      "last": _minute(entries[-1][1].get("ts")) if entries else "",
-                      "people": len(people), "rows": len(entries),
-                      "mine": sum(cls["lane"] == 1 and cls["author"].get("kind") == "ouroboros" for _e, cls in classed),
-                      "facts": sum(cls["lane"] == 2 for _e, cls in classed),
+                      "facts": memory_inventory.room_facts(store, room, entries, lineage, len(notes.get(room, ()))),
                       "notes": list(notes.get(room, ())), "words": words})
     return sorted(rooms, key=lambda item: (item["key"], item["room_id"]))
 
@@ -684,16 +675,16 @@ def _capture_live(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
                   whole: Any = frozenset()) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """``(this room, live rooms, marks)`` of one capture, from one read of the open rows."""
     lineage = row_lineage(root)
-    notes = _notes_by_room(store) if spec.room_page or spec.live_rooms != "none" else {}
+    notes = _notes_by_room(store) if spec.room_id is not None or spec.live_rooms != "none" else {}
     if spec.live_rooms != "none":
         by_room = memory_inventory.open_rows_by_room(root)
-    elif spec.room_id is not None and (spec.room_lanes or spec.origin_words):
+    elif spec.room_id is not None:  # the room's facts are counted from its open rows whatever the view prints of them
         by_room = {spec.room_id: memory_inventory.open_room_rows(root, spec.room_id)}
     else:
         by_room = {}
     room = (_capture_room(store, root, spec, label, by_room.get(spec.room_id, []), notes, lineage, whole)
             if spec.room_id is not None else None)
-    live = _live_rooms(root, spec, label, by_room, notes, lineage) if spec.live_rooms != "none" else []
+    live = _live_rooms(store, root, spec, label, by_room, notes, lineage) if spec.live_rooms != "none" else []
     return room, live, _capture_marks(store, spec, label)
 
 
@@ -792,32 +783,52 @@ def _facts_line(room: Mapping[str, Any], items: List[Dict[str, Any]]) -> str:
             f"from='{items[0]['first']}', to='{last['last']}')")
 
 
+def _facts_text(facts: Mapping[str, Any], of: str = "this room") -> str:
+    """A room's standing facts (``memory_inventory.room_facts``) as one phrase; the same words wherever a room is named.
+
+    The earliest open row and the last row a page covers stand side by side: a page covers a set of rows,
+    an earlier row can stay open, and the gap shows from the two facts without a frontier.
+    """
+    rows = (f"open {_minute(facts['earliest'])} → {_minute(facts['latest'])}; people {facts['people']}, "
+            f"mine {facts['mine']}, task facts {facts['task_facts']}, ~{facts['chars']} chars" if facts["rows"]
+            else "no open rows")
+    notes = f"; my notes not yet sealed: {facts['notes']}" if of == "this room" else ""
+    pages = (f"pages of {of}: {facts['pages']}, last covered row {_minute(facts['last_covered'])}" if facts["pages"]
+             else f"no page of {of} yet")
+    return f"{rows}{notes}; {pages}"
+
+
 def _rooms_line(rooms: List[Dict[str, Any]]) -> str:
-    """Other live rooms without notes as one line: their period and every id (F1b)."""
-    return (f"{len(rooms)} more open room{'' if len(rooms) == 1 else 's'} without notes; "
-            f"{min(room['first'] for room in rooms)} → {max(room['last'] for room in rooms)}; "
+    """Other live rooms without notes as one line: their summed facts and every id (F1b)."""
+    facts = [room["facts"] for room in rooms]
+    summed = {key: sum(item[key] for item in facts) for key in ("rows", "people", "mine", "task_facts", "chars", "notes", "pages")}
+    summed.update(earliest=min((item["earliest"] for item in facts if item["earliest"]), default=""),
+                  latest=max(item["latest"] for item in facts), last_covered=max(item["last_covered"] for item in facts))
+    return (f"{len(rooms)} more open room{'' if len(rooms) == 1 else 's'} without notes; {_facts_text(summed, 'these rooms')}; "
             "memory_read(room_id=<id>, rows=true) reads each: " + ", ".join(room["room_id"] for room in rooms))
 
 
 def _live_room(room: Mapping[str, Any], spoken: Any = frozenset()) -> List[str]:
-    if room["rows"]:
-        lines = [f"### {room['label']} — open {room['first']} → {room['last']}; people {room['people']}, "
-                 f"mine {room['mine']}, task facts {room['facts']}", f"memory_read(room_id='{room['room_id']}', rows=true)"]
-    else:
-        lines = [f"### {room['label']} — no open rows; my notes not yet sealed: {len(room['notes'])}",
-                 f"memory_read(room_id='{room['room_id']}')"]
+    lines = [f"### {room['label']} — {_facts_text(room['facts'])}",
+             f"memory_read(room_id='{room['room_id']}'{', rows=true' if room['facts']['rows'] else ''})"]
     return lines + _note_lines(room["notes"]) + [
         _row_pointer(word, "words") if word["address"] in spoken else word["line"] for word in room["words"]]
+
+
+def _pages_line(status: Mapping[str, Any]) -> str:
+    """The story's standing last line: my pages (and when I last sealed one), a helper's drafts, parts; zeros say zeros."""
+    latest = f" (latest {status['latest_by_me']})" if status.get("latest_by_me") else ""
+    return (f"Pages sealed by me: {status.get('pages_by_me', 0)}{latest}; drafted by a helper: "
+            f"{status.get('helper_pages', 0)}; parts: {status.get('parts', 0)}.")
 
 
 def _status_lines(status: Mapping[str, Any], refusals: Tuple[Dict[str, Any], ...]) -> List[str]:
     """The story status while the old memory is not all folded; one line per helper refusal."""
     if not status or status.get("folded", 0) >= status.get("total", 0):
         return []
-    lines = ["", f"Story status: the helper retelling is folded {status['folded']} of {status['total']} blocks; "
-                 f"{status['open_records']} retold records are still open ({status['open_rows']} rows, "
-                 f"{status['open_chars']} chars of retelling; helper route {status['helper_route']}); "
-                 f"pages sealed by me: {status['pages_by_me']}."]
+    lines = [f"Story status: the helper retelling is folded {status['folded']} of {status['total']} blocks; "
+             f"{status['open_records']} retold records are still open ({status['open_rows']} rows, "
+             f"{status['open_chars']} chars of retelling; helper route {status['helper_route']})."]
     for refusal in refusals:  # the retelling's own id is not the helper's answer
         read = (f"its answer: read_file(root='runtime_data', path='{refusal['path']}')" if refusal.get("path")
                 else "its answer was not retained")
@@ -857,9 +868,7 @@ def render_story(snapshot: MemoryViewSnapshot, level: FloorLevel = FULL_VIEW) ->
     for entry in pages:
         if entry["id"] not in shown:
             lines += _page_lines(entry)
-    if not snapshot.story:
-        lines += ["", "No page or part is sealed yet."]
-    lines += _status_lines(snapshot.legacy_blocks, snapshot.fallback_refusals)
+    lines += ["", _pages_line(snapshot.legacy_blocks)] + _status_lines(snapshot.legacy_blocks, snapshot.fallback_refusals)
     return "\n".join(lines)
 
 
@@ -890,9 +899,9 @@ def _live_text(rooms: Tuple[Dict[str, Any], ...], gone: Mapping[str, List[str]])
 
 
 def _room_text(room: Mapping[str, Any], gone: Mapping[str, List[str]]) -> str:
-    """``## This room (<label>) — head <n>``: the room page, the words that started it, my notes, two lanes."""
+    """``## This room (<label>) — head <n>; <standing facts>``: the room page, the words that started it, notes, two lanes."""
     retold, mine, people, facts = (set(gone.get(step, ())) for step in ("F4", "F2", "F7", "F1"))
-    lines = [f"## This room ({room['label']}) — head {room['head']}"]
+    lines = [f"## This room ({room['label']}) — head {room['head']}; {_facts_text(room['facts'])}"]
     if room["legacy"]:
         lines += ["", "### Retold before the update (helper retelling, not lived)"]
         lines += [_retold(item, item["id"] in retold) for item in room["legacy"]]

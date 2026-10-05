@@ -208,3 +208,36 @@ def test_a_part_is_dated_and_ordered_by_its_rooms_own_rows_not_by_its_block(tmp_
     assert f"#### part {main_part} — 2026-09-01 00:00 → 2026-09-01 00:05 — under part {both}" in room
     assert f"#### part {quiet} — 2026-09-02 00:00 → 2026-09-02 00:03 (block period) — under part {both}" in room
     assert f"#### part {made.inner} — 2026-09-03 00:00 → 2026-09-03 00:01 — under part {made.outer}" in room
+
+
+# --- the standing facts: the story's pages line and a room's facts, on the installation ---------------------
+
+def test_the_standing_facts_count_the_helpers_parts_and_my_folded_page_and_show_the_gap_a_task_page_leaves(tmp_path):
+    """On the installation the story ends with the pages line: two pages of mine (one folded into a part still
+    counts), none drafted by a helper, eight parts (six the helper folded, two of mine). Main's header counts the
+    rows a task's page left open between its covered rows: the earliest open row (00:05) is earlier than the
+    last covered one (00:06) and the two facts stand side by side with no sealing frontier between them."""
+    from ouroboros import memory_view as mv
+    from ouroboros.chronicle_import import row_lineage
+
+    made = shape.production(tmp_path)
+    store = ChronicleStore(tmp_path)
+    task = {"id": "turn0001", "chat_id": 1}
+    snapshot = mv.capture_memory_view(tmp_path, task, mv.view_spec_for_task(task, tmp_path))
+    latest = max(str(record["ts"])[:10] for record in store.records(kinds=("page",)))
+    assert mv.render_story(snapshot).split("\n")[-1] == f"Pages sealed by me: 2 (latest {latest}); drafted by a helper: 0; parts: 8."
+    assert mi.story_counts(store) == {"pages_by_me": 2, "latest_by_me": latest, "helper_pages": 0, "parts": 8}
+    facts = snapshot.room["facts"]
+    assert facts == mi.room_facts(store, "1", mi.open_room_rows(tmp_path, "1"), row_lineage(tmp_path), 0)
+    assert (facts["rows"], facts["pages"], facts["earliest"][:16], facts["last_covered"][:16]) == (
+        3, 2, "2026-09-03T00:05", "2026-09-03T00:06")  # rows 15 (the transport's, Main's too), 18 and 19 stay open
+    header = mv.render_room(snapshot).split("## This room (Main) — head ", 1)[1].split("\n", 1)[0]
+    assert header.endswith(f"; open 2026-09-03 00:05 → 2026-09-03 00:09; people {facts['people']}, mine {facts['mine']}, "
+                           f"task facts {facts['task_facts']}, ~{facts['chars']} chars; my notes not yet sealed: 0; "
+                           "pages of this room: 2, last covered row 2026-09-03 00:06")
+    assert "sealed up to" not in header and "through" not in header
+    # Alpha: the note is unsealed and the room has no page; its one part counts in the story, not as a page.
+    alpha = next(room for room in snapshot.live_rooms if room["room_id"] == made.alpha)["facts"]
+    assert (alpha["notes"], alpha["pages"], alpha["last_covered"]) == (1, 0, "")
+    assert f"; my notes not yet sealed: 1; no page of this room yet\nmemory_read(room_id='{made.alpha}', rows=true)" in (
+        mv.render_room(snapshot))

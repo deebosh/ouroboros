@@ -20,6 +20,9 @@ them a second time:
 - A **story record's period and place** (``record_period``) are read from its room's own rows:
   a page's covers, a retold record's rows (without rows, its block's recorded period, labelled),
   a part's union over its members. The aggregate a part records is historical and not shown.
+- The **standing facts** every reader prints are counted here once: the story's pages and parts
+  (``story_counts``) and one room's open rows by lane, their size and times, its unsealed notes,
+  its pages and the last row they cover (``room_facts``).
 - An **open segment** is the oldest run of a room's open rows (after the frontier, or within
   one legacy unit's range) with no sealed row inside: what one page may seal without being
   refused ``already_sealed``. The sealed set is taken away before the choice.
@@ -55,6 +58,7 @@ from ouroboros import chat_chain
 from ouroboros.chronicle_import import legacy_frontier
 from ouroboros.chronicle_store import ChronicleStore, source_time_span
 from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID, is_a2a_chat_id
+from ouroboros.dialogue_provenance import row_class
 
 # The key of the memory view's last-capture fact in a task's ``llm_trace``.
 VIEW_TRACE_KEY = "memory_view"
@@ -564,6 +568,52 @@ def record_period(store: ChronicleStore, record: Mapping[str, Any], units: Mappi
     span, stream = covers.get("ts_span"), covers.get("stream_span")
     return Period(dict(span) if isinstance(span, Mapping) and (span.get("start") or span.get("end")) else None,
                   stream[0] if isinstance(stream, list) and stream and type(stream[0]) is int else -1, "rows")
+
+
+# --- the standing facts --------------------------------------------------------------------------
+
+def story_counts(store: ChronicleStore) -> Dict[str, Any]:
+    """``{"pages_by_me", "latest_by_me", "helper_pages", "parts"}`` over every room's acting pages and parts.
+
+    Folded records count (they still seal their rows), rejected drafts do not; ``latest_by_me`` is the
+    date (``YYYY-MM-DD``) the mind last sealed a page, ``""`` before the first. A helper's pages are
+    counted apart: on an installation without consciousness the helper writes them, and "none by me"
+    alone would mislead.
+    """
+    counts: Dict[str, Any] = {"pages_by_me": 0, "latest_by_me": "", "helper_pages": 0, "parts": 0}
+    for room in sorted({str(record["room_id"]) for record in store.records(kinds=("page", "part"))}):
+        for record in store.pages_of_room(room):
+            if record["kind"] == "part":
+                counts["parts"] += 1
+            elif (record.get("author") or {}).get("kind") == "mind":
+                counts["pages_by_me"] += 1
+                counts["latest_by_me"] = max(counts["latest_by_me"], str(record.get("ts") or "")[:10])
+            else:
+                counts["helper_pages"] += 1
+    return counts
+
+
+def room_facts(store: ChronicleStore, room: str, entries: List[Entry], lineage: Mapping[str, Any],
+               notes: int) -> Dict[str, Any]:
+    """One room's standing facts, counted once for every reader that prints them.
+
+    ``entries`` are the room's open rows (``open_room_rows``): ``people`` and ``mine`` are lane 1 by author
+    (``dialogue_provenance.row_class``, with the chronicle's ``lineage``), ``task_facts`` lane 2, ``chars``
+    their text; ``earliest`` and ``latest`` are the open rows' times. ``notes`` are the room's notes no page
+    sealed. ``pages`` are the room's acting pages (folded ones too) and ``last_covered`` the latest row time
+    among their covers — not a boundary: a page covers a set of rows and an earlier row can stay open, so
+    the gap shows from ``earliest`` beside it and no sealing frontier is computed.
+    """
+    spoken = [cls["author"].get("kind") for cls in (row_class(meta, pos=pos, **lineage) for _a, meta, pos in entries)
+              if cls["lane"] == 1]
+    pages = [record for record in store.pages_of_room(room) if record["kind"] == "page"]
+    ends = [end for record in pages if (end := ((record.get("covers") or {}).get("ts_span") or {}).get("end"))]
+    return {"rows": len(entries), "people": spoken.count("human"), "mine": spoken.count("ouroboros"),
+            "task_facts": len(entries) - len(spoken),
+            "chars": sum(int(meta.get("text_chars") or 0) for _address, meta, _pos in entries),
+            "earliest": str(entries[0][1].get("ts") or "") if entries else "",
+            "latest": str(entries[-1][1].get("ts") or "") if entries else "", "notes": notes, "pages": len(pages),
+            "last_covered": str(source_time_span(ends).get("end") or "") if ends else ""}
 
 
 # --- open segments --------------------------------------------------------------------------------

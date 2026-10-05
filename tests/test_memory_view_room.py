@@ -366,8 +366,8 @@ def test_a_page_seals_rows_only_in_its_room_and_a_row_in_two_rooms_stays_open_in
     assert lane1.startswith("### Open conversation since 2026-09-05 10:03")
     assert _addr(rows[18]) in lane1  # sealed in the transport room, still open in Main
     wake, wake_text = _view(tmp_path, {"id": "w1", "chat_id": 1, "metadata": {"usage_category": "consciousness"}})
-    transport = next(room for room in wake.live_rooms if room["room_id"] == "777")
-    assert (transport["rows"], transport["people"]) == (1, 0)
+    transport = next(room for room in wake.live_rooms if room["room_id"] == "777")["facts"]
+    assert (transport["rows"], transport["people"], transport["pages"]) == (1, 0, 1)
 
 
 def test_live_rooms_are_rooms_with_open_rows_or_open_notes_and_carry_no_words_by_default(tmp_path):
@@ -396,7 +396,63 @@ def test_live_rooms_are_rooms_with_open_rows_or_open_notes_and_carry_no_words_by
     assert f"chat_id={beta}]" not in sealed and "Beta waits for the owner." not in sealed  # nothing open: not live
     store.write_note(room_id=beta, task_id="tb1", text="One more thought on beta.", author=shared.MIND)
     _snap, again = _view(tmp_path, MAIN_TASK)
-    assert f"### Project Beta [chat_id={beta}] — no open rows; my notes not yet sealed: 1" in again
+    assert (f"### Project Beta [chat_id={beta}] — no open rows; my notes not yet sealed: 1; pages of this room: 2, "
+            f"last covered row 2026-09-05 10:16\nmemory_read(room_id='{beta}')\nnote ") in again  # no rows: the page reads
+
+
+def test_a_rooms_standing_facts_are_the_inventorys_in_its_header_its_live_line_and_the_floors_summed_line(tmp_path):
+    """One count (``memory_inventory.room_facts``) wherever a room is named: the current room's header, a live
+    room's line and the line the floor folds quiet rooms into (their sum). The numbers fall when a page seals
+    rows. A page over the middle of the conversation leaves the first row open: the facts show the earliest
+    open row before the last covered one and no sealing frontier is claimed."""
+    from ouroboros import memory_inventory as mi
+    from ouroboros.chronicle_import import row_lineage
+    from ouroboros.tools.chronicle import page_covers
+
+    rooms, rows = _install(tmp_path)
+    beta = str(rooms["beta"])
+    store = ChronicleStore(tmp_path)
+    snapshot, text = _view(tmp_path, MAIN_TASK)
+    facts = snapshot.room["facts"]
+    assert facts == mi.room_facts(store, "1", mi.open_room_rows(tmp_path, "1"), row_lineage(tmp_path), 0)
+    chars = sum(len(row["text"]) for row in rows if row["chat_id"] in (1, 777))  # the transport's rows are Main's too
+    assert facts == {"rows": 22, "people": 4, "mine": 4, "task_facts": 14, "chars": chars, "earliest": _ts(2),
+                     "latest": _ts(27), "notes": 0, "pages": 0, "last_covered": ""}
+    head = f"## This room (Main) — head {store.room_head('1')}; open 2026-09-05 10:02 → 2026-09-05 10:27; people 4, mine 4, "
+    assert f"{head}task facts 14, ~{chars} chars; my notes not yet sealed: 0; no page of this room yet\n" in text
+    live = _section(text, "## Live rooms")
+    assert (f"### Project Beta [chat_id={beta}] — open 2026-09-05 10:15 → 2026-09-05 10:16; people 1, mine 1, task facts 0, "
+            f"~20 chars; my notes not yet sealed: 0; no page of this room yet\nmemory_read(room_id='{beta}', rows=true)") in live
+    quiet = [room for room in snapshot.live_rooms if not room["notes"] and not room["words"]]
+    assert [room["room_id"] for room in quiet] == [str(rooms["alpha"]), beta, "777"]
+    assert mv._rooms_line(quiet) == (
+        "3 more open rooms without notes; open 2026-09-05 10:13 → 2026-09-05 10:20; people 3, mine 2, task facts 1, "
+        f"~{sum(room['facts']['chars'] for room in quiet)} chars; no page of these rooms yet; "
+        f"memory_read(room_id=<id>, rows=true) reads each: {rooms['alpha']}, {beta}, 777")
+    # A page over rows 10:05-10:10 of Main; a note in Main; the transport's one spoken row sealed.
+    covers = page_covers(tmp_path, "1", from_addr=_addr(rows[3]), to_addr=_addr(rows[8]))["covers"]
+    assert store.publish_page(room_id="1", text="The middle of the morning.", covers=covers, author=shared.MIND).ok
+    store.write_note(room_id="1", task_id="root2", text="Main waits.", author=shared.MIND)
+    spoken = page_covers(tmp_path, "777", from_addr=_addr(rows[18]), to_addr=_addr(rows[18]))["covers"]
+    assert store.publish_page(room_id="777", text="Ann wrote.", covers=spoken, author=shared.MIND).ok
+    snapshot, text = _view(tmp_path, MAIN_TASK)
+    facts = snapshot.room["facts"]
+    assert facts == mi.room_facts(store, "1", mi.open_room_rows(tmp_path, "1"), row_lineage(tmp_path), 1)
+    sealed = sum(len(rows[i]["text"]) for i in range(3, 9))
+    assert facts == {"rows": 16, "people": 4, "mine": 2, "task_facts": 10, "chars": chars - sealed, "earliest": _ts(2),
+                     "latest": _ts(27), "notes": 1, "pages": 1, "last_covered": _ts(10)}
+    head = f"## This room (Main) — head {store.room_head('1')}; open 2026-09-05 10:02 → 2026-09-05 10:27; people 4, mine 2, "
+    assert (f"{head}task facts 10, ~{chars - sealed} chars; my notes not yet sealed: 1; pages of this room: 1, "
+            "last covered row 2026-09-05 10:10\n") in text
+    assert "sealed up to" not in text and "sealed through" not in text and "frontier" not in text
+    quiet = [room for room in snapshot.live_rooms if not room["notes"] and not room["words"]]
+    assert mv._rooms_line(quiet).startswith(
+        "3 more open rooms without notes; open 2026-09-05 10:13 → 2026-09-05 10:17; people 2, mine 2, task facts 1, ")
+    assert "; pages of these rooms: 1, last covered row 2026-09-05 10:20; memory_read(" in mv._rooms_line(quiet)
+    # A child of a Main task counts the same room the same way, whatever its view prints of the rows.
+    child, _text = _view(tmp_path, {"id": "kid", "chat_id": 1, "delegation_role": "subagent", "parent_task_id": "root2",
+                                    "root_task_id": "root2"})
+    assert child.spec.room_lanes is False and child.room["facts"] == facts
 
 
 def test_this_room_has_its_head_retold_records_origin_words_and_notes(tmp_path):

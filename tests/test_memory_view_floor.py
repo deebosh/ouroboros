@@ -201,6 +201,28 @@ def test_what_never_degrades_stays_at_the_bottom_of_the_ladder():
     assert re.search(r"^\d+ more open rooms without notes; ", room, re.M)
 
 
+def test_the_standing_facts_survive_every_step_and_the_folded_line_carries_their_sum():
+    """The room header and the F1b line are not floor elements: at the bottom of the ladder the facts of this
+    room are the whole view's, and the quiet rooms' facts are summed, pages and the last covered row too."""
+    snapshot = _rich()
+    for i, live in enumerate(snapshot.live_rooms):
+        if 3 <= i <= 5:  # three quiet rooms have pages; the fourth none
+            live["facts"].update(pages=i, last_covered=syn._ts(50 + i))
+    header = f"## This room (Main) — head 7; {mv._facts_text(snapshot.room['facts'])}"
+    assert header.endswith("; people 2, mine 2, task facts 12, ~2400 chars; my notes not yet sealed: 1; no page of this room yet")
+    assert header in mv.render_room(snapshot)
+    level = mf.fit_memory_view(snapshot, {"margin": 0, "physical": 0, "budget": 0})
+    room = mv.render_room(snapshot, level)
+    assert header in room and mv.render_story(snapshot, level).split("\n")[-2] == mv._pages_line(snapshot.legacy_blocks)
+    quiet = [live for live in snapshot.live_rooms if not live["notes"] and not live["words"]]
+    folded = next(line for line in room.split("\n") if line.startswith("4 more open rooms without notes; "))
+    assert folded == ("4 more open rooms without notes; open 2026-09-01 00:00 → 2026-09-04 05:00; people 4, mine 4, "
+                      f"task facts 4, ~9600 chars; pages of these rooms: 12, last covered row {mv._minute(syn._ts(55))}; "
+                      "memory_read(room_id=<id>, rows=true) reads each: " + ", ".join(live["room_id"] for live in quiet))
+    for live in quiet:
+        assert f"### {live['label']} — " not in room  # folded, not repeated
+
+
 def test_the_physical_floor_block_appears_exactly_when_a_step_past_f1_ran_or_the_mode_was_lowered():
     snapshot = _rich()
     note = lambda level, **kw: mf.floor_note(level, window_tokens=500_000, mode=kw.pop("mode", "max"), **kw)  # noqa: E731
