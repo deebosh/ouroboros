@@ -399,14 +399,14 @@ def recover_pending_root_post_task_synthesis(
     """
     from types import SimpleNamespace
     from ouroboros.post_task_synthesis import resume_paused_late_phase, revoke_late_phase_grant
-    from ouroboros.task_results import list_task_results
+    from ouroboros.obligations import result_rows
     from ouroboros.terminal_projection import terminal_projection_owed
 
     root = pathlib.Path(drive_root).resolve(strict=False)
     if resume_task_id:
         return int(resume_paused_late_phase(root, repo_dir or root.parent, str(resume_task_id)))
     try:
-        rows = list_task_results(root)
+        rows = list(result_rows(root, "synthesis", exclude=exclude_task_ids))
     except Exception:
         return 0
     recovered = 0

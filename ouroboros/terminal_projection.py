@@ -22,6 +22,7 @@ from typing import Any, Iterable
 
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 from ouroboros.task_results import (
+    _TRULY_TERMINAL_STATUSES,
     is_reconciled_presence_placeholder, load_task_result, resolve_task_lineage, task_result_path, write_task_result,
 )
 from ouroboros.utils import jsonl_chain_handles, utc_now_iso
@@ -33,9 +34,7 @@ SETTLEMENT_NONE, SETTLEMENT_DEFERRED, SETTLEMENT_SETTLED = "none", "deferred", "
 def _settled(row: dict) -> bool:
     """Settled for publication: a host-reconciled presence placeholder is not a result (the event
     re-runs), so it owes no terminal projection even when an earlier release already recorded readiness."""
-    from ouroboros.task_status import SETTLED_STATUSES
-
-    return (row.get("status") in SETTLED_STATUSES and not is_reconciled_presence_placeholder(row)
+    return (row.get("status") in _TRULY_TERMINAL_STATUSES and not is_reconciled_presence_placeholder(row)
             and row.get("admission_outcome") != "never_admitted")
 
 
@@ -65,9 +64,10 @@ def _files_ready(root: Any, tid: str, row: dict) -> bool:
 
 
 def _open(row: dict) -> bool:
+    checkpoint = row.get("root_phase_checkpoint")
+    if not isinstance(checkpoint, dict) or not checkpoint.get("post_task_synthesis"):
+        return False
     from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
-
-    checkpoint = row.get("root_phase_checkpoint") or {}
     return post_task_synthesis_is_open(checkpoint.get("post_task_synthesis"))
 
 
@@ -343,16 +343,15 @@ def reconcile_terminal_projections(drive_root: Any) -> int:
     each authority strictly: one bad sibling must not stall others or quarantine
     unknown bytes via a tolerant scan.
     """
-    from ouroboros.task_results import task_results_dir
+    from ouroboros.obligations import result_rows
 
     settled = 0
-    for path in sorted(task_results_dir(drive_root, create=False).glob("*.json")):
+    for row in result_rows(drive_root, "terminal_projection"):
         try:
-            row = load_task_result(drive_root, path.stem, strict=True)
-            if terminal_projection_owed(path.stem, row):
+            if terminal_projection_owed(row["task_id"], row):
                 settled += settle_terminal_projection(drive_root, row["task_id"]) == SETTLEMENT_SETTLED
         except Exception:
-            log.warning("Terminal projection reconciliation deferred for %s", path, exc_info=True)
+            log.warning("Terminal projection reconciliation deferred for %s", row["task_id"], exc_info=True)
     return settled
 
 

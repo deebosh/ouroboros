@@ -289,7 +289,9 @@ def _run_periodic_custody_sweep(stop_event: Any = None, latch: Any = None) -> No
             step = "reconcile_delegated_runs"
             if _stop_requested(stop_event):
                 return
-            _reconcile_delegated_runs(_live_task_ids, stop_event=stop_event)
+            from ouroboros.delegate_custody_current import current_reads
+            with current_reads(DATA_DIR):
+                _reconcile_delegated_runs(_live_task_ids, stop_event=stop_event)
             step = "cursor_refresh_settled_terminals"
             if _stop_requested(stop_event):
                 return
@@ -496,59 +498,53 @@ def prune_agent_media_uploads(
     return report
 
 
-def _startup_tree_exclusions(recovery_report: dict | None) -> set[str] | None:
-    """Resolve protected logical roots and retry occupants; unknown keeps all trees."""
-    from ouroboros.task_custody import own_child_drives
-    from ouroboros.task_results import list_task_results, load_task_result
-
-    if recovery_report is None or recovery_report.get("errors"):
-        return None
-    pending = set(recovery_report.get("protected") or []) | set(recovery_report.get("unresolved") or [])
-    protected = set()
-    try:
-        while pending:
-            task_id = pending.pop()
-            if task_id in protected:
-                continue
-            protected.add(task_id)
-            canonical = load_task_result(DATA_DIR, task_id, strict=True)
-            rows = [canonical] if canonical else []
-            for child in own_child_drives(DATA_DIR, task_id):
-                rows.extend(list_task_results(child, strict=True))
-            if not rows:
-                return None
-            for row in rows:
-                metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-                for field in ("task_id", "parent_task_id", "root_task_id", "retry_task_id", "superseded_by",
-                              "original_task_id", "timeout_retry_from"):
-                    linked = str(row.get(field) or metadata.get(field) or "")
-                    if linked and linked not in protected:
-                        pending.add(linked)
-    except (OSError, ValueError, TypeError):
-        return None
-    return protected
+_STARTUP_PRUNES_OWED = [False]
+_STARTUP_SOURCE_PRUNES_OWED = [False]
+_STARTUP_TREES_OWED = [False]
+_STARTUP_RECOVERY_GAPS = [False]
 
 
-def _startup_prune_sweeps(*, preserve_task_sources: bool = False, recovery_report: dict | None = None) -> None:
-    """Startup hygiene: prune stale task drives/trees and orphaned temp files."""
-    try:
-        from ouroboros.headless import prune_task_trees
+def _startup_prune_sweeps(*, preserve_task_sources=False, recovery_report=None):
+    """Owe housekeeping off-loop; fallback scripts can only be reaped before intake."""
+    _STARTUP_PRUNES_OWED[0] = _STARTUP_TREES_OWED[0] = _STARTUP_SOURCE_PRUNES_OWED[0] = True
+    _STARTUP_RECOVERY_GAPS[0] = bool(preserve_task_sources and (
+        recovery_report is None or recovery_report.get("errors") or "*" in recovery_report.get("unresolved", [])))
+    if not preserve_task_sources:
         from ouroboros.utils import sweep_stale_temp_files
+        sweep_stale_temp_files(DATA_DIR, atomic_temps=False)
+        _STARTUP_TEMP_SWEEP_OWED[0] = True
 
-        exclusions = _startup_tree_exclusions(recovery_report) if preserve_task_sources else set()
+
+def _run_deferred_startup_prunes():
+    from ouroboros.startup_task_files import startup_tree_exclusions
+    from ouroboros.headless import prune_task_trees
+    if not _STARTUP_RECOVERY_GAPS[0] and (_STARTUP_TREES_OWED[0] or _STARTUP_SOURCE_PRUNES_OWED[0]):
+        exclusions = startup_tree_exclusions(DATA_DIR)
         if exclusions is not None:
-            prune_task_trees(DATA_DIR, exclude_root_ids=exclusions)
-        if preserve_task_sources:
-            log.warning("Startup task-source prune deferred: file recovery or ownership is unresolved")
-        else:
-            # Child and direct drives are settled off the loop thread by the reconcile pass
-            # (``_run_drive_custody_pass``): readiness waits on no child-store copy or hash.
-            # Startup sweeps only the top-level tmp_scripts fallback (no script can be live
-            # yet); the whole-tree walk for atomic temps is owed to the first reconcile pass.
-            sweep_stale_temp_files(DATA_DIR, atomic_temps=False)
-            _STARTUP_TEMP_SWEEP_OWED[0] = True
-    except Exception:
-        log.debug("Task tree prune failed", exc_info=True)
+            if _STARTUP_TREES_OWED[0]:
+                prune_task_trees(DATA_DIR, exclude_root_ids=exclusions)
+                _STARTUP_TREES_OWED[0] = False
+                _STARTUP_TEMP_SWEEP_OWED[0] = True
+            if _STARTUP_SOURCE_PRUNES_OWED[0]:
+                try:
+                    from ouroboros.owner_mailbox import sweep_settled_owner_mailboxes
+                    from ouroboros.tools.services import prune_service_logs
+                    _prune_event("owner_mailbox_sweep", ("removed",), report=sweep_settled_owner_mailboxes(DATA_DIR))
+                    _prune_event("runtime_artifact_prune", ("deleted_dirs", "deleted_files", "errors"),
+                                 services=prune_service_logs(DATA_DIR))
+                    _STARTUP_SOURCE_PRUNES_OWED[0] = False
+                except Exception:
+                    log.debug("Source housekeeping remains owed", exc_info=True)
+    if not _STARTUP_PRUNES_OWED[0]:
+        return
+    _STARTUP_PRUNES_OWED[0] = False
+    _startup_worktree_prune()
+    from ouroboros.delegate_custody_current import current_reads
+    with current_reads(DATA_DIR):
+        _prune_delegated_snapshots()
+    from ouroboros.delegate_state_sweep import sweep_settled_delegate_state
+    _prune_event("delegate_state_sweep", ("removed", "errors", "skipped"),
+                 report=sweep_settled_delegate_state(DATA_DIR))
     try:
         # CPL4-C11 (owner batch 3A): clear owner state of tombstoned-uninstalled
         # skills; grants survive as owner authority, reinstalls self-heal.
@@ -578,31 +574,12 @@ def _startup_prune_sweeps(*, preserve_task_sources: bool = False, recovery_repor
     except Exception:
         log.debug("Memory journal compaction failed", exc_info=True)
     try:
-        # CPL4-C18: unlink mailboxes whose task settled off the terminal
-        # dispatch path (fail-closed: no result keeps the mailbox).
-        from ouroboros.owner_mailbox import sweep_settled_owner_mailboxes
-
-        _prune_event("owner_mailbox_sweep", ("removed",), report=(
-            {} if preserve_task_sources else sweep_settled_owner_mailboxes(DATA_DIR)))
-    except Exception:
-        log.debug("Owner mailbox sweep failed", exc_info=True)
-    try:
         # CPL4-C21 (owner 6A): agent screenshots/views follow GC retention;
         # owner attachments in the uploads/ root are never touched.
         _prune_event("agent_media_prune", ("removed", "skipped", "errors"),
                      report=prune_agent_media_uploads(DATA_DIR))
     except Exception:
         log.debug("Agent media prune failed", exc_info=True)
-    if not preserve_task_sources:
-        try:
-            # Observability blobs are never deleted and never counted here: a startup census
-            # was 193k stat() calls that changed nothing (TZ-1 A).
-            from ouroboros.tools.services import prune_service_logs
-
-            _prune_event("runtime_artifact_prune", ("deleted_dirs", "deleted_files", "errors"),
-                         services=prune_service_logs(DATA_DIR))
-        except Exception:
-            log.debug("Runtime artifact prune failed", exc_info=True)
 
 
 def _cursor_refresh_settled_terminals(live_task_ids: Any = None) -> None:
@@ -642,7 +619,9 @@ def _startup_custody_sweep() -> None:
             log.info("Process custody reaper killed %d orphaned process(es): %s", len(reaped), reaped)
     except Exception:
         log.debug("Process custody startup reap failed", exc_info=True)
-    _reconcile_delegated_runs(_live_task_ids)
+    from ouroboros.delegate_custody_current import current_reads
+    with current_reads(DATA_DIR):
+        _reconcile_delegated_runs(_live_task_ids)
     try:
         # D1a boot backfill, ONCE per generation and AFTER the orphan reconcile
         # (so this generation's settlements are already visible to the audit):
@@ -652,13 +631,13 @@ def _startup_custody_sweep() -> None:
         # results instead and heals every generation-crossing stale row.
         from ouroboros.delegate_terminal import backfill_terminal_reconciliations
 
-        refreshed = backfill_terminal_reconciliations(DATA_DIR)
+        with current_reads(DATA_DIR):
+            refreshed = backfill_terminal_reconciliations(DATA_DIR)
         if refreshed:
             log.info("Boot custody backfill refreshed %d stored disclosure(s): %s",
                      len(refreshed), refreshed)
     except Exception:
         log.debug("Boot custody-disclosure backfill failed", exc_info=True)
-    _cursor_refresh_settled_terminals(_live_task_ids)
     try:
         # Boot half of the durable terminal outbox: an answer that was registered
         # as owed but whose send never completed (crash between settle and send)
@@ -669,16 +648,6 @@ def _startup_custody_sweep() -> None:
         replay_pending_deliveries(DATA_DIR)
     except Exception:
         log.debug("Boot replay of pending terminal deliveries failed", exc_info=True)
-    try:
-        # CPL4-C13: terminal+age sweep of delegate recovery/supervision files —
-        # beside the custody sweep, fail-closed on unreadable custody exactly
-        # like _prune_delegated_snapshots.
-        from ouroboros.delegate_state_sweep import sweep_settled_delegate_state
-
-        _prune_event("delegate_state_sweep", ("removed", "errors", "skipped"),
-                     report=sweep_settled_delegate_state(DATA_DIR))
-    except Exception:
-        log.debug("Delegate state sweep failed", exc_info=True)
 
 
 def _prune_delegated_snapshots() -> None:
@@ -744,6 +713,12 @@ def _run_periodic_reconcile_sweep(marker: list, stop_event: Any = None, latch: A
     mutation owners, again before each publication commits."""
     try:
         _periodic_zombie_reconcile(on_orphans_healed=on_orphans_healed, stop_event=stop_event)
+        if not _stop_requested(stop_event) and (
+                _STARTUP_PRUNES_OWED[0] or _STARTUP_TREES_OWED[0] or _STARTUP_SOURCE_PRUNES_OWED[0]):
+            try:
+                _run_deferred_startup_prunes()
+            except Exception:
+                log.warning("Startup housekeeping remains deferred", exc_info=True)
         if _stop_requested(stop_event):
             return
         from ouroboros.review_operation import collect_orphaned_operations_softly
@@ -862,9 +837,9 @@ def _migrate_startup_cancel_latches(drive_root: pathlib.Path) -> None:
         # Phase A boot migration: legacy ``cancel_requested`` status latches
         # become ordinary durable cancel intents; the supervisor watchdog then
         # drives each through custody to a real settled outcome.
-        from ouroboros.cancel_intents import migrate_legacy_cancel_latches
+        from ouroboros.startup_migrations import migrate_cancel_latches
 
-        migrated = migrate_legacy_cancel_latches(drive_root)
+        migrated = migrate_cancel_latches(drive_root)
         if migrated:
             log.info("Migrated %d legacy cancel latch(es) to durable intents: %s",
                      len(migrated), migrated)
@@ -945,83 +920,8 @@ def _startup_worker_pids(drive_root: pathlib.Path) -> set[int] | None:
 
 
 def _recover_terminal_task_files(drive_root: pathlib.Path, protected: set[str]) -> dict:
-    """Recover only known child directories, never infer a new model execution."""
-    from ouroboros.cancel_intents import cancel_pending
-    from ouroboros.headless import (
-        HEADLESS_TASKS_DIR,
-        TASK_DRIVES_DIR,
-        prepare_terminal_task_files,
-        terminal_task_files_ready,
-    )
-    from ouroboros.observability import _has_pending_ref_promotion
-    from ouroboros.task_results import load_task_result, validate_task_id, write_task_result
-    from ouroboros.task_status import SETTLED_STATUSES, effective_task_result
-
-    root = pathlib.Path(drive_root)
-    report = {"recovered": [], "unresolved": [], "protected": sorted(protected), "errors": []}
-    for base, suffix in ((root / HEADLESS_TASKS_DIR, "data"), (root / TASK_DRIVES_DIR, "")):
-        try:
-            directories = sorted(base.iterdir())
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            report["errors"].append(str(exc))
-            report["unresolved"].append("*")
-            continue
-        for directory in directories:
-            if not directory.is_dir() or directory.is_symlink() or directory.name in protected:
-                continue
-            task_id, child_root = directory.name, directory / suffix
-            try:
-                base_resolved = base.resolve(strict=True)
-                directory_resolved = directory.resolve(strict=True)
-                if directory_resolved.parent != base_resolved:
-                    continue
-                if suffix and child_root.is_symlink():
-                    continue
-                child_root.resolve(strict=True).relative_to(directory_resolved)
-                validate_task_id(task_id)
-                current = load_task_result(root, task_id, strict=True) or {}
-                task = {**current, "id": task_id, "drive_root": str(child_root)}
-                ready = terminal_task_files_ready(root, task, current)
-                pending = _has_pending_ref_promotion(current.get("child_ref_promotion"))
-                if ready:
-                    continue  # History is already owed to the off-loop retry owner.
-                if not ready:
-                    source = load_task_result(child_root, task_id, strict=True) or {}
-                    if source.get("status") not in SETTLED_STATUSES:
-                        if (current.get("status") == "scheduled" and source.get("status") == "running"
-                                and source.get("started_at") and not source.get("_is_direct_chat")
-                                and not cancel_pending(root, task_id, strict=True)):
-                            # Older split roots omitted their canonical start.
-                            # Rebind only when the existing queue/worker/direct
-                            # ownership rules already prove this child orphaned.
-                            observed = effective_task_result(root, {
-                                **current, "child_drive_root": str(child_root),
-                            }, materialize_artifacts=False)
-                            if observed.get("reason_code") == "orphaned_running_after_worker_restart":
-                                write_task_result(
-                                    root, task_id, "running", child_drive_root=str(child_root),
-                                    budget_drive_root=str(root), started_at=source["started_at"],
-                                    ts=source.get("ts") or source["started_at"],
-                                )
-                                report.setdefault("rebound", []).append(task_id)
-                        if (pending or current.get("status") == "completed") and (
-                            suffix or current.get("headless_child_drive_root") or current.get("child_drive_root")
-                        ):
-                            report["unresolved"].append(task_id)
-                        continue  # Ordinary canonical task scratch has no child result.
-                    task = {**source, **current, "id": task_id, "drive_root": str(child_root)}
-                prepared = prepare_terminal_task_files(root, task)
-                settled = load_task_result(root, task_id, strict=True)
-                if prepared["error"] or not terminal_task_files_ready(root, task, settled):
-                    report["unresolved"].append(task_id)
-                else:
-                    report["recovered"].append(task_id)
-            except Exception as exc:
-                report["unresolved"].append(task_id)
-                report["errors"].append(f"{task_id}: {type(exc).__name__}: {exc}")
-    return report
+    from ouroboros.startup_task_files import recover_terminal_task_files
+    return recover_terminal_task_files(drive_root, protected)
 
 
 def _run_startup_task_recovery(
@@ -1038,7 +938,6 @@ def _run_startup_task_recovery(
     report = {"recovered": [], "unresolved": [], "protected": [], "errors": []}
     if skip_live_data:
         return report
-    _migrate_startup_cancel_latches(drive_root)
     from ouroboros.platform_layer import pid_is_alive
     if prior_worker_pids is None or any(pid_is_alive(pid) for pid in prior_worker_pids):
         report["errors"].append("prior_worker_ownership_unconfirmed")
@@ -1066,11 +965,20 @@ def _run_startup_task_recovery(
         )
         _publish_expired_quiz_frames(expired_quizzes)
     except Exception:
+        report["errors"].append("orphan_recovery_failed")
         log.warning("Orphaned running-task reconciliation at startup failed", exc_info=True)
     try:
         from ouroboros.agent_task_pipeline import recover_pending_root_post_task_synthesis
 
         recover_pending_root_post_task_synthesis(drive_root, repo_dir, exclude_task_ids=excluded)
     except Exception:
+        report["errors"].append("synthesis_recovery_failed")
         log.warning("Root post-task synthesis recovery at startup failed", exc_info=True)
+    from ouroboros.obligations import members
+    try:
+        report["unresolved"].extend(facts.get("task_id", identity) for identity, facts in members(drive_root, "unknowns").items())
+    except Exception:
+        report["unresolved"].append("*")
+        report["errors"].append("unknown_obligations_unavailable")
+        log.warning("Startup repair gaps unavailable; destructive pruning remains deferred", exc_info=True)
     return report

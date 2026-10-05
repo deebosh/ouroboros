@@ -271,6 +271,7 @@ def _run_custody_tick(monkeypatch, *, failing_step=None):
     monkeypatch.setattr(pc, "reap_orphaned_processes", _step("reap_orphaned_processes"))
     monkeypatch.setattr(sm, "_reconcile_delegated_runs", _step("reconcile_delegated_runs"))
     monkeypatch.setattr(sm, "_cursor_refresh_settled_terminals", _step("cursor_refresh_settled_terminals"))
+    monkeypatch.setattr("ouroboros.terminal_projection.reconcile_terminal_projections", _step("terminal_projection"))
     monkeypatch.setattr(
         "ouroboros.claudexor_daemon.get_owned_daemon",
         lambda: type("_D", (), {"clear_start_failure_latch": lambda self, **_k: False})(),

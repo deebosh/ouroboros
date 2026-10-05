@@ -124,7 +124,7 @@ def update_late_phase_pause(drive_root: Any, task_id: str,
         stamp_task_result_schema,
         task_result_path,
     )
-    from ouroboros.utils import update_json_locked
+    from ouroboros.obligations import update_result
 
     applied: Dict[str, Any] = {}
 
@@ -143,7 +143,7 @@ def update_late_phase_pause(drive_root: Any, task_id: str,
     path = task_result_path(pathlib.Path(drive_root), str(task_id), create=False)
     if not path.is_file():
         return None
-    update_json_locked(path, update, strict_existing_dict=True)
+    update_result(path, update, strict_existing_dict=True)
     return applied.get("record")
 
 

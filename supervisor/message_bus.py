@@ -1488,6 +1488,9 @@ def log_chat(
             root / "logs" / "chat.jsonl", record,
             require_lock=require_write, ensure_record_boundary=ensure_record_boundary,
         )
+        if written:
+            from ouroboros.notice_receipts import record as record_notice_receipt
+            record_notice_receipt(root, record)
         if require_write and not written:
             raise RuntimeError("canonical message acceptance could not be persisted")
         return record if written else None

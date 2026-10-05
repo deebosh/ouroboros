@@ -259,6 +259,8 @@ def test_corrupted_blob_yields_reconstruction_fact_and_does_not_block(data_root,
 
     # Observability invariant: the call itself was NOT blocked.
     assert final["state"] == "settled"
+    assert not _violation_files(data_root)
+    seal_mod.reconcile_model_send_seals(data_root)
     files = _violation_files(data_root)
     assert len(files) == 1
     fact = json.loads(files[0].read_text())
@@ -282,6 +284,8 @@ def test_tampered_seal_digest_yields_content_divergence_fact(data_root, monkeypa
     _tampering_persist(monkeypatch, rewrite_seal)
     final = _dispatch(data_root, "task-tampered-digest")
     assert final["state"] == "settled"
+    assert not _violation_files(data_root)
+    seal_mod.reconcile_model_send_seals(data_root)
     [file] = _violation_files(data_root)
     fact = json.loads(file.read_text())
     assert fact["kind"] == "content_divergence"
@@ -299,10 +303,12 @@ def test_missing_seal_block_yields_reconstruction_fact(data_root, monkeypatch):
     _tampering_persist(monkeypatch, drop_seal)
     final = _dispatch(data_root, "task-missing-seal")
     assert final["state"] == "settled"
+    assert not _violation_files(data_root)
+    seal_mod.reconcile_model_send_seals(data_root)
     [file] = _violation_files(data_root)
     fact = json.loads(file.read_text())
     assert (fact["kind"], fact["divergence_class"]) == (
-        "reconstruction_divergence", "seal_unreadable",
+        "unlogged_attempt", "missing_seal_record",
     )
 
 
@@ -317,6 +323,8 @@ def test_undisclosed_exclusion_class_is_a_violation_of_the_closed_enum(data_root
     _tampering_persist(monkeypatch, smuggle_class)
     final = _dispatch(data_root, "task-undisclosed")
     assert final["state"] == "settled"
+    assert not _violation_files(data_root)
+    seal_mod.reconcile_model_send_seals(data_root)
     [file] = _violation_files(data_root)
     fact = json.loads(file.read_text())
     assert (fact["kind"], fact["divergence_class"]) == (
@@ -334,6 +342,8 @@ def test_foreign_serializer_basis_is_never_reinterpreted(data_root, monkeypatch)
 
     _tampering_persist(monkeypatch, rewrite_basis)
     _dispatch(data_root, "task-basis")
+    assert not _violation_files(data_root)
+    seal_mod.reconcile_model_send_seals(data_root)
     [file] = _violation_files(data_root)
     fact = json.loads(file.read_text())
     assert (fact["kind"], fact["divergence_class"]) == (
@@ -348,7 +358,7 @@ def test_foreign_serializer_basis_is_never_reinterpreted(data_root, monkeypatch)
 # ---------------------------------------------------------------------------
 
 
-def test_verification_adds_one_projection_and_no_extra_raw_serialization(data_root, monkeypatch):
+def test_dispatch_persists_once_without_a_readback_projection(data_root, monkeypatch):
     """The note budgets ONE read-back and ONE projection per attempt: the raw
     candidate is never serialized again for the compare (the seam digests are
     reused), and the CAS-basis projection pipeline runs exactly once more than
@@ -373,7 +383,7 @@ def test_verification_adds_one_projection_and_no_extra_raw_serialization(data_ro
     assert len(canonical_calls) == 4, len(canonical_calls)
     # persist_call redacts once for the CAS write; verification reconstructs
     # once. Nothing else may redact this candidate.
-    assert len(redact_calls) == 2, len(redact_calls)
+    assert len(redact_calls) == 1, len(redact_calls)
     assert not _violation_files(data_root)
 
 
@@ -572,6 +582,6 @@ def test_sweep_rides_the_startup_family(data_root, monkeypatch):
     )
     # Neighbour sweep steps degrade fail-soft on this synthetic root.
     maintenance._startup_custody_sweep()
-    # Historical reconciliation moved out of the synchronous custody sweep;
-    # the supervisor launches its session child after readiness.
+    # Historical reconciliation belongs to the explicit owner/rebuild job;
+    # no startup path launches it.
     assert calls == []

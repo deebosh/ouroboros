@@ -115,7 +115,6 @@ def test_restart_fallback_runs_pin_handoff_before_retained_executor_cleanup(monk
     requested.set()
     monkeypatch.setattr(server, "_restart_requested", requested)
     monkeypatch.setattr(server, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(server._historical_audit, "stop", lambda: None)
     monkeypatch.setattr(server, "_managed_update_pending_kwargs", lambda: {"preserve_pending": True})
     monkeypatch.setattr(server, "_restart_cleanup_kwargs", lambda: {})
     monkeypatch.setattr("supervisor.workers.kill_workers", lambda **kw: calls.append(("workers", kw)))

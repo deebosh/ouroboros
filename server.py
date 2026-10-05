@@ -19,7 +19,6 @@ from starlette.routing import Route, Mount
 import uvicorn
 from ouroboros.server_control import (PanicIngress, execute_panic_stop as _execute_panic_stop_impl,
                                       restart_current_process as _restart_current_process_impl)
-from ouroboros.startup_historical_audit import audit as _historical_audit
 from ouroboros.owned_shutdown import finish_unconfirmed_stops, stop_owned_work
 from ouroboros.server_auth import (
     NetworkAuthGate,
@@ -698,7 +697,6 @@ def _run_supervisor(settings: dict) -> None:
         from ouroboros.consciousness import BackgroundConsciousness
         import types
 
-        _migrate_startup_cancel_latches(DATA_DIR)
         prior_worker_pids = _startup_worker_pids(DATA_DIR)
         interrupted_running: list = []
         restored_pending = restore_pending_from_snapshot(terminalized=interrupted_running)
@@ -722,9 +720,6 @@ def _run_supervisor(settings: dict) -> None:
         _resume_interrupted_project_deletions()
         _startup_prune_sweeps(preserve_task_sources=bool(
             recovered_files["unresolved"] or recovered_files["protected"] or recovered_files["errors"]), recovery_report=recovered_files)
-        _startup_worktree_prune()
-
-        _prune_delegated_snapshots()
 
         if restored_pending > 0 or interrupted_running:
             st_boot = load_state()
@@ -809,7 +804,6 @@ def _run_supervisor(settings: dict) -> None:
     _supervisor_ready.set()
     _supervisor_init_done.set()
     log.info("Supervisor ready.")
-    _historical_audit.start(DATA_DIR, REPO_DIR)
 
     offset = 0
     crash_count = 0
@@ -1307,6 +1301,8 @@ async def lifespan(app):
 
     if not pytest_default_real_data_dir:  # before admission and any extension/replacement process (§9)
         finish_unconfirmed_stops(lifespan_drive_root)
+        from ouroboros.startup_migrations import prepare_startup_state
+        prepare_startup_state(lifespan_drive_root, repo_dir=REPO_DIR, strict=False)
 
     # Source-mode must seed native skills too, matching packaged launcher layout.
     try:
@@ -1471,7 +1467,6 @@ async def lifespan(app):
         yield
     finally:
         _supervisor_stop.set()  # first: the loop must know a teardown owns what follows
-        _historical_audit.stop()
         log.info("Server shutting down...")
         # Let the loop leave its current tick BEFORE workers are killed and the
         # bridge/Manager go down: a tick still running would otherwise respawn
@@ -1596,7 +1591,6 @@ def _restart_cleanup_kwargs() -> dict:
 
 def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
     """Kill child processes, workers, companions, and runtime port holders."""
-    _historical_audit.stop()  # forced path may skip lifespan's finally; stop never waits
     try:
         from supervisor.workers import kill_workers
         cleanup_kwargs = _restart_cleanup_kwargs()

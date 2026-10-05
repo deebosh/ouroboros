@@ -199,7 +199,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── llm_observability.py ← Persists public call projections; strips private sidecars from durable records while returning them in-process
       ├── llm_probe.py         ← Oversized-context evidence probe + Provider Test transport with physical accounting; no retry, fallback, or learning
       ├── merge_receipts.py    ← Task-owned PR merge intent, GitHub readback and durable receipt publication (§6)
-      ├── upgrade_notices.py   ← Once-only owner notices recovered from chat (§7)
+      ├── upgrade_notices.py, notice_receipts.py ← Once-only owner notices with addressed chat receipts (§7)
       ├── mcp_client.py        ← MCP client: normalizes server identity without wire-name changes, rejects collisions, masks tokens, prefixes tools `mcp_<server>__<tool>`; a task's listing passes its launch admission per server; MCP descriptions/results stay untrusted data (§6 MCP and browser-facing external tools)
       ├── safety.py            ← Safety Supervisor call with a bounded newest-first context budget; typed non-verdict `⚠️ SAFETY_UNAVAILABLE` (a 429 is an infrastructure fact, not a verdict: one retry, a storm latch, `safety_check_rate_limited`) and the fail-closed `⚠️ SAFETY_SUBJECT_TOO_LARGE_BLOCKED` over the 250k-char `_SAFETY_SUBJECT_CHAR_BUDGET` — never truncated, because anything past a cut would run unreviewed (§6 Safety Supervisor outcomes, fail-open cases included)
       ├── consciousness.py     ← Background alarm: supervisor tick admits an ordinary Main turn through handle_wake_direct; notify pulls the wake forward; legacy inbox is archived unread (§6 Background consciousness and Evolution)
@@ -550,6 +550,9 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── delegate_start_claims.py ← One short pre-transport transaction serializing the zero-run/custody recheck + `START_REQUESTED` append; transport and waiting stay outside claim locks
       ├── process_containment.py ← Env-token container membership (`OURO_PROC_CONTAINER_*`; /proc environ on Linux, `ps -E` on macOS, kill-on-close Job Object on Windows — spawned suspended-then-adopted so a child cannot run before Job membership) with live-state read at reap; an alive-or-undeterminable member is an honest hard-block answer, never a kill guarantee; unreadable strangers are warnings, never members by uid/start-time alone (a detached descendant that hides its token is a disclosed detection gap); `process_group_has_live_members` excludes zombie-only groups (§6 Delegated subagents)
       ├── process_custody.py   ← `spawn_supervised` + durable process_ledger.jsonl; `reap_orphaned_processes` (strict identity, `retained_purposes` across generations); `start_parent_lifeline`; `quiesce_custodied_services`; `live_daemon_root_pids`/`live_kept_service_pids` select teardown exclusions; `process_stop_snapshot` binds the stop fallback to the observed rows, and `stop_ledgered_processes` requires measured identity and confirmed exit (Runtime topology below; §9)
+      ├── obligations.py       ← Atomic current sets; owning transitions publish before work and retire after discharge
+      ├── startup_migrations.py, startup_task_files.py ← Explicit inherited-state import/repair and addressed file recovery
+      ├── delegate_custody_current.py ← Open custody and closing receipts for boot/maintenance, without history replay
       ├── owned_shutdown.py    ← The ownership set `state/owned_processes.json` (both custody funnels write it) and the one bounded exit stop `stop_owned_work`; `finish_unconfirmed_stops` retries its leftovers at the next start (§9)
       ├── platform_layer.py    ← Cross-platform process helpers, the descendant-enumeration seam, the Windows Job Object ABI (Platform substrate below)
       ├── verified_download.py ← Shared exact-size/digest verification and atomic cached byte delivery; consumers retain their own transport timeout and error vocabulary
@@ -687,6 +690,8 @@ Bundled resources use the CLI / Headless Boundary lookup order rather than assum
 │   │   ├── capability_evidence.json ← sourced model-capability evidence (capability_evidence.py)
 │   │   ├── extra-ca-bundle/<digest>.pem ← certifi plus the owner's `OUROBOROS_EXTRA_CA_BUNDLE` PEM, content-addressed so a changed owner file rotates every path-keyed cache (siblings older than a day pruned); the one path every first-party HTTP client verifies against (net_transport.py)
 │   │   ├── process_ledger.jsonl   ← durable process-custody ledger (process_custody.py; Runtime topology)
+│   │   ├── obligations/          ← current task/custody/drive/promotion debts, upgrade-notice receipts and addressable unknowns
+│   │   ├── migrations.json       ← successful schema generations and dependency fingerprint
 │   │   ├── owned_processes.json   ← current ownership set: typed records of owned processes with `stop_requested_at`/`unconfirmed_since` (owned_shutdown.py; §9)
 │   │   ├── server_port            ← active HTTP port for launcher/browser handoff
 │   │   ├── server_port.bindings.json ← informational endpoint snapshot owned by `server_process.py`: the main, Host Service and local-model owners publish their bound host/port with pid and process fingerprint while they hold it (`record_service_binding`/`clear_service_binding`, compare-and-remove); browser identity and pooled local serving-capacity evidence, never a grant or custody ledger (§6)

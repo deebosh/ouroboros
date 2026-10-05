@@ -436,7 +436,6 @@ def test_owner_restart_cleanup_disables_second_custody_reconcile(monkeypatch):
     owner, restart = threading.Event(), threading.Event()
     monkeypatch.setattr(server, "_owner_restart_requested", owner)
     monkeypatch.setattr(server, "_restart_requested", restart)
-    monkeypatch.setattr(server._historical_audit, "stop", lambda: None)
     monkeypatch.setattr(server, "_managed_update_pending_kwargs", lambda: {})
     monkeypatch.setattr(server, "_stop_owned_daemon_for_new_pin", lambda: None)
     monkeypatch.setattr(server, "stop_owned_work", lambda *a, **k: None)

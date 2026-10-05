@@ -145,9 +145,13 @@ def test_real_server_serves_readiness_and_requests_while_history_runs_elsewhere(
     before_bytes = supervisor_log.stat().st_size if supervisor_log.exists() else 0
 
     sampler = _BootSampler(url)
+    from ouroboros.startup_historical_audit import HistoricalAudit
+    explicit = HistoricalAudit()
     sampler.start()
     try:
         direct_server_with_data["start_server"]()   # returns only once readiness is served
+        assert not _audit_records(data_dir, before_bytes), "boot must not launch a historical audit"
+        explicit.start(data_dir, pathlib.Path(__file__).resolve().parents[1])
         deadline = time.monotonic() + 120
         terminal = None
         while time.monotonic() < deadline:
@@ -156,6 +160,7 @@ def test_real_server_serves_readiness_and_requests_while_history_runs_elsewhere(
                 break
             time.sleep(0.05)
     finally:
+        explicit.stop()
         sampler.stop.set()
         sampler.join(timeout=10)
 

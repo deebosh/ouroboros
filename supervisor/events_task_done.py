@@ -514,6 +514,8 @@ def _finish_task_done_dispatch(
                 progress_meta=progress_meta,
                 role="system", system_type="subagent_terminal_notice")
 
+    from ouroboros.obligations import drive_finished
+    drive_finished(ctx.DRIVE_ROOT, {**task, "id": task_id}, final_task_result)
     from supervisor.queue import _queue_lock, clear_acceptance_fence_for_root
 
     with _queue_lock:

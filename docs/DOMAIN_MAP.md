@@ -14,11 +14,11 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D04 | Tool execution: registry, access & typed results | 22 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 29 | 0 |
 | D06 | Review stack | 72 | 0 |
-| D07 | Delegation, subagents & Claudexor | 59 | 0 |
+| D07 | Delegation, subagents & Claudexor | 60 | 0 |
 | D08 | Supervisor: queue, workers, events & runtime control | 56 | 0 |
 | D09 | Cancellation, owner control & process custody | 15 | 0 |
 | D10 | Git, update & release machinery | 29 | 0 |
-| D11 | Gateway, server & Web UI | 66 | 0 |
+| D11 | Gateway, server & Web UI | 70 | 0 |
 | D12 | Settings & configuration | 18 | 0 |
 | D13 | Safety, guards & runtime mode | 9 | 0 |
 | D14 | Skills & extensions | 56 | 0 |
@@ -28,7 +28,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D18 | Launcher, packaging, platform & shared substrate | 20 | 0 |
 | D19 | Frozen contracts (ABI) | 10 | 0 |
 | D20 | Presence | 10 | 0 |
-| **total** | | **641** | **0** |
+| **total** | | **646** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -42,7 +42,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 | **D04** | · | · | · | · | ✓ | · | · | · | · | · | · | · | ✓ | · | · | · | ✓ | ✓ | ✓ | · |
 | **D05** | ✓ | ✓ | · | ✓ | · | · | · | · | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ | ✓ | ✓ | ✓ | · |
 | **D06** | ✓ | ✓ | · | ✓ | · | · | ✓ | · | ✓ | ✓ | · | ✓ | ✓ | ✓ | · | ✓ | ✓ | ✓ | ✓ | · |
-| **D07** | ✓ | ✓ | · | ✓ | ✓ | ✓ | · | ✓ | · | · | · | ✓ | ✓ | · | ✓ | ✓ | ✓ | ✓ | ✓ | · |
+| **D07** | ✓ | ✓ | · | ✓ | ✓ | ✓ | · | ✓ | · | · | ✓ | ✓ | ✓ | · | ✓ | ✓ | ✓ | ✓ | ✓ | · |
 | **D08** | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | · | ✓ | · | · | ✓ | · | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | · |
 | **D09** | ✓ | · | · | · | · | ✓ | · | ✓ | · | · | · | · | · | · | · | ✓ | · | ✓ | · | · |
 | **D10** | · | · | · | ✓ | ✓ | ✓ | · | ✓ | · | · | · | ✓ | ✓ | · | · | · | · | ✓ | ✓ | · |
@@ -65,7 +65,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 
 ## Hidden coupling (classified out of the strict graph)
 
-- lazy-only cross-domain pairs: **111**
+- lazy-only cross-domain pairs: **113**
   - D01->D08
   - D01->D10
   - D01->D11
@@ -100,7 +100,6 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D06->D15
   - D07->D09
   - D07->D10
-  - D07->D11
   - D07->D14
   - D07->D20
   - D08->D02
@@ -117,6 +116,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D09->D17
   - D10->D01
   - D10->D09
+  - D10->D11
   - D10->D14
   - D10->D15
   - D10->D17
@@ -153,6 +153,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D16->D07
   - D16->D08
   - D16->D09
+  - D16->D11
   - D16->D17
   - D17->D02
   - D17->D03
@@ -160,6 +161,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D17->D07
   - D17->D08
   - D17->D09
+  - D17->D11
   - D17->D12
   - D17->D13
   - D18->D01
@@ -436,6 +438,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/delegate_containment.py`
 - `ouroboros/delegate_continuation.py`
 - `ouroboros/delegate_custody.py`
+- `ouroboros/delegate_custody_current.py`
 - `ouroboros/delegate_custody_memo.py`
 - `ouroboros/delegate_custody_reconcile.py`
 - `ouroboros/delegate_custody_usage.py`
@@ -651,6 +654,8 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/gateway/update_progress.py`
 - `ouroboros/gateway/widgets.py`
 - `ouroboros/gateway/ws.py`
+- `ouroboros/notice_receipts.py`
+- `ouroboros/obligations.py`
 - `ouroboros/server_auth.py`
 - `ouroboros/server_entrypoint.py`
 - `ouroboros/server_liveness.py`
@@ -662,6 +667,8 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/server_runtime.py`
 - `ouroboros/server_web.py`
 - `ouroboros/startup_historical_audit.py`
+- `ouroboros/startup_migrations.py`
+- `ouroboros/startup_task_files.py`
 - `ouroboros/terminal_cost_reconciliation.py`
 - `ouroboros/upgrade_notices.py`
 - `server.py`

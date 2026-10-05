@@ -606,7 +606,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 308 -> 310 step land beside the memory change's four.
 # 314 -> 315 (C4 restart/exit): ``state/owned_processes.json``, the installation's ownership set the
 # exit stop reads instead of walking data/state; its own section-2 row.
-EXPECTED_SCAN_PATHS = 315
+# 315 -> 318 (C3 current obligations): state/obligations/*.json, its shared
+# state/obligations.lock, and state/migrations.json; section-2 rows own all three.
+EXPECTED_SCAN_PATHS = 318
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

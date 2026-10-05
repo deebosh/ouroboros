@@ -308,6 +308,7 @@ def _admission_gate_for_unsynced_tree(
 
 def checkout_and_reset(branch: str, reason: str = "unspecified",
                        unsynced_policy: str = "ignore") -> Tuple[bool, str]:
+    before_head = _go().git_capture(["git", "rev-parse", "HEAD"])[1].strip()
     managed_meta = _go()._read_managed_repo_meta()
     fetch_remote = ""
     target_ref = ""
@@ -450,13 +451,13 @@ def checkout_and_reset(branch: str, reason: str = "unspecified",
             if policy == "rescue_and_reset":
                 _go()._run_git_resilient(["git", "clean", "-fd"], cwd=str(_go().REPO_DIR), check=True)
 
-    # Checkout may not update mtimes; remove stale bytecode.
-    for p in _go().REPO_DIR.rglob("__pycache__"):
-        shutil.rmtree(p, ignore_errors=True)
     st = {"current_branch": branch, "current_sha": subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=str(_go().REPO_DIR),
         capture_output=True, text=True, check=True,
     ).stdout.strip()}
+    if before_head and st["current_sha"] != before_head:
+        for p in _go().REPO_DIR.rglob("__pycache__"):
+            shutil.rmtree(p, ignore_errors=True)
     _record_checkout_facts(st)
     if update_intent_target and st["current_sha"] != update_intent_target:
         return False, f"Update intent checkout landed on {st['current_sha']} but expected {update_intent_target}"
@@ -502,6 +503,10 @@ def sync_runtime_dependencies(reason: str) -> Tuple[bool, str]:
         cmd += ["openai>=1.0.0", "requests"]
         source = "fallback:minimal"
     try:
+        from ouroboros.startup_migrations import watermarks, stamp
+        fingerprint = _dependency_fingerprint(req_path, cmd)
+        if watermarks(_go().DRIVE_ROOT).get("dependencies") == fingerprint:
+            return True, "unchanged:" + source
         from ouroboros.platform_layer import kill_process_tree, subprocess_new_group_kwargs
         from ouroboros.tools.shell import _active_subprocesses, _subprocess_lock
 
@@ -521,6 +526,7 @@ def sync_runtime_dependencies(reason: str) -> Tuple[bool, str]:
                 _active_subprocesses.discard(proc)
         if returncode != 0:
             raise subprocess.CalledProcessError(returncode, cmd)
+        stamp(_go().DRIVE_ROOT, dependencies=fingerprint)
         _go().append_jsonl(
             _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
             {
@@ -633,5 +639,22 @@ def _record_checkout_facts(facts: dict) -> None:
 
     try:
         _go().update_state(lambda live: live.update(facts))
+        from ouroboros.startup_migrations import stamp
+        stamp(_go().DRIVE_ROOT, observed_state_sha=facts.get("current_sha"))
     except StateUnavailable:
         log.warning("Checkout facts not recorded in state: runtime state unavailable", exc_info=True)
+
+
+def _dependency_fingerprint(req_path, cmd):
+    """Actual requirement bytes, install target/environment and interpreter."""
+    import hashlib
+    import json
+    import site
+    import sysconfig
+    source = req_path.read_bytes() if req_path.exists() else b"openai>=1.0.0\nrequests"
+    facts = {"requirements_sha256": hashlib.sha256(source).hexdigest(), "command": cmd,
+             "interpreter": [sys.executable, sys.version, sys.prefix, sys.base_prefix],
+             "target": [site.getuserbase(), sysconfig.get_path("purelib")],
+             "environment": {key: os.environ.get(key, "") for key in
+                             ("PYTHONUSERBASE", "PIP_TARGET", "PIP_PREFIX", "PIP_USER", "PIP_CONFIG_FILE", "VIRTUAL_ENV")}}
+    return hashlib.sha256(json.dumps(facts, sort_keys=True).encode("utf-8")).hexdigest()
