@@ -1,20 +1,21 @@
 # Ship Ouroboros record metadata with Vector (https://vector.dev). See README.md.
-# OUROBOROS_DATA_DIR = the data root; VECTOR_DATA_DIR = where Vector keeps its read checkpoints.
-data_dir: ${VECTOR_DATA_DIR}
+# /data is Ouroboros's data root as the Compose example in docs/DEPLOYMENT.md mounts it; mount the same
+# volume read-only here or replace /data with your data root. Vector keeps its read checkpoints in data_dir.
+data_dir: /var/lib/vector
 sources:
   ouroboros_records:
     type: file
     include:
-      - ${OUROBOROS_DATA_DIR}/logs/events.jsonl
-      - ${OUROBOROS_DATA_DIR}/logs/tools.jsonl
-      - ${OUROBOROS_DATA_DIR}/logs/supervisor.jsonl
+      - /data/logs/events.jsonl
+      - /data/logs/tools.jsonl
+      - /data/logs/supervisor.jsonl
       # Generations rotated while Vector was down; one it already read keeps its inode and checkpoint.
-      - ${OUROBOROS_DATA_DIR}/archive/events_*.jsonl
-      - ${OUROBOROS_DATA_DIR}/archive/tools_*.jsonl
-      - ${OUROBOROS_DATA_DIR}/archive/supervisor_*.jsonl
+      - /data/archive/events_*.jsonl
+      - /data/archive/tools_*.jsonl
+      - /data/archive/supervisor_*.jsonl
       # Worker rows of subagents and forked-memory tasks; deleted with the task drive after retention.
       # Their tools.jsonl is not read: the canonical tools.jsonl holds the same rows.
-      - ${OUROBOROS_DATA_DIR}/state/headless_tasks/*/data/logs/events.jsonl
+      - /data/state/headless_tasks/*/data/logs/events.jsonl
     read_from: beginning
     ignore_older_secs: 86400       # older archive generations and finished drives: a one-time backfill, not this tail
     fingerprint:
@@ -48,7 +49,7 @@ sinks:
   ouroboros_metadata_file:     # replace with your destination (Loki, Elasticsearch, an OTLP endpoint, ...)
     type: file
     inputs: [ouroboros_metadata]
-    path: ${VECTOR_DATA_DIR}/ouroboros-metadata.jsonl
+    path: /var/lib/vector/ouroboros-metadata.jsonl
     encoding:
       codec: json
 tests:

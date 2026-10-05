@@ -35,7 +35,7 @@ def _vrl_list(remap_source: str, name: str) -> list[str]:
 def test_the_collector_reads_the_passport_planes_and_survives_long_rows_rotation_and_downtime():
     config = yaml.safe_load(COLLECTOR.read_text(encoding="utf-8"))
     [source] = config["sources"].values()
-    include, root = set(source["include"]), "${OUROBOROS_DATA_DIR}"
+    include, root = set(source["include"]), "/data"  # the Compose example's data root
     assert all(path.startswith(root + "/") for path in include)
     logs = {row.log for row in rc.ANCHOR_ROWS}
     assert {f"{root}/logs/{log}.jsonl" for log in logs} <= include

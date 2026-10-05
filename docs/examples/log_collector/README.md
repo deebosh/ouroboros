@@ -46,12 +46,17 @@ projection, so a sum of shipped rows is wrong.
 
 ## Run it
 
+The paths assume the Compose deployment in `docs/DEPLOYMENT.md`, which mounts Ouroboros's data volume at
+`/data`: give the collector the same volume read-only at `/data` and a writable `/var/lib/vector` for its
+read positions, or replace both paths for a host install. Vector 0.58 does not expand `${VARIABLES}` in a
+configuration file unless started with `--dangerously-allow-env-var-interpolation`, so the paths are
+written out.
+
 ```bash
-export OUROBOROS_DATA_DIR=/path/to/ouroboros/data VECTOR_DATA_DIR=/path/to/vector-state
 vector validate --no-environment vector.yaml && vector test vector.yaml && vector --config vector.yaml
 ```
 
-Replace the `file` sink with your destination. Vector keeps its read positions in `VECTOR_DATA_DIR`,
+Replace the `file` sink with your destination. Vector keeps its read positions in `/var/lib/vector`,
 so a restart resumes where it stopped.
 
 ## Collector defaults that lose Ouroboros rows
