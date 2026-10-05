@@ -368,7 +368,6 @@ def _story_pages(store: ChronicleStore, label: Callable[..., str]) -> Tuple[List
                 "label": str(_mapping(record.get("metadata")).get("room_label") or label(room)),
                 "period": _period(covers.get("ts_span")), "text": str(record.get("current_text") or ""),
                 "status": str(record.get("status") or ""), "signer": draft_signer(record.get("author")),
-                "revision": record["revision"] if record.get("revision") != record["id"] else "",
                 "stamp": _stamp_summary(record.get("host_stamp")), "fixes": _fixes(store, record, fixes), "quotes": record.get("quotes") or []}))
     return [entry for _key, entry in sorted(keyed, key=lambda pair: pair[0])], mine
 
@@ -760,10 +759,9 @@ def _page_lines(entry: Mapping[str, Any]) -> List[str]:
         lines.append(f"(draft by a helper ({entry.get('signer') or 'Light'}), not yet accepted or rejected by me)")
     elif entry.get("status") == "accepted":
         lines.append(f"(drafted by a helper ({entry.get('signer') or 'Light'}), accepted by me)")
-    facts = [entry.get("stamp") or "", f"corrected by me: {entry['revision']}" if entry.get("revision") else ""]
-    if any(facts):
-        lines.append("(" + "; ".join(fact for fact in facts if fact) + ")")
-    for fix in entry.get("fixes") or ():
+    if entry.get("stamp"):
+        lines.append(f"({entry['stamp']})")
+    for fix in entry.get("fixes") or ():  # a record's own corrections stand inside its text (chronicle_store._interpret)
         verb = "correction by me of" if fix["kind"] == "correction" else "my rejection of the draft"
         lines.append(f"- {verb} {fix['target']}:\n{_indented(fix['text'])}")
     return lines

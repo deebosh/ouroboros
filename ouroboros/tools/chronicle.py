@@ -501,11 +501,11 @@ def _record_header(record: Dict[str, Any]) -> str:
         parts.append(f"target {record['target_id']}")
     if record.get("folded_into"):
         parts.append(f"folded into {record['folded_into']}")
-    revision = record.get("revision")
-    if revision and revision != record.get("id"):
-        parts.append(f"revision {revision} (corrected by {_author_label(record.get('current_author'))})")
-    elif revision:
-        parts.append(f"revision {revision}")
+    fixes = record.get("corrections") or []
+    if fixes:  # the acting revision is the last correction's, signed by its own author, not the record's
+        parts.append(f"revision {record.get('revision')} (corrected by {_author_label(fixes[-1].get('author'))})")
+    elif record.get("revision"):
+        parts.append(f"revision {record['revision']}")
     parts.append(f"seq {record.get('sequence')}")
     return "[" + "; ".join(parts) + "]"
 
@@ -868,7 +868,7 @@ def chronicle_tools() -> List[ToolEntry]:
                                        "speaker": {"type": "string", "enum": sorted(SPEAKERS)}}}}
     write = {
         "kind": {"type": "string", "enum": ["page", "part", "note", "correction", "decision"],
-                 "description": "page seals one or more closed arcs of a room; part folds adjacent records of one lower level (pages, legacy sections or parts); note is a separate record for my future self; correction stands beside a record; decision accepts or rejects a helper's draft."},
+                 "description": "page seals one or more closed arcs of a room; part folds adjacent records of one lower level (pages, legacy sections or parts); note is a separate record for my future self; correction stands under the record's words wherever the record is shown, signed and dated — it adds and never replaces them, so to say a record anew I fold it into a part over it; decision accepts or rejects a helper's draft."},
         "room_id": room,
         "text": {"type": "string", "description": "The record in my own words. No length limit; it is read back through memory_read pages."},
         "covers": {"type": "object", "additionalProperties": False,
@@ -918,7 +918,7 @@ def chronicle_tools() -> List[ToolEntry]:
     return [
         ToolEntry("chronicle_write", schema(
             "chronicle_write",
-            "Write my own chronicle record: seal a page over a room's closed arcs (the host expands covers into the exact row set, stamps each covered task with its recorded outcome and checks quotes), fold adjacent records into a part, keep a note for my future self, correct a record beside its original, or accept/reject a helper's draft. A delegated child or nanny publishes pages and parts only as drafts signed in its own name for the integrating mind to accept or reject; its part folds only legacy sections and its own drafts (its note, correction or decision, or a part over other records, is refused: not_integrator). Records are never rewritten. A refusal returns the current revision or room head and the conflicting ids; read them with memory_read.",
+            "Write my own chronicle record: seal a page over a room's closed arcs (the host expands covers into the exact row set, stamps each covered task with its recorded outcome and checks quotes), fold adjacent records into a part, keep a note for my future self, correct a record (a signed revision under its own words wherever it is shown; to say it anew, fold it into a part), or accept/reject a helper's draft. A delegated child or nanny publishes pages and parts only as drafts signed in its own name for the integrating mind to accept or reject; its part folds only legacy sections and its own drafts (its note, correction or decision, or a part over other records, is refused: not_integrator). Records are never rewritten. A refusal returns the current revision or room head and the conflicting ids; read them with memory_read.",
             write, ["kind"]), _chronicle_write),
         ToolEntry("memory_read", schema(
             "memory_read",

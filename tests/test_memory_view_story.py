@@ -239,8 +239,9 @@ def test_drafts_rejections_corrections_and_indented_texts(tmp_path):
     mine = _page(tmp_path, "1", 11, 12, text="My own page.")
     result = store.correct(mine, "My own page, corrected.", shared.MIND, expected_sequence=store.room_head("1"))
     text = _story(tmp_path)
-    assert "  My own page, corrected." in text and "  My own page.\n" not in text
-    assert f"(corrected by me: {result.record['id']})" in text
+    # The correction stands under the page's own words, signed and dated; nothing is replaced or re-announced.
+    signed = f"  My own page.\n\n  [correction {result.record['id']} by mind (root, task t1), {result.record['ts'][:10]}]\n  My own page, corrected."
+    assert signed in text and "corrected by me" not in text
     assert text.count("(draft by a helper") == 0
     # A delegated child's draft is signed by the child, not by Light.
     child = {"kind": "helper", "task_id": "kid00001", "route": {}, "focus": {"role": "child", "task_id": "kid00001"}}

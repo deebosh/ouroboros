@@ -46,7 +46,7 @@ def pointers(count: int = 377, rooms: int = 78) -> List[Dict[str, Any]]:
 def pages(count: int, chars: int, room: str = "1") -> List[Dict[str, Any]]:
     return [{"kind": "page", "id": f"page-{i:03d}", "room_id": room, "label": "Main",
              "period": f"{mv._minute(_ts(40 + i))} → {mv._minute(_ts(40 + i, 600))}", "text": f"Page {i}. " + "w" * chars,
-             "status": "", "revision": "", "stamp": "", "fixes": []} for i in range(count)]
+             "status": "", "stamp": "", "fixes": []} for i in range(count)]
 
 
 def marks(count: int = 12) -> List[Dict[str, Any]]:
