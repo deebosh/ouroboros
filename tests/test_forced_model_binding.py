@@ -307,9 +307,12 @@ def test_the_dispatched_forced_result_replaces_the_loop_slot(acting, turn_engine
 @pytest.mark.parametrize("version", ["3.10.3", ""])
 def test_an_older_or_unobserved_engine_keeps_the_legacy_candidate_and_send(acting, monkeypatch, version):
     """No field at all, and the same bytes a slotless caller would have priced."""
-    from ouroboros import llm_claudexor
+    from ouroboros import llm_claudexor, send_clock
 
     monkeypatch.setattr(llm_claudexor, "owned_engine_version", lambda: version)
+    # Each candidate carries the host clock line to the second; price both at one instant.
+    instant = send_clock._now()
+    monkeypatch.setattr(send_clock, "_now", lambda: instant)
     _none, legacy, _messages = _admitted_wrapup(acting, opted=False)
     _slot, request, prepared = _admitted_wrapup(acting, TURN)
     assert request.candidate_raw_sha256 == legacy.candidate_raw_sha256
