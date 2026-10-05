@@ -797,6 +797,7 @@ def _call_forced_model_once(
                 "the fresh forced candidate does not fit the admitted balances at its own price")
         return True
 
+    # Named residual: reads the task's refused-image memory, never recovers a first refusal (vision_routing).
     final_msg, _final_cost = _loop().call_llm_with_retry(
         ctx.llm,
         ctx.messages,

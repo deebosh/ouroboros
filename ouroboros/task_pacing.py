@@ -767,6 +767,7 @@ def prepared_wrapup_candidate(
         context_fit_plan=getattr(owner_ctx, "context_fit_plan", None),
         overrides=waiter.overrides if waiter else None)
 
+    # Named residual: reads the task's refused-image memory, never recovers a first refusal (vision_routing).
     send_messages = _prepare_main_messages(
         messages, model=ctx.active_model, llm=ctx.llm,
         accumulated_usage=ctx.accumulated_usage,

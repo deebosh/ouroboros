@@ -459,12 +459,14 @@ def _attempt_request(
         key: payload[key] for key in ("system", "messages", "tools", "functions") if key in payload
     })
     from ouroboros.send_clock import record_candidate, split_clock_note
+    from ouroboros.vision_routing import note_candidate_images
 
     # The same bytes carry the Main clock line; its clock-free twin identifies
     # the candidate across two samples (the forced-final admission predicate).
     clock_note, clock_free = split_clock_note(payload)
     raw_sha256 = hashlib.sha256(raw).hexdigest()
     record_candidate(raw_sha256, clock_note)
+    note_candidate_images(raw_sha256, payload)  # the images it carries, for an image-refusal retry's predicate
     return AttemptRequest(
         model=str(target.get("usage_model") or target.get("resolved_model") or payload.get("model") or ""),
         provider=str(target.get("provider") or "unknown"),

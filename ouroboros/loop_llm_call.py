@@ -133,9 +133,9 @@ def fold_retrieval_usage(accumulated_usage: Dict[str, Any], usage: Dict[str, Any
 # large) keep failing fast. There is NO cross-model fallback here — the same
 # request is retried on the SAME model.
 _TRANSIENT_RETRY_KINDS = frozenset({"provider_transient", "provider_incomplete_response"})
-# OB-01: stamped when THIS invocation spent its same-model retry wall without a
-# usable response; entry-cleared per invocation; PERMANENT classes leave it unspent.
-RETRY_WALL_EXHAUSTED_KEY = "_llm_retry_wall_exhausted"
+# OB-01: stamped when THIS invocation spent its same-model retry wall without a usable response; entry-cleared
+# per invocation; PERMANENT classes leave it unspent. Its twin, set with it: the attempt budget (not a deadline) ended it.
+RETRY_WALL_EXHAUSTED_KEY, RETRY_ATTEMPTS_SPENT_KEY = "_llm_retry_wall_exhausted", "_llm_retry_attempts_spent"
 # Error kinds that put a model on the F1 fallback cooldown. Superset of the same-model
 # retry kinds: a body-error 429 (HTTP 200 with an error in the body — the canonical
 # cloud.ru/OpenRouter rate-limit shape) is classified "rate_limit", which must cool the
@@ -1032,7 +1032,7 @@ def _stop_after_llm_error(ctx: _LlmErrorContext) -> bool:
             round_id=ctx.round_id, round_idx=ctx.round_idx, attempt=ctx.attempt,
             model=ctx.model, error_kind=error_kind,
         )
-    accumulated_usage[RETRY_WALL_EXHAUSTED_KEY] = True
+    accumulated_usage.update({RETRY_WALL_EXHAUSTED_KEY: True, RETRY_ATTEMPTS_SPENT_KEY: ctx.attempt >= attempt_budget - 1})
     return True
 
 
