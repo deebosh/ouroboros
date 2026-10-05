@@ -18,7 +18,9 @@ from ouroboros import platform_layer as platform
 from ouroboros.utils import atomic_write_json
 
 BOOT_SETS = ("nonterminal", "synthesis", "terminal_projection", "delegated_runs",
-             "promotions", "custody_open", "pending_drives", "upgrade_notices", "unknowns")
+             "promotions", "custody_open", "pending_drives", "upgrade_notices", "unknowns",
+             "pause_notices", "pause_notice_receipts")
+RECEIPT_SETS = ("upgrade_notices", "pause_notice_receipts")  # chat receipts: no result derives them
 LOCK_TIMEOUT_SEC = 4.0  # The existing update_json_locked IO acquisition budget.
 
 
@@ -139,6 +141,8 @@ def result_memberships(row: dict) -> set[str]:
         from ouroboros.observability import _has_pending_ref_promotion
         if _has_pending_ref_promotion(row["child_ref_promotion"]):
             names.add("promotions")
+    if row.get("pause_notices"):
+        names.add("pause_notices")
     return names
 
 

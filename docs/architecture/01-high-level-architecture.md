@@ -690,7 +690,7 @@ Bundled resources use the CLI / Headless Boundary lookup order rather than assum
 │   │   ├── capability_evidence.json ← sourced model-capability evidence (capability_evidence.py)
 │   │   ├── extra-ca-bundle/<digest>.pem ← certifi plus the owner's `OUROBOROS_EXTRA_CA_BUNDLE` PEM, content-addressed so a changed owner file rotates every path-keyed cache (siblings older than a day pruned); the one path every first-party HTTP client verifies against (net_transport.py)
 │   │   ├── process_ledger.jsonl   ← durable process-custody ledger (process_custody.py; Runtime topology)
-│   │   ├── obligations/          ← current task/custody/drive/promotion debts, upgrade-notice receipts and addressable unknowns
+│   │   ├── obligations/          ← task/custody/drive/promotion/pause-notice debts, notice receipts and addressable unknowns
 │   │   ├── migrations.json       ← successful schema generations and dependency fingerprint
 │   │   ├── owned_processes.json   ← current ownership set: typed records of owned processes with `stop_requested_at`/`unconfirmed_since` (owned_shutdown.py; §9)
 │   │   ├── server_port            ← active HTTP port for launcher/browser handoff

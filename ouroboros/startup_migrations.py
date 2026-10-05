@@ -116,7 +116,7 @@ def _classify(root, records, *, rebuild=False, replace_results=False):
                 if not rebuild:
                     raise
                 prior = {}
-            if not (rebuild or replace_results) or name == "upgrade_notices":
+            if not (rebuild or replace_results) or name in o.RECEIPT_SETS:
                 rows.update(prior)  # interrupted publications remain candidates
             elif name == "delegated_runs":
                 for tid, facts in prior.items():
