@@ -541,6 +541,83 @@ def test_a_later_door_after_the_grace_takes_one_lock_attempt(tmp_path, monkeypat
         release_exclusive_file_lock(lock_path, fd)
 
 
+def test_a_contended_first_door_still_records_its_stop_requests(tmp_path, monkeypatch):
+    """The first door's stamp cannot take the custody lock: the stop requests land as pending files, so
+    a launcher kill before the stop runs still leaves the next start a stop to finish."""
+    from ouroboros import owned_shutdown
+    from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
+    from ouroboros.process_custody import ledger_path
+    from ouroboros.utils import jsonl_append_lock_path
+    from ouroboros import workspace_executor as executor
+
+    _budget(monkeypatch, 5.0)
+    monkeypatch.setattr(owned_shutdown, "_update", lambda root, change, *, timeout_sec=2.0, _real=owned_shutdown._update:
+                        _real(root, change, timeout_sec=min(timeout_sec, 0.2)))
+    data = tmp_path / "data"
+    proc = _sleeper()
+    lock_path = jsonl_append_lock_path(ledger_path(data))
+    fd = None
+    try:
+        path = executor._register_process(data, {"record_type": "foreground", "executor_type": "local",
+                                                  "executor_id": "host", "host_pid": proc.pid})
+        fd = acquire_exclusive_file_lock(lock_path, timeout_sec=1.0)
+        owned_shutdown.begin_owned_stop(data)
+        assert _by_id(data)[path.stem]["stop_requested_at"]
+        release_exclusive_file_lock(lock_path, fd)
+        fd = None
+        monkeypatch.setattr(owned_shutdown, "_GENERATION_STOP", owned_shutdown._Stop())  # the launcher's kill
+        counts = owned_shutdown.finish_unconfirmed_stops(data)
+        assert counts["retried"] == counts["confirmed"] == 1
+        proc.wait(timeout=10)
+    finally:
+        if fd is not None:
+            release_exclusive_file_lock(lock_path, fd)
+        _reap(proc)
+
+
+def test_a_reader_racing_a_fold_still_names_the_pending_registration(tmp_path, monkeypatch):
+    """Another process folds a pending file into the document and deletes it while a lock-free reader
+    runs: reading pending files before the document keeps the entry visible either way."""
+    from ouroboros import owned_shutdown
+    import ouroboros.utils as utils
+
+    data = tmp_path / "data"
+    entry = {"record_id": "x", "kind": "foreground", "host_pid": 0, "birth": "b", "drive_root": str(data),
+             "record_path": str(data / "x.json"), "stop_requested_at": "t", "unconfirmed_since": None}
+    assert owned_shutdown._update(data, lambda document: True)  # an existing, empty document
+    assert owned_shutdown.owned_processes_path(data).is_file()
+    assert owned_shutdown._write_pending(data, entry)
+    real_read, folding = utils.read_text_across_replace, []
+
+    def read_then_fold(path, *args, **kwargs):
+        old = real_read(path, *args, **kwargs)
+        if not folding and pathlib.Path(path).name == owned_shutdown.OWNED_PROCESSES_FILENAME:
+            folding.append(1)
+            assert owned_shutdown._update(data, lambda document: False)  # the other process folds and deletes
+        return old  # this reader saw the document as it was before the fold
+
+    monkeypatch.setattr(utils, "read_text_across_replace", read_then_fold)
+    assert "x" in {e["record_id"] for e in owned_shutdown.owned_records(data)}
+    assert folding and not list((data / "state" / owned_shutdown.PENDING_DIRNAME).glob("*.json"))
+
+
+def test_every_shutdown_door_records_its_stop_requests_before_any_wait():
+    """Wiring: owner Restart, the lifespan teardown and the emergency exit each call begin_owned_stop
+    before their first wait (deleting any one call fails here)."""
+    import inspect
+
+    import server
+    from ouroboros import server_restart
+
+    restart = inspect.getsource(server_restart._stop_owned_work)
+    assert restart.index("begin_owned_stop(") < restart.index("_owned_live_task_ids(") < restart.index("kill_workers(")
+    teardown = inspect.getsource(server.lifespan)
+    stop_flag = teardown.index("_supervisor_stop.set()  # first")
+    assert stop_flag < teardown.index("begin_owned_stop(", stop_flag) < teardown.index("supervisor_thread.join(", stop_flag)
+    emergency = inspect.getsource(server._emergency_process_cleanup)
+    assert emergency.index("begin_owned_stop(") < emergency.index("kill_workers(")
+
+
 def test_the_ledger_compaction_forgets_dropped_rows(tmp_path):
     from ouroboros import owned_shutdown
     from ouroboros.process_custody import _read_ledger_records, _rewrite_ledger, record_process

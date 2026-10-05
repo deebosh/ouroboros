@@ -117,6 +117,8 @@ def _read_document(root: Any, *, pending: Optional[Dict[pathlib.Path, Dict[str, 
     disk again (an unreadable file is logged)."""
     from ouroboros.utils import read_text_across_replace
 
+    if pending is None:  # before the document: a concurrent fold-and-delete cannot hide an entry
+        pending = _pending_files(root)
     path = owned_processes_path(root)
     try:
         document = json.loads(read_text_across_replace(path))
@@ -127,7 +129,7 @@ def _read_document(root: Any, *, pending: Optional[Dict[pathlib.Path, Dict[str, 
         document = None
     if not isinstance(document, dict) or not isinstance(document.get("records"), dict):
         document = {"schema_version": _SCHEMA_VERSION, "records": {}}
-    for entry in (pending if pending is not None else _pending_files(root)).values():
+    for entry in pending.values():
         _put(document, entry)
     return document
 
@@ -224,21 +226,23 @@ def _executor_entry(path: Any, record: Dict[str, Any]) -> Dict[str, Any]:
     return entry
 
 
-def _publish(root: Any, entry: Dict[str, Any]) -> bool:
-    """Add ``entry`` to the set; under contention, as a lock-free pending file instead."""
-    if _update(root, lambda document: _put(document, entry)):
-        return True
+def _write_pending(root: Any, entry: Dict[str, Any]) -> bool:
+    """One lock-free pending file: every read merges it, the next locked update folds it."""
     import uuid
 
     try:
         pending_dir = pathlib.Path(root) / "state" / PENDING_DIRNAME
         pending_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(pending_dir / f"{entry['record_id']}.{uuid.uuid4().hex}.json", _born_stamped(entry),
-                          trailing_newline=True)
+        atomic_write_json(pending_dir / f"{entry['record_id']}.{uuid.uuid4().hex}.json", entry, trailing_newline=True)
         return True
     except Exception:
         log.warning("Owned process %s is not in the ownership set", entry["record_id"], exc_info=True)
         return False
+
+
+def _publish(root: Any, entry: Dict[str, Any]) -> bool:
+    """Add ``entry`` to the set; under contention, as a lock-free pending file instead."""
+    return _update(root, lambda document: _put(document, entry)) or _write_pending(root, _born_stamped(entry))
 
 
 def record_executor_process(path: Any, record: Dict[str, Any]) -> bool:
@@ -305,8 +309,16 @@ def _stamp(root: Any, field: str, select: Callable[[Dict[str, Any]], bool], *,
         return changed
 
     if not _update(root, change, timeout_sec=timeout_sec):
-        # The stop still acts on the last readable set when its stamp cannot persist.
-        selected = [dict(entry) for entry in _read_document(root)["records"].values() if select(entry)]
+        # Contended: the stop acts on the last readable set, and a stop request still lands
+        # through the pending protocol, so a launcher kill leaves it recorded for the next start.
+        selected = []
+        for entry in _read_document(root)["records"].values():
+            if select(entry):
+                if not entry.get(field):
+                    entry = {**entry, field: now}
+                    if field == "stop_requested_at":
+                        _write_pending(root, entry)
+                selected.append(dict(entry))
     return selected
 
 
