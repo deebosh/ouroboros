@@ -96,7 +96,8 @@ ANCHOR_ROWS: tuple[AnchorRow, ...] = (
         "task_received", "events", "drive_logs",
         "A worker accepted a task. `task` is the sanitized task: `task.id` joins it, and the rest (text up to "
         "4000 chars, contract, metadata) is content.",
-        _fields("ts type task"), content=_fields("task"), natural_key=("type", "ts"),
+        _fields("ts type task"), optional=_fields("activity_emitted_at"), content=_fields("task"),
+        natural_key=("type", "ts"),
     ),
     AnchorRow(
         "task_done", "events", "canonical",
@@ -142,7 +143,7 @@ ANCHOR_ROWS: tuple[AnchorRow, ...] = (
         nullable=_fields("cached_tokens duration_ms physical_attempt_id"),
         optional=_fields("reasoning_effort source model_category prompt_cache_ttl cache_hit_rate cache_cold_restart "
                          "gap_since_prev_round_sec cost_usd request_ref response_ref effort effort_resolution "
-                         "request_wire claudexor " + _CONTEXT_FIT),
+                         "request_wire claudexor first_request_at first_answer_at " + _CONTEXT_FIT),
         content=_fields("claudexor"), natural_key=("llm_call_id",),
     ),
     AnchorRow(
