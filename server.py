@@ -640,7 +640,7 @@ def _run_supervisor(settings: dict) -> None:
     _watchdog_stop = threading.Event()  # per-generation: set on EVERY exit of this generation
     try:
         # Watch startup stalls; even a failed watchdog start publishes an init outcome.
-        from ouroboros.server_liveness import loop_phase_facts, run_startup_phase
+        from ouroboros.server_liveness import loop_phase_facts, note_supervisor_ready, run_startup_phase
         _loop_liveness = [time.monotonic(), {}, time.thread_time(), None]  # slots: server_liveness.py
         _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "startup", new_tick=True), time.monotonic()
         _start_supervisor_liveness_watchdog(_loop_liveness, _watchdog_stop)
@@ -803,7 +803,7 @@ def _run_supervisor(settings: dict) -> None:
 
     _supervisor_ready.set()
     _supervisor_init_done.set()
-    log.info("Supervisor ready.")
+    note_supervisor_ready()
 
     offset = 0
     crash_count = 0

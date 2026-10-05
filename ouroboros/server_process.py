@@ -16,6 +16,7 @@ import pathlib
 import re
 import sys
 import threading
+import time
 from contextlib import nullcontext
 from typing import Callable
 
@@ -29,6 +30,7 @@ DATA_DIR = pathlib.Path(os.environ.get("OUROBOROS_DATA_DIR",
 
 
 log = logging.getLogger("server")
+PROCESS_STARTED_MONOTONIC = time.monotonic()  # the boot clock's zero: this module loads first in the server
 
 
 _restart_requested = threading.Event()

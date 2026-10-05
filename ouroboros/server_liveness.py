@@ -65,6 +65,24 @@ def _daemon_pin_matched() -> Optional[bool]:
         return None
 
 
+def note_supervisor_ready() -> None:
+    """Record one durable boot fact, never a gate: this process reached readiness
+    and how old it was (``process_age_sec``; on an ordinary start that is the
+    whole boot, on an in-process revival the age of the surviving process).
+    The lifecycle jobs record their own durations beside it
+    (``usage_store_migration``, ``startup_migration``)."""
+    from ouroboros.server_process import PROCESS_STARTED_MONOTONIC
+    from ouroboros.utils import append_jsonl
+
+    log.info("Supervisor ready.")
+    try:
+        append_jsonl(DATA_DIR / "logs" / "supervisor.jsonl", {
+            "ts": utc_now_iso(), "type": "supervisor_ready",
+            "process_age_sec": round(time.monotonic() - PROCESS_STARTED_MONOTONIC, 3)})
+    except Exception:
+        log.debug("supervisor_ready fact not recorded", exc_info=True)
+
+
 def run_startup_phase(liveness: list, phase: str, step: Callable[[], Any]) -> Any:
     """Run one startup step under its own visible sub-phase (a stall inside it is
     journaled with that name), then publish ``startup`` again."""
