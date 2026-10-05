@@ -208,7 +208,7 @@ function hubController({ catalog, listing, immediateTimers = false }) {
         fetchJson: async (path) => {
             reads.push(path);
             if (path.startsWith('/api/extensions')) return { skills: listing };
-            return { results: catalog };
+            return { results: typeof catalog === 'function' ? catalog() : catalog };
         },
     });
     vm.runInContext(source('ouroboroshub', 'const HUB_REPLACEMENT_KEEPS', '\nfunction controlsTemplate')
@@ -241,6 +241,28 @@ test('typing in the OuroborosHub search filters the loaded catalog locally; Sear
     hub.nodes['[data-oh-search]'].handlers.click();
     await nextTurn(); await nextTurn();
     assert.ok(hub.reads.length > initial, 'Search is the network refresh');
+});
+
+test('filtering after a failed catalog refresh keeps the unavailable notice; a fresh catalog shows plain counts', async () => {
+    let failing = false;
+    const rows = [
+        { slug: 'weather', sanitized_name: 'weather', display_name: 'Weather', description: 'Local forecast' },
+        { slug: 'notes', sanitized_name: 'notes', display_name: 'Notes', description: 'Keep notes' },
+    ];
+    const hub = hubController({
+        catalog: () => { if (failing) throw new Error('hub offline'); return rows; },
+        listing: [], immediateTimers: true,
+    });
+    await hub.context.initOuroborosHub(hub.pane);
+    hub.type('fore');
+    assert.equal(hub.status(), '1 official skill', 'a fresh catalog reports plain counts');
+    failing = true;
+    hub.nodes['[data-oh-search]'].handlers.click();
+    await nextTurn(); await nextTurn();
+    assert.match(hub.status(), /^Hub catalog unavailable: hub offline\. Showing previous results\. Refresh to retry\.$/);
+    hub.type('');
+    assert.match(hub.html(), /data-slug="notes"/, 'the previous rows are still filtered locally');
+    assert.equal(hub.status(), 'Hub catalog unavailable. Showing previous results (2 official skills). Refresh to retry.');
 });
 
 test('the ClawHub installed read outlives the 3 s bound of its optional enrichment', async () => {

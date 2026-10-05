@@ -376,13 +376,15 @@ export function initOuroborosHub(pane, controlsHost = null) {
         }
         const localOnly = state.results.length - officialCount;
         renderCards();
-        show(state.listingUnavailable
+        const counts = [
+            `${officialCount} official skill${officialCount === 1 ? '' : 's'}`,
+            localOnly ? `${localOnly} local submission${localOnly === 1 ? '' : 's'} not in the catalog` : '',
+        ].filter(Boolean).join(' · ');
+        // Filtering a catalog whose last refresh failed keeps saying so: the rows are the previous results.
+        if (state.catalogUnavailable) show(`Hub catalog unavailable. Showing previous results (${counts}). Refresh to retry.`, 'danger');
+        else show(state.listingUnavailable
             ? 'Installed skills could not be read. Previous details are retained where available; Refresh to retry.'
-            : [
-                `${officialCount} official skill${officialCount === 1 ? '' : 's'}`,
-                localOnly ? `${localOnly} local submission${localOnly === 1 ? '' : 's'} not in the catalog` : '',
-            ].filter(Boolean).join(' · '),
-            state.listingUnavailable ? 'warn' : 'muted');
+            : counts, state.listingUnavailable ? 'warn' : 'muted');
     }
 
     async function refresh() {
