@@ -428,6 +428,9 @@ export function createChatInstance({
     let inputHistoryIndex = inputHistory.length;
     let inputDraft = '';
     let historyLoaded = false;
+    // A source read has painted the room. The sessionStorage preview a failed first
+    // read leaves is not one: the first source read after it still opens the room.
+    let sourceHydrated = false;
     let inputHistorySeededFromServer = false; // set true only after a successful server-side recall seed
     let historySyncPromise = null;
     let lastHistorySyncSucceeded = false;
@@ -2717,6 +2720,9 @@ export function createChatInstance({
         historySyncPromise = (async () => {
             const armedAtStart = liveCardBound.begin();
             const cardsAtStart = new Set(liveCardRecords.keys());
+            // Whether the reader follows the newest message as the read begins: a
+            // replay can clear and refill the feed, which is not the reader moving.
+            const followingAtStart = reading.stick, generationAtStart = reading.generation;
             try {
                 // No welcome until this read lands.
                 emptyWelcome?.historyPending();
@@ -2776,8 +2782,8 @@ export function createChatInstance({
                     inputHistorySeededFromServer = true;
                 }
 
-                const wasFirstLoad = !historyLoaded;
-                historyLoaded = true;
+                const wasFirstLoad = !historyLoaded, opensRoom = !sourceHydrated;
+                historyLoaded = sourceHydrated = true;
                 lastHistorySyncSucceeded = true;
                 messagesDiv.dataset.historyHydrated = 'true';
                 emptyWelcome?.historyRead(data.window?.complete === true);
@@ -2792,7 +2798,8 @@ export function createChatInstance({
                 if (reading.pending) {
                     updateMessagesPadding(false);
                     reading.position();
-                } else if (wasFirstLoad && reading.stick) {
+                } else if ((wasFirstLoad && reading.stick)
+                        || (opensRoom && followingAtStart && reading.generation === generationAtStart)) {
                     updateMessagesPadding();
                     reading.followAfterLayout();
                 }
