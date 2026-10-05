@@ -26,15 +26,18 @@ def pause_receipt_id(chat_id, identity):
 
 
 def record(root, row):
+    """After the chat row landed: a receipt that cannot be written never turns the landed row into a
+    failure (the notice may repeat once; the next start rebuilds the sets)."""
     kind = row.get("type")
     if row.get("direction") != "system":
         return
-    if kind in UPGRADE_TYPES:
-        o.add(root, "upgrade_notices", notice_id(row["chat_id"], kind),
-              {"chat_id": row["chat_id"], "type": kind, "ts": row.get("ts"), "recorded": True})
+    if kind in UPGRADE_TYPES and isinstance(row.get("chat_id"), int):
+        o._bookkeeping(root, "upgrade notice receipt", o.add, root, "upgrade_notices", notice_id(row["chat_id"], kind),
+                       {"chat_id": row["chat_id"], "type": kind, "ts": row.get("ts"), "recorded": True})
     elif kind == PAUSE_TYPE and row.get("card_row_id") and isinstance(row.get("chat_id"), int):
-        o.add(root, "pause_notice_receipts", pause_receipt_id(row["chat_id"], row["card_row_id"]),
-              {"task_id": row.get("task_id"), "ts": row.get("ts")})
+        o._bookkeeping(root, "pause notice receipt", o.add, root, "pause_notice_receipts",
+                       pause_receipt_id(row["chat_id"], row["card_row_id"]),
+                       {"task_id": row.get("task_id"), "ts": row.get("ts")})
 
 
 def import_upgrade_receipts(root):
@@ -45,7 +48,8 @@ def import_upgrade_receipts(root):
         rows = [row for path, handle in handles for row in iter_jsonl_objects(path, _handle=handle)]
     for row in rows:
         kind = row.get("type")
-        if row.get("direction") == "system" and kind in UPGRADE_TYPES:
+        # One malformed historical row is skipped, never a failed import.
+        if row.get("direction") == "system" and kind in UPGRADE_TYPES and isinstance(row.get("chat_id"), int):
             records[notice_id(row["chat_id"], kind)] = {"chat_id": row["chat_id"], "type": kind,
                                                       "ts": row.get("ts"), "recorded": True}
     return records

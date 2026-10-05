@@ -682,7 +682,7 @@ Bundled resources use the CLI / Headless Boundary lookup order rather than assum
 │   │   ├── state.json             ← runtime state + compatibility cost projection; never the monetary authority
 │   │   ├── queue_snapshot.json    ← durable PENDING/RUNNING recovery projection + worker counts + explicit worker_pool_disabled_reason (§5)
 │   │   ├── usage.sqlite           ← the monetary authority: one row per attempt plus summaries, bindings and dirty owners kept by each write (docs/USAGE_STORE.md)
-│   │   ├── usage_attempts.jsonl.imported ← the retired journal after the one-time import; read only by the explicit history audit
+│   │   ├── usage_attempts.jsonl  ← the journal: imported once, then kept in place for an older release and read only by the explicit history audit
 │   │   ├── skill_review_root_tasks.jsonl ← append-only compact index derived from per-skill `review_history.jsonl` (writer `skill_review_history.append_history_once`, bounded-tail reader `skill_readiness._skill_names_from_review_history`); 20 MB warning at `context_budget.SKILL_REVIEW_ROOT_TASKS_WARN_BYTES`
 │   │   ├── usage_attempts.quarantine.jsonl ← the journal's proven-corrupt final row, quarantined by the import (integrity disclosed)
 │   │   ├── usage_import_watermark.json ← pre-ledger import watermark (restored by the downgrade export)

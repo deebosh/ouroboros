@@ -196,8 +196,7 @@ def test_the_import_keeps_correctable_attempts_until_the_real_receipt(root):
             assert {key: stored.get(key) for key in finals[attempt_id] if key != "seq"} == {
                 key: value for key, value in finals[attempt_id].items() if key != "seq"}
             assert ledger.late_receipt_eligible(stored)
-    assert (root / usage_store.IMPORTED_REL).read_bytes() == before_bytes
-    assert not (root / ledger.LEDGER_REL).exists()
+    assert (root / ledger.LEDGER_REL).read_bytes() == before_bytes  # kept in place, never written again
     [correction] = _write(root, [_row("abandoned", "settled", settle_reason="late_receipt",
                                       cost_usd=.6, cost_final=True)])
     assert not ledger.is_abandoned_settlement(correction)

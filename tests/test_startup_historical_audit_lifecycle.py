@@ -92,7 +92,7 @@ def archived_root(data_root, monkeypatch):
 
 
 def _money_bytes(root: pathlib.Path) -> list:
-    paths = [root / usage_store.STORE_REL, root / usage_store.IMPORTED_REL, root / ARCHIVE_SEGMENT_REL]
+    paths = [root / usage_store.STORE_REL, root / usage_store.LEDGER_REL, root / ARCHIVE_SEGMENT_REL]
     return [(path.name, path.read_bytes()) for path in paths]
 
 

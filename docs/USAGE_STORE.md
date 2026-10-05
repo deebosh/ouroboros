@@ -137,13 +137,18 @@ only its own budget.
 4. Publish the store by atomic rename; record the header's epoch/sequence, the
    source size, hash and counts in `meta.import`; continue the marker at the
    journal's `[epoch, last seq]` so the `state.json` projection never sees a
-   lower one; rename the journal `usage_attempts.jsonl.imported`.
+   lower one. The journal stays in place: an older release (an in-app
+   Rollback, or an automatic rollback after a failed boot of this one) still
+   reads its own history up to the import.
 
-A completed store is never imported again (an interrupted rename is finished
-by the next start); an unpublished build is discarded and redone. Timing and
-counts go to `logs/supervisor.jsonl` (`usage_store_migration`). The imported
-journal and `archive/usage_ledger/` stay as evidence; nothing ordinary reads
-them, and nothing writes the archive any more.
+A completed store is never imported again; later starts compare only the
+journal's size with the imported one (no hashing) and report a journal an
+older release appended to after a rollback as `changed_after_import`: those
+rows are not merged (the export below keeps money exact across a downgrade).
+An unpublished build is discarded and redone. Timing and counts go to
+`logs/supervisor.jsonl` (`usage_store_migration`). The journal and
+`archive/usage_ledger/` stay as evidence; nothing ordinary reads them, and
+nothing writes the archive any more.
 
 ## 7. Downgrade export
 
@@ -154,8 +159,10 @@ validator accepts (a minimal legal chain per attempt, aggregates under a
 `usage_baseline` header carrying the stored provenance, dense `seq`), restores
 the legacy-import watermark, aligns the `state.json` marker with the journal's
 own, and renames the store `usage.sqlite.exported-<UTC>`. A later upgrade
-imports that journal again, including what the older release added. It
-refuses to overwrite an existing journal.
+imports that journal again, including what the older release added. The
+journal the import kept is set aside as `usage_attempts.jsonl.pre-export-<UTC>`;
+a journal that changed after the import, or one without a store, is never
+overwritten.
 
 ## 8. Explicit history audit
 

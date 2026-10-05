@@ -19,7 +19,8 @@ from starlette.routing import Route, Mount
 import uvicorn
 from ouroboros.server_control import (PanicIngress, execute_panic_stop as _execute_panic_stop_impl,
                                       restart_current_process as _restart_current_process_impl)
-from ouroboros.owned_shutdown import begin_owned_stop, finish_unconfirmed_stops, stop_owned_work
+from ouroboros.owned_shutdown import (begin_owned_stop, finish_unconfirmed_stops, start_inherited_import,
+                                       stop_owned_work)
 from ouroboros.server_auth import (
     NetworkAuthGate,
     get_network_auth_startup_warning,
@@ -1301,6 +1302,7 @@ async def lifespan(app):
 
     if not pytest_default_real_data_dir:  # before admission and any extension/replacement process (§9)
         finish_unconfirmed_stops(lifespan_drive_root)
+        start_inherited_import(lifespan_drive_root)  # the one-time disk walk, off the ready path
         from ouroboros.startup_migrations import prepare_startup_state
         prepare_startup_state(lifespan_drive_root, repo_dir=REPO_DIR, strict=False)
         try:  # the one journal import, on every door (providerless included), before any request

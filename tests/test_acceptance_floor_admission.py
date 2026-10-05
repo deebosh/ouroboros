@@ -706,8 +706,7 @@ def test_a_single_crash_torn_journal_gets_the_quarantine_its_one_time_import_per
     assert "reason" not in spend  # no read error: the repair is not a failure path
     assert spend["state"] == "partial" and spend["integrity_degraded"] is True
     assert spend["cost_final"] is False  # a quarantined tail never claims final cost
-    assert not ledger.exists()  # the journal was imported and retired ...
-    assert (root / usage_store.IMPORTED_REL).read_bytes() == intact  # ... truncated to the intact prefix
+    assert ledger.read_bytes() == intact  # imported and kept in place, truncated to the intact prefix
     rows = [json.loads(line) for line in quarantine.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 1 and base64.b64decode(rows[0]["raw_base64"]) == torn
     assert rows[0]["source"] == str(ledger)
@@ -720,10 +719,10 @@ def test_a_single_crash_torn_journal_gets_the_quarantine_its_one_time_import_per
     assert ctx.event_queue.empty() and ctx.pending_events == []
 
     # The imported store is the healthy case again: the second poll writes nothing.
-    steady = ((root / usage_store.IMPORTED_REL).read_bytes(), quarantine.read_bytes(), events.read_bytes(),
+    steady = (ledger.read_bytes(), quarantine.read_bytes(), events.read_bytes(),
               (root / usage_store.STORE_REL).read_bytes())
     coordination_live_context(ctx)
-    assert ((root / usage_store.IMPORTED_REL).read_bytes(), quarantine.read_bytes(), events.read_bytes(),
+    assert (ledger.read_bytes(), quarantine.read_bytes(), events.read_bytes(),
             (root / usage_store.STORE_REL).read_bytes()) == steady
 
 

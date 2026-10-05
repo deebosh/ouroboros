@@ -386,7 +386,7 @@ def test_torn_final_journal_row_is_quarantined_at_import_but_midstream_corruptio
     assert breakdown["integrity_degraded"] is True
     assert breakdown["cost_final"] is False
     assert (data_root / ua.QUARANTINE_REL).is_file()
-    imported = (data_root / "state" / "usage_attempts.jsonl.imported").read_text()
+    imported = (data_root / "state" / "usage_attempts.jsonl").read_text()  # kept in place, truncated
     assert imported == _journal_text(_released_journal_rows())  # the torn tail left for quarantine
 
 

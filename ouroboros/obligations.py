@@ -180,8 +180,34 @@ def after_result(root: Any, row: dict, *, names: set[str]) -> None:
                 _write(root, name, rows)
 
 
+REBUILD_MARK = "rebuild.owed"  # under state/obligations/: the next start re-imports every set
+
+
+def owe_rebuild(root: Any, what: str, exc: BaseException) -> None:
+    """A membership write failed (an unreadable set, a contended or failed write): the transition
+    it rides on proceeds, and the next start's lifecycle import rebuilds the sets from results."""
+    import logging
+
+    logging.getLogger(__name__).warning("Obligation %s not recorded (%s); the next start rebuilds the sets",
+                                        what, type(exc).__name__)
+    try:
+        mark = Path(root) / "state" / "obligations" / REBUILD_MARK
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        mark.write_text(f"{what}: {type(exc).__name__}\n", encoding="utf-8")
+    except OSError:
+        logging.getLogger(__name__).critical("Obligations rebuild could not be owed under %s", root, exc_info=True)
+
+
+def _bookkeeping(root: Any, what: str, fn: Any, *args: Any, **kwargs: Any) -> None:
+    try:
+        fn(*args, **kwargs)
+    except (ObligationsUnavailable, TimeoutError, OSError) as exc:
+        owe_rebuild(root, what, exc)
+
+
 def update_result(path: Path, mutator: Any, *, writer=None, **kwargs: Any) -> dict:
-    """Use the existing result lock for membership-before/write/retirement-after."""
+    """Use the existing result lock for membership-before/write/retirement-after. Membership is
+    bookkeeping: a set that cannot be written never fails the result write (see owe_rebuild)."""
     from ouroboros.utils import update_json_locked
 
     root = Path(path).parent.parent
@@ -196,18 +222,18 @@ def update_result(path: Path, mutator: Any, *, writer=None, **kwargs: Any) -> di
             added = owed - previous if facts == result_facts(updated) else owed
             retired = previous - owed
             if added:
-                before_result(root, updated, names=added)
+                _bookkeeping(root, "membership", before_result, root, updated, names=added)
         return updated
 
-    return (writer or update_json_locked)(path, publish,
-        after_write=lambda row: after_result(root, row, names=retired) if retired else None, **kwargs)
+    return (writer or update_json_locked)(path, publish, after_write=lambda row: _bookkeeping(
+        root, "retirement", after_result, root, row, names=retired) if retired else None, **kwargs)
 
 
 def drive_started(root: Any, task: dict) -> None:
     """Pool handoff: publish before the child can write anything or die."""
     tid = str(task.get("id") or task.get("task_id") or "")
     if tid:
-        add(root, "pending_drives", tid, {**result_facts(task), "task_id": tid})
+        _bookkeeping(root, "pending drive", add, root, "pending_drives", tid, {**result_facts(task), "task_id": tid})
 
 
 def drive_finished(root: Any, task: dict, row: dict | None = None) -> None:
@@ -217,9 +243,12 @@ def drive_finished(root: Any, task: dict, row: dict | None = None) -> None:
     from ouroboros.task_status import SETTLED_STATUSES
 
     tid = str(task.get("id") or task.get("task_id") or "")
-    row = row if row is not None else load_task_result(root, tid, strict=True)
+    try:
+        row = row if row is not None else load_task_result(root, tid, strict=True)
+    except (OSError, ValueError):
+        return  # an unreadable result keeps the drive pending: recovery decides later
     if row and row.get("status") in SETTLED_STATUSES and terminal_task_files_ready(Path(root), task, row):
-        remove(root, "pending_drives", tid)
+        _bookkeeping(root, "drive retirement", remove, root, "pending_drives", tid)
 
 
 def result_rows(root: Any, name: str, *, exclude=()):

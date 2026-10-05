@@ -10,6 +10,10 @@ import pathlib
 import threading
 
 _SETTLEMENT_READS = threading.local()
+# A hard memory bound on unconsumed preparations per thread (each holds parsed result bodies);
+# a multi-occupant settlement prepares one per occupant, far below it. An evicted one is
+# reported unknown by its locked follow-up, which retains the drive (never a wrong settle).
+_PREPARED_READS_MAX = 64
 
 
 class TaskOwnershipRead:
@@ -83,7 +87,10 @@ def settlement_reads(root, task_id, *, locked, prepared=None):
         pending = _SETTLEMENT_READS.pending = {}
     key = str(root), task_id
     if prepared is not None:
+        pending.pop(key, None)
         pending[key] = prepared
+        while len(pending) > _PREPARED_READS_MAX:  # memory bound: the oldest unconsumed preparation goes
+            pending.pop(next(iter(pending)))
         return prepared
     if locked:
         return pending.pop(key, None)

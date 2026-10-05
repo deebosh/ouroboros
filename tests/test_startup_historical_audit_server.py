@@ -213,7 +213,7 @@ def test_real_server_serves_readiness_and_requests_while_history_runs_elsewhere(
 
     # The boot imported the journal unchanged; the retained evidence the pass
     # read is byte-identical afterwards.
-    assert (data_dir / usage_store.IMPORTED_REL).read_bytes() == journal_before
+    assert (data_dir / usage_store.LEDGER_REL).read_bytes() == journal_before
     assert sorted((path.name, path.stat().st_size)
                   for path in (data_dir / ul.ARCHIVE_SEGMENT_DIR_REL).glob("*.jsonl")) == archive_before
 

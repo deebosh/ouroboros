@@ -94,24 +94,67 @@ def test_membership_precedes_result_replace(tmp_path, monkeypatch, status, field
 
 
 def test_retirement_follows_durable_result(tmp_path, monkeypatch):
+    """A retirement that fails after the result landed never fails the transition: the member stays an
+    extra candidate, a rebuild is owed, and the next start's lifecycle import settles it."""
+    from ouroboros.startup_migrations import prepare_startup_state
+
+    prepare_startup_state(tmp_path)  # the sets exist and their import is stamped
     results.write_task_result(tmp_path, "task", "running")
     original = o.after_result
 
     def crash(root, row, **kwargs):
         assert json.loads((tmp_path / "task_results/task.json").read_text(encoding="utf-8"))["status"] == "completed"
-        raise OSError("crash before retirement")
+        raise OSError("disk full before retirement")
 
     monkeypatch.setattr(o, "after_result", crash)
-    with pytest.raises(OSError):
-        results.write_task_result(tmp_path, "task", "completed")
-    assert "task" in o.members(tmp_path, "nonterminal")
-    assert "task" in o.members(tmp_path, "terminal_projection")
+    results.write_task_result(tmp_path, "task", "completed")  # bookkeeping never fails the transition
+    assert json.loads((tmp_path / "task_results/task.json").read_text(encoding="utf-8"))["status"] == "completed"
+    assert "task" in o.members(tmp_path, "nonterminal")  # an extra candidate, never a lost one
+    assert (tmp_path / "state/obligations" / o.REBUILD_MARK).exists()
     monkeypatch.setattr(o, "after_result", original)
-    results.write_task_result(tmp_path, "task", "completed")
-    assert "task" in o.members(tmp_path, "nonterminal")  # unchanged writes do not sweep leftover debt
-    from ouroboros.startup_migrations import prepare_startup_state
-    prepare_startup_state(tmp_path, rebuild=True)
+    assert prepare_startup_state(tmp_path)["imported"] is True  # the owed rebuild runs at the next start
     assert "task" not in o.members(tmp_path, "nonterminal")
+    assert not (tmp_path / "state/obligations" / o.REBUILD_MARK).exists()
+    assert prepare_startup_state(tmp_path)["imported"] is False  # nothing owed: no enumeration
+
+
+def test_an_unreadable_set_never_blocks_a_transition_and_the_next_start_rebuilds_it(tmp_path):
+    """A torn set file (power loss without a flush, a sync client) is bookkeeping in doubt: task
+    writes proceed, readers report it unavailable, and the next start re-imports it from results."""
+    from ouroboros.startup_migrations import prepare_startup_state
+
+    prepare_startup_state(tmp_path)
+    o.path(tmp_path, "nonterminal").write_bytes(b"")  # torn
+    results.write_task_result(tmp_path, "t1", "running")  # a start proceeds
+    results.write_task_result(tmp_path, "t0", "completed")
+    with pytest.raises(o.ObligationsUnavailable):
+        o.members(tmp_path, "nonterminal")
+    assert prepare_startup_state(tmp_path)["imported"] is True
+    assert set(o.members(tmp_path, "nonterminal")) == {"t1"}
+
+
+def test_a_set_torn_while_the_server_was_down_is_rebuilt_at_start(tmp_path):
+    """No writer noticed (the power was lost after the last write): the start itself finds the
+    unreadable set and re-imports it."""
+    from ouroboros.startup_migrations import prepare_startup_state
+
+    prepare_startup_state(tmp_path)
+    results.write_task_result(tmp_path, "t1", "running")
+    o.path(tmp_path, "nonterminal").write_bytes(b'{"t1": {"task_')  # torn mid-write
+    assert not (tmp_path / "state/obligations" / o.REBUILD_MARK).exists()
+    assert prepare_startup_state(tmp_path)["imported"] is True
+    assert set(o.members(tmp_path, "nonterminal")) == {"t1"}
+
+
+def test_a_torn_watermark_file_is_rewritten_and_the_import_runs(tmp_path):
+    from ouroboros.startup_migrations import prepare_startup_state, watermarks
+
+    prepare_startup_state(tmp_path)
+    results.write_task_result(tmp_path, "t1", "running")
+    (tmp_path / "state" / "migrations.json").write_bytes(b"")  # torn
+    assert prepare_startup_state(tmp_path)["imported"] is True
+    assert watermarks(tmp_path)["obligations_available"] is True
+    assert set(o.members(tmp_path, "nonterminal")) == {"t1"}
 
 
 def test_custody_open_before_append_closed_after(tmp_path, monkeypatch):

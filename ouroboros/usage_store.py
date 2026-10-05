@@ -56,7 +56,6 @@ from ouroboros.utils import append_jsonl, utc_now_iso
 log = logging.getLogger(__name__)
 
 STORE_REL = pathlib.Path("state/usage.sqlite")
-IMPORTED_REL = pathlib.Path("state/usage_attempts.jsonl.imported")
 IMPORT_LOCK_NAME = "usage_import.lock"
 SCHEMA_VERSION = 1
 TIER_ENFORCED, TIER_NAME = "enforced", "name"
@@ -754,9 +753,9 @@ def migrate_from_journal(root: pathlib.Path | str) -> Dict[str, Any]:
     ``BindingIndex`` fold of every live row, the marker continues the journal's
     ``[compaction_epoch, seq]``. An install whose pre-ledger telemetry import
     never completed imports that snapshot in the same job. The store is built
-    in a sibling file and published by an atomic rename; the journal is then
-    renamed ``usage_attempts.jsonl.imported`` (evidence; never read by an
-    ordinary path). Timing and counts go to ``logs/supervisor.jsonl``."""
+    in a sibling file and published by an atomic rename; the journal stays in
+    place (evidence an older release reads after a rollback; never read again
+    here). Timing and counts go to ``logs/supervisor.jsonl``."""
     from ouroboros.platform_layer import kernel_file_locks_enforced
 
     root = pathlib.Path(root)
@@ -802,7 +801,7 @@ def _import(root: pathlib.Path, path: pathlib.Path, tier: str) -> Dict[str, Any]
                 snapshot, {str(row.get("attempt_id") or "") for row in records})
             records = [*records, *({**row, "seq": len(records) + index, "ts": str(row.get("ts") or utc_now_iso())}
                                    for index, row in enumerate(missing, 1))]
-        retired = _retired_name(root) if journal_present else None
+        retired = None  # the journal stays in place: an older release still reads it after a rollback
         tmp = path.with_name(f"{path.name}.import-{os.getpid()}-{uuid.uuid4().hex[:8]}")
         try:
             counts = _build(tmp, tier, records, {
@@ -821,9 +820,6 @@ def _import(root: pathlib.Path, path: pathlib.Path, tier: str) -> Dict[str, Any]
 
             atomic_write_json(root / journal.IMPORT_REL, legacy_watermark, trailing_newline=True, fsync=True)
             append_jsonl(root / "logs" / "events.jsonl", {"type": "usage_import_completed", **legacy_watermark})
-        if retired:
-            os.replace(root / LEDGER_REL, root / "state" / retired)
-            _fsync_directory(path.parent)
     return {"status": "completed", "lock_tier": tier, "journal_rows": len(records), "retired_as": retired, **counts}
 
 
@@ -894,32 +890,20 @@ def _build(tmp: pathlib.Path, tier: str, records: Sequence[Dict[str, Any]], prov
     return counts
 
 
-def _retired_name(root: pathlib.Path) -> str:
-    name = IMPORTED_REL.name
-    if (root / "state" / name).exists():
-        name = f"{name}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid.uuid4().hex[:6]}"
-    return name
-
-
 def _retire_journal(root: pathlib.Path, status: Dict[str, Any]) -> Dict[str, Any]:
-    """After a completed import the journal is evidence: finish an interrupted
-    rename; a journal that changed after the import is left in place and
-    disclosed (never re-imported, never read)."""
+    """After a completed import the journal stays in place as evidence an older release
+    reads after a rollback; nothing here reads its bytes. A size other than the imported
+    one means an older release appended after a rollback: disclosed, never merged (the
+    export before a downgrade keeps money exact)."""
     journal = root / LEDGER_REL
-    if not journal.is_file():
+    try:
+        size = journal.stat().st_size
+    except FileNotFoundError:
         return {}
-    data = journal.read_bytes()
-    source = status.get("source") or {}
-    retired = status.get("retired_as")
-    if retired and len(data) == source.get("size") and hashlib.sha256(data).hexdigest() == source.get("sha256"):
-        target = root / "state" / retired
-        if target.exists():
-            target = root / "state" / _retired_name(root)
-        os.replace(journal, target)
-        _fsync_directory(journal.parent)
-        return {"journal": "retired", "retired_as": target.name}
-    return {"journal": "changed_after_import", "journal_size": len(data),
-            "journal_sha256": hashlib.sha256(data).hexdigest()}
+    imported = (status.get("source") or {}).get("size")
+    if size == imported:
+        return {"journal": "kept"}
+    return {"journal": "changed_after_import", "journal_size": size, "imported_size": imported}
 
 
 def _fsync_directory(directory: pathlib.Path) -> None:
@@ -954,10 +938,16 @@ def export_journal(root: pathlib.Path | str) -> Dict[str, Any]:
 
     root = pathlib.Path(root)
     path = root / STORE_REL
-    if (root / LEDGER_REL).exists():
-        raise UsageAccountingError(f"refusing to overwrite an existing journal: {root / LEDGER_REL}")
+    kept = root / LEDGER_REL
+    if kept.exists() and _identity(path) is None:
+        raise UsageAccountingError(f"refusing to overwrite an existing journal: {kept}")
     with hold(root, migrate=False) as txn:
         provenance = txn.meta("import") or {}
+        if kept.exists():
+            if kept.stat().st_size != (provenance.get("source") or {}).get("size"):
+                raise UsageAccountingError(f"refusing to overwrite a journal that changed after the import: {kept}")
+            # The journal the import kept in place: set aside, never lost.
+            os.replace(kept, kept.with_name(f"{kept.name}.pre-export-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"))
         records = txn.conn.execute("SELECT * FROM attempts ORDER BY seq_first, seq").fetchall()
         aggregates = [_decode(record) for record in sorted(records, key=lambda record: record["seq"])
                       if record["kind"] == "usage_baseline_group"]

@@ -313,7 +313,7 @@ def test_the_import_is_idempotent_and_reports_its_timing_and_counts(root):
     source = journal.read_bytes()
     report = usage_store.migrate_from_journal(root)
     assert report["status"] == "completed" and report["attempts"] == 5 and report["journal_rows"] == 10
-    assert not journal.exists() and (root / usage_store.IMPORTED_REL).read_bytes() == source
+    assert journal.read_bytes() == source  # kept in place: an older release still reads it after a rollback
     [row] = _supervisor_rows(root)
     assert row["phase"] == "completed" and row["duration_seconds"] >= 0 and row["attempts"] == 5
     with usage_store.read(root) as txn:
@@ -396,25 +396,20 @@ def test_an_import_interrupted_before_publication_is_redone_from_scratch(root, m
     assert {row["attempt_id"] for row in ledger_rows(root)} == {"settled", "open", "lost", "wave", "sess"}
 
 
-def test_an_interrupted_journal_rename_is_finished_and_never_reimported(root, monkeypatch):
+def test_a_kept_journal_is_never_reimported_and_an_older_release_append_is_disclosed(root):
+    """The import leaves the journal in place (an older release reads it after a rollback); a
+    later start never re-imports it, and rows an older release appended are disclosed, not merged."""
     journal = write_journal(root, _journal_rows())
-    replace = os.replace
-
-    def refuse_retire(source, target):
-        if pathlib.Path(source) == journal:
-            raise OSError("the process died before the rename")
-        return replace(source, target)
-
-    monkeypatch.setattr(usage_store.os, "replace", refuse_retire)
-    with pytest.raises(OSError):
-        usage_store.migrate_from_journal(root)
-    monkeypatch.setattr(usage_store.os, "replace", replace)
-    assert journal.exists() and (root / usage_store.STORE_REL).exists()
-    # The published store serves money; a write lands before the next start.
-    held = ua.reserve_attempt(request(root))
+    source = journal.read_bytes()
+    assert usage_store.migrate_from_journal(root)["status"] == "completed"
+    held = ua.reserve_attempt(request(root))  # the store serves money; the journal is not written
     report = usage_store.migrate_from_journal(root)
-    assert report["status"] == "already_completed" and report["journal"] == "retired"
-    assert not journal.exists() and (root / usage_store.IMPORTED_REL).exists()
+    assert report["status"] == "already_completed" and report["journal"] == "kept"
+    assert journal.read_bytes() == source
+    with journal.open("ab") as handle:  # a rollback: the older release appended one row
+        handle.write((json.dumps({"seq": 99, "attempt_id": "older", "state": "reserved"}) + "\n").encode())
+    report = usage_store.migrate_from_journal(root)
+    assert report["journal"] == "changed_after_import" and report["journal_size"] > len(source)
     assert sorted(row["attempt_id"] for row in ledger_rows(root)) == sorted(
         ["settled", "open", "lost", "wave", "sess", held.attempt_id])
 

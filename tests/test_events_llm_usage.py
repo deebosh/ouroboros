@@ -242,7 +242,7 @@ def test_cost_breakdown_refuses_nonfinite_legacy_cost_without_import(tmp_path, c
     from ouroboros import usage_store
     from ouroboros.gateway.history import make_cost_breakdown_endpoint
     from ouroboros.usage_journal import IMPORT_REL
-    from ouroboros.usage_ledger import LEDGER_REL, QUARANTINE_REL, UsageNonFiniteMoney
+    from ouroboros.usage_ledger import LEDGER_REL, QUARANTINE_REL, UsageLockUnavailable, UsageNonFiniteMoney
 
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
@@ -272,7 +272,8 @@ def test_cost_breakdown_refuses_nonfinite_legacy_cost_without_import(tmp_path, c
             "error_code": "ledger_unavailable",
         }
         refused = [record for record in caplog.records if record.exc_info]
-        assert [type(record.exc_info[1]) for record in refused] == [UsageNonFiniteMoney]
+        # A display never re-runs the refused history import: it reports the store unavailable.
+        assert [type(record.exc_info[1]) for record in refused] == [UsageLockUnavailable]
 
     assert events_path.read_bytes() == source
     archived = list((tmp_path / "archive" / "usage_import").glob("*/events.jsonl"))

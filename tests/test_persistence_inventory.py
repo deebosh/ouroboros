@@ -610,7 +610,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # state/obligations.lock, and state/migrations.json; section-2 rows own all three.
 # 318 -> 320 (owned-stop review fix): ``state/owned_processes.pending`` and its lock-free
 # ``*.*.json`` registrations written when the custody lock is held; one section-2 row.
-EXPECTED_SCAN_PATHS = 320
+# 320 -> 321 (obligations rebuild): ``state/obligations/rebuild.owed``, left by a transition whose
+# set write failed so the next start rebuilds the sets; it joins the obligations section-2 row.
+EXPECTED_SCAN_PATHS = 321
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

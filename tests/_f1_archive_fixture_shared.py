@@ -187,12 +187,12 @@ def prepare_root(root: Path, *, generations: int, rows_per_generation: int,
     (aggregates + live tail) and the three seal identities. A store an earlier
     boot of this synthetic root created is removed so the journal is imported
     exactly as on an upgrade."""
-    from ouroboros.usage_store import IMPORTED_REL, STORE_REL
+    from ouroboros.usage_store import STORE_REL
     from tests._usage_store_testing import write_compacted_journal
 
     (root / "state").mkdir(parents=True, exist_ok=True)
     (root / "logs").mkdir(parents=True, exist_ok=True)
-    for stale in (root / STORE_REL, root / IMPORTED_REL):
+    for stale in (root / STORE_REL,):
         if stale.exists():
             stale.unlink()
     facts = build_chain(root, generations=generations,

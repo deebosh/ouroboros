@@ -95,3 +95,18 @@ def test_settlement_preparation_survives_the_callers_rlock(env, monkeypatch):
     assert counts == {'root': 1}
     with queue._queue_lock:
         assert queue_transitions.task_settlement_liveness('unprepared') is None
+
+
+def test_unconsumed_settlement_preparations_are_bounded_per_thread(tmp_path):
+    """An unlocked probe whose locked follow-up never comes keeps its parsed result bodies only up to
+    the memory bound; the newest stay (a multi-occupant settlement consumes its own right away)."""
+    from supervisor import task_ownership
+
+    for index in range(task_ownership._PREPARED_READS_MAX + 40):
+        task_ownership.settlement_reads(tmp_path, f"t{index}", locked=False,
+                                        prepared=task_ownership.TaskOwnershipRead(tmp_path))
+    pending = task_ownership._SETTLEMENT_READS.pending
+    assert len(pending) == task_ownership._PREPARED_READS_MAX
+    newest = f"t{task_ownership._PREPARED_READS_MAX + 39}"
+    assert task_ownership.settlement_reads(tmp_path, newest, locked=True) is not None
+    pending.clear()

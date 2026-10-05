@@ -113,9 +113,7 @@ def _classify(root, records, *, rebuild=False, replace_results=False):
             try:
                 prior = o._read(root, name, missing_ok=True)
             except o.ObligationsUnavailable:
-                if not rebuild:
-                    raise
-                prior = {}
+                prior = {}  # an unreadable set is replaced by this complete classification
             if not (rebuild or replace_results) or name in o.RECEIPT_SETS:
                 rows.update(prior)  # interrupted publications remain candidates
             elif name == "delegated_runs":
@@ -142,9 +140,25 @@ def prepare_startup_state(root, *, rebuild=False, repo_dir=None, strict=True):
         return {"imported": False, "status": "unavailable"}
 
 
+def _readable(root, name):
+    try:
+        with o.locked(root):
+            o._read(root, name)
+        return True
+    except o.ObligationsUnavailable:
+        return False
+
+
 def _prepare_startup_state(root, *, rebuild):
     root = Path(root)
-    marks = watermarks(root)
+    try:
+        marks = watermarks(root)
+    except ValueError:
+        # A torn watermark file is rewritten empty: every job below then runs and restamps it.
+        log.warning("Migration watermarks unreadable; rewriting them and re-running the lifecycle import")
+        from ouroboros.utils import atomic_write_json
+        atomic_write_json(root / "state" / "migrations.json", {}, trailing_newline=True)
+        marks = {}
     saved_sha = (read_json_dict(root / "state/state.json") or {}).get("current_sha")
     # Every aware checkout stamps this SHA. A mismatch means an unaware body
     # ran between us (even at the same major), or a harmless interrupted stamp.
@@ -152,9 +166,10 @@ def _prepare_startup_state(root, *, rebuild):
     if foreign_body:
         stamp(root, cancel_latches_generation=None, obligations_generation=None)
         marks = watermarks(root)
-    import_needed = (rebuild or marks.get("obligations_available") is False
-                     or marks.get("obligations_generation") != OBLIGATIONS_GENERATION
-                     or any(not o.path(root, name).exists() for name in o.BOOT_SETS))
+    unreadable = {name for name in o.BOOT_SETS if not _readable(root, name)}  # missing, torn or corrupt
+    rebuild_owed = (root / "state" / "obligations" / o.REBUILD_MARK).exists()
+    import_needed = (rebuild or rebuild_owed or bool(unreadable) or marks.get("obligations_available") is False
+                     or marks.get("obligations_generation") != OBLIGATIONS_GENERATION)
     cancel_needed = marks.get("cancel_latches_generation") != SCHEMA_GENERATION
     if not import_needed and not cancel_needed:
         return {"imported": False}
@@ -163,14 +178,16 @@ def _prepare_startup_state(root, *, rebuild):
     append_jsonl(root / "logs/supervisor.jsonl", {"ts": utc_now_iso(), "type": "startup_migration",
                                                 "phase": "started", "job": "obligations"})
     records = list(_result_records(root))
-    report = _classify(root, records, rebuild=rebuild, replace_results=foreign_body) if import_needed else {}
+    report = (_classify(root, records, rebuild=rebuild, replace_results=foreign_body or rebuild_owed)
+              if import_needed else {})
     migrate_cancel_latches(root, records=records, rebuild=rebuild)
     if import_needed:
         from ouroboros.delegate_custody_current import rebuild as rebuild_custody
-        report["custody_open"] = rebuild_custody(root, replace=rebuild)
+        report["custody_open"] = rebuild_custody(root, replace=rebuild or "custody_open" in unreadable)
         with o.locked(root):
             report["unknowns"] = len(o._read(root, "unknowns"))
         stamp(root, obligations_generation=OBLIGATIONS_GENERATION)
+        (root / "state" / "obligations" / o.REBUILD_MARK).unlink(missing_ok=True)
     append_jsonl(root / "logs/supervisor.jsonl", {"ts": utc_now_iso(), "type": "startup_migration",
         "phase": "completed", "job": "obligations", "counts": report, "duration_seconds": time.monotonic() - started})
     stamp(root, obligations_available=True, **({"observed_state_sha": saved_sha} if saved_sha else {}))

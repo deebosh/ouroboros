@@ -505,7 +505,11 @@ def sync_runtime_dependencies(reason: str) -> Tuple[bool, str]:
     try:
         from ouroboros.startup_migrations import watermarks, stamp
         fingerprint = _dependency_fingerprint(req_path, cmd)
-        if watermarks(_go().DRIVE_ROOT).get("dependencies") == fingerprint:
+        try:
+            synced = watermarks(_go().DRIVE_ROOT).get("dependencies")
+        except ValueError:
+            synced = None  # an unreadable watermark file means "not known synced": sync
+        if synced == fingerprint:
             return True, "unchanged:" + source
         from ouroboros.platform_layer import kill_process_tree, subprocess_new_group_kwargs
         from ouroboros.tools.shell import _active_subprocesses, _subprocess_lock
@@ -526,7 +530,10 @@ def sync_runtime_dependencies(reason: str) -> Tuple[bool, str]:
                 _active_subprocesses.discard(proc)
         if returncode != 0:
             raise subprocess.CalledProcessError(returncode, cmd)
-        stamp(_go().DRIVE_ROOT, dependencies=fingerprint)
+        try:
+            stamp(_go().DRIVE_ROOT, dependencies=fingerprint)
+        except Exception:
+            log.warning("Dependency fingerprint not recorded; the next sync runs pip again", exc_info=True)
         _go().append_jsonl(
             _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
             {
@@ -557,8 +564,18 @@ def import_test() -> Dict[str, Any]:
         cwd=str(_go().REPO_DIR),
         capture_output=True, text=True,
     )
+    if r.returncode != 0:
+        _forget_dependency_fingerprint()  # a broken environment is re-synced next time, never skipped
     return {"ok": (r.returncode == 0), "stdout": r.stdout, "stderr": r.stderr,
             "returncode": r.returncode}
+
+
+def _forget_dependency_fingerprint() -> None:
+    try:
+        from ouroboros.startup_migrations import stamp
+        stamp(_go().DRIVE_ROOT, dependencies=None)
+    except Exception:
+        log.warning("Dependency fingerprint not cleared after a failed import test", exc_info=True)
 
 
 def safe_restart(
@@ -639,10 +656,15 @@ def _record_checkout_facts(facts: dict) -> None:
 
     try:
         _go().update_state(lambda live: live.update(facts))
-        from ouroboros.startup_migrations import stamp
-        stamp(_go().DRIVE_ROOT, observed_state_sha=facts.get("current_sha"))
     except StateUnavailable:
         log.warning("Checkout facts not recorded in state: runtime state unavailable", exc_info=True)
+        return
+    try:
+        from ouroboros.startup_migrations import stamp
+        stamp(_go().DRIVE_ROOT, observed_state_sha=facts.get("current_sha"))
+    except Exception:
+        # Bookkeeping never fails a checkout: without the stamp the next start re-imports.
+        log.warning("Observed checkout SHA not stamped; the next start re-imports the obligation sets", exc_info=True)
 
 
 def _dependency_fingerprint(req_path, cmd):

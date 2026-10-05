@@ -261,7 +261,7 @@ def test_the_next_start_finishes_a_stamped_stop(tmp_path, monkeypatch, backend_c
     began = time.monotonic()
     counts = owned_shutdown.finish_unconfirmed_stops(data)
     assert time.monotonic() - began < 3.0 and attempts == [path.stem]
-    assert counts["imported"] is None and counts["retried"] == 1
+    assert "imported" not in counts and counts["retried"] == 1
     if backend_confirms:
         assert counts["confirmed"] == 1 and counts["unconfirmed"] == 0
         assert path.stem not in _by_id(data) and not path.exists()
@@ -698,6 +698,7 @@ def test_every_door_joins_the_one_stop_and_the_boot_retry_precedes_launches():
 
     lifespan = inspect.getsource(server.lifespan)
     boot = lifespan.index("finish_unconfirmed_stops(lifespan_drive_root)")
+    assert boot < lifespan.index("start_inherited_import(lifespan_drive_root)")
     for later in ("auto_start_local_model", "warm_owned_daemon()", "create_host_service_app(",
                   "_reload_extensions(lifespan_drive_root", "_start_supervisor_if_needed(settings)"):
         assert boot < lifespan.index(later), later

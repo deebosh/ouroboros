@@ -71,8 +71,38 @@ def test_import_runs_once_and_never_walks_again(tmp_path, monkeypatch):
     _record(root / "task_drives/t2/state" / NAME, "late")
     monkeypatch.setattr(os, "walk", lambda *_a, **_k: pytest.fail("the import walks only once"))
     assert owned_shutdown.import_inherited_records(root) is None
-    assert owned_shutdown.finish_unconfirmed_stops(root)["imported"] is None
+    assert owned_shutdown.start_inherited_import(root) is None
+    assert owned_shutdown.finish_unconfirmed_stops(root)["retried"] == 0
     assert _indexed(root) == {first}
+
+
+def test_the_inherited_walk_runs_off_the_ready_path(tmp_path, monkeypatch):
+    """A first start answers before the walk ends: the retry never walks, the background import walks once."""
+    import threading
+
+    from ouroboros import owned_shutdown
+
+    root = tmp_path / "data"
+    first = _record(root / "task_drives/t1/state" / NAME, "inherited")
+    release, walking = threading.Event(), threading.Event()
+    original = os.walk
+
+    def slow_walk(*args, **kwargs):
+        walking.set()
+        assert release.wait(10), "the walk was waited on"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(os, "walk", slow_walk)
+    assert owned_shutdown.finish_unconfirmed_stops(root)["retried"] == 0
+    assert not walking.is_set(), "the stamped-stop retry walked the disk"
+    thread = owned_shutdown.start_inherited_import(root)
+    assert walking.wait(10) and thread.is_alive()  # the caller already returned
+    release.set()
+    thread.join(10)
+    assert _indexed(root) == {first}
+    row = json.loads((root / "logs" / "supervisor.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert row["type"] == "owned_records_imported" and row["records"] == 1
+    assert owned_shutdown.start_inherited_import(root) is None
 
 
 def test_import_does_not_stat_a_candidate_in_every_unrelated_directory(tmp_path, monkeypatch):

@@ -22,7 +22,8 @@ without waiting for a lock once the deadline passed, and returns: the exit owner
 after the stop began (the owner Restart stops before the server exits) is born stamped. The
 next start's ``finish_unconfirmed_stops`` retries every stamped record under the same bound
 before admission and before any extension or replacement process starts; what it cannot
-confirm stays recorded and counted.
+confirm stays recorded and counted. Records an older release left on disk are indexed once by
+``start_inherited_import`` on a background thread, so no start waits on that walk.
 """
 
 from __future__ import annotations
@@ -411,7 +412,7 @@ def _start(name: str, fn: Callable[[], Any]) -> threading.Thread:
         try:
             fn()
         except Exception:
-            log.warning("Owned-work stop step %s failed; its records stay", name, exc_info=True)
+            log.warning("Owned-work step %s failed; its records stay", name, exc_info=True)
 
     thread = threading.Thread(target=run, name=name, daemon=True)
     thread.start()
@@ -538,8 +539,8 @@ def import_inherited_records(drive_root: Any) -> Optional[int]:
     """Index executor records left on disk before the set existed, once.
 
     Runs while the set lacks its import mark (a missing or unreadable file), from the
-    boot hook only, never on exit: one walk of ``data/state`` and ``data/task_drives``
-    that matches named directory symlinks without descending through them."""
+    boot's background thread only, never on exit: one walk of ``data/state`` and
+    ``data/task_drives`` that matches named directory symlinks without descending through them."""
     from ouroboros import workspace_executor as executor
 
     root = installation_root(drive_root)
@@ -569,23 +570,42 @@ def import_inherited_records(drive_root: Any) -> Optional[int]:
 def finish_unconfirmed_stops(drive_root: Any) -> Dict[str, Any]:
     """The next start's bounded retry of every stop a previous generation requested.
 
-    Imports inherited records once, retries each record stamped ``stop_requested_at`` or
-    ``unconfirmed_since`` under the stop's own deadline, forgets confirmed exits, keeps the
-    rest stamped and writes one ``owned_stops_finished`` supervisor row when there was work."""
-    counts: Dict[str, Any] = {"imported": None, "retried": 0, "confirmed": 0, "unconfirmed": 0}
+    Retries each record stamped ``stop_requested_at`` or ``unconfirmed_since`` under the
+    stop's own deadline, forgets confirmed exits, keeps the rest stamped and writes one
+    ``owned_stops_finished`` supervisor row when there was work. It never walks the disk."""
+    counts: Dict[str, Any] = {"retried": 0, "confirmed": 0, "unconfirmed": 0}
     try:
         root = installation_root(drive_root)
-        counts["imported"] = import_inherited_records(root)
         pending = [dict(entry) for entry in _read_document(root)["records"].values()
                    if entry.get("stop_requested_at") or entry.get("unconfirmed_since")]
         if pending:
             remaining = _stop_records(root, pending, time.monotonic() + _stop_budget_sec())
             counts.update(retried=len(pending), confirmed=len(pending) - len(remaining),
                           unconfirmed=len(remaining))
-        if pending or counts["imported"] is not None:
             append_jsonl(root / "logs" / "supervisor.jsonl", {
                 "ts": utc_now_iso(), "type": "owned_stops_finished", **counts})
     except Exception:
         log.warning("Finishing unconfirmed owned stops failed; their records stay for the next start",
                     exc_info=True)
     return counts
+
+
+def start_inherited_import(drive_root: Any) -> Optional[threading.Thread]:
+    """Index inherited records on a background thread; None when the set already carries the mark.
+
+    The walk can take minutes on a cold disk, and inherited records carry no stop stamp, so
+    the ready path never waits on it. An exit before it lands leaves the mark unset: those
+    processes stay running until the next start indexes them and a later exit stops them."""
+    root = installation_root(drive_root)
+    if _read_document(root).get("inherited_import"):
+        return None
+    began = time.monotonic()
+
+    def run() -> None:
+        records = import_inherited_records(root)
+        if records is not None:
+            append_jsonl(root / "logs" / "supervisor.jsonl", {
+                "ts": utc_now_iso(), "type": "owned_records_imported", "records": records,
+                "seconds": round(time.monotonic() - began, 3)})
+
+    return _start("owned-records-import", run)
