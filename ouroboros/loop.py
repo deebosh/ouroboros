@@ -627,20 +627,6 @@ def run_llm_loop(
                     task_id=task_id, emit_progress=emit_progress, transport_episode=transport_wait):
                 transport_wait = None  # The leaf wake owns resumption, without a provider probe.
                 continue
-            if (msg is None and last_error_kind == "llm_output_exhausted"
-                    and not provider_no_call_source(accumulated_usage, False)[0]):
-                # Output exhaustion is no outage: no configured-route walk, no provider terminal.
-                # One host fact, then the next ordinary round decides under the existing round,
-                # time and money limits. A round still holding an unresolved attempt may start no
-                # new generation, so it keeps the recovery below (provider_no_call_source decides).
-                if transport_wait is not None:  # the provider answered, so a wait episode ends
-                    transport_wait = _reconcile_transport_wait(
-                        transport_wait, tools._ctx, msg_present=False, error_kind=last_error_kind,
-                        drive_logs=drive_logs, task_id=task_id, model=active_model, emit_progress=emit_progress)
-                _append_or_merge_user_message(
-                    messages, _output_exhausted_notice(accumulated_usage.get("_last_llm_output_exhausted")))
-                pending_no_tool_budget = True  # an unfinished no-tool round keeps the same budget tail (#1223)
-                continue
             limit_ctx.active_model, limit_ctx.active_use_local = active_model, active_use_local
             # Configured routes before any wait; an active episode owns its own outcome.
             (msg, active_model, active_use_local, context_fit_plan, active_context_mode,
@@ -651,6 +637,21 @@ def run_llm_loop(
             # Delivery/finalization in the same round must use that applied route.
             limit_ctx.active_model = ctx.active_model = active_model
             limit_ctx.active_use_local = ctx.active_use_local = active_use_local
+            if (msg is None and str(accumulated_usage.get("_last_llm_error_kind") or "") == "llm_output_exhausted"
+                    and not provider_no_call_source(accumulated_usage, False)[0]):
+                # Output exhaustion is no outage, the primary's (no route walk) or a configured
+                # candidate's (the walk keeps its kind): no wait, no provider terminal. One host fact,
+                # then the next ordinary round decides under the existing round, time and money
+                # limits. A round still holding an unresolved attempt may start no new generation,
+                # so it keeps the recovery below (provider_no_call_source decides).
+                if transport_wait is not None:  # the provider answered, so a wait episode ends
+                    transport_wait = _reconcile_transport_wait(
+                        transport_wait, tools._ctx, msg_present=False, error_kind="llm_output_exhausted",
+                        drive_logs=drive_logs, task_id=task_id, model=active_model, emit_progress=emit_progress)
+                _append_or_merge_user_message(
+                    messages, _output_exhausted_notice(accumulated_usage.get("_last_llm_output_exhausted")))
+                pending_no_tool_budget = True  # an unfinished no-tool round keeps the same budget tail (#1223)
+                continue
             if msg is None and transport_wait is not None and _transport_wait_step(
                 transport_wait, tools=tools,
                 error_kind=str(accumulated_usage.get("_last_llm_error_kind") or ""),

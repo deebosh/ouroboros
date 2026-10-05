@@ -251,9 +251,9 @@ class _LocalLaneMixin:
         This explicit stage may perform bounded, non-generating loopback I/O. The payload
         builder and shared context arithmetic remain pure. ``compactor`` (a rendered Nano
         whose ``payload`` skipped the approximate compactor) builds today's compacted
-        candidate on demand: it is what goes out when the instance cannot count exactly,
-        or, once and re-measured, after an exact shortfall; a second shortfall is the
-        typed refusal. Low, Max and an exact fit never reach it.
+        candidate on demand, measured once as today: when the instance cannot count the
+        whole candidate, or after an exact shortfall; a second shortfall is the typed
+        refusal. Low, Max and an exact fit never reach it.
         """
         from ouroboros.local_model import get_manager
 
@@ -263,7 +263,7 @@ class _LocalLaneMixin:
         candidate = _finalized_physical_candidate(target, payload, "chat.completions")
         evidence = measure(candidate) if callable(measure) else None
         if not (isinstance(evidence, dict) and evidence.get("supported")):
-            return candidate if compactor is None else _finalized_physical_candidate(target, compactor(), "chat.completions")
+            return candidate if compactor is None else self._finalize_local_candidate(target, compactor())
         target["local_input_measurement"] = evidence
         try:
             # Rebuild from the original prepared source so the exact measured

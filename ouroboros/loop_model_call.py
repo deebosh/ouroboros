@@ -502,9 +502,11 @@ def _recover_failed_round(limit_ctx: Any, tools: ToolRegistry, msg: Any, episode
             round_idx=limit_ctx.round_idx, event_queue=limit_ctx.event_queue, accumulated_usage=usage,
             task_type=limit_ctx.task_type, emit_progress=emit_progress, context_fit_plan=context_fit_plan,
             active_context_mode=active_context_mode)
-        if msg is None and not _walk_fenced(ctx, usage) and (kind in _ROUND_WAIT_KINDS or usage.get("_pending_transport_outcome")):
-            # The round's own outage or unknown outcome owns its wait: a later
-            # candidate's failure never re-aims it (nor the probe's expected route).
+        if (msg is None and not _walk_fenced(ctx, usage) and usage.get("_last_llm_error_kind") != "llm_output_exhausted"
+                and (kind in _ROUND_WAIT_KINDS or usage.get("_pending_transport_outcome"))):
+            # The round's own outage or unknown outcome owns its wait: a later candidate's
+            # failure never re-aims it (nor the probe's expected route). A candidate that
+            # answered but spent its reply allowance keeps that kind: the loop's next round reads it.
             outstanding = usage.get("_pending_transport_outcome") or pending
             usage["_last_llm_error_kind"] = "provider_outcome_unknown" if outstanding else kind
             if outstanding:

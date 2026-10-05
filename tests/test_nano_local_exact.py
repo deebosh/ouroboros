@@ -111,8 +111,20 @@ def test_without_exact_support_todays_compacted_path_is_unchanged(lane):
     lane["count"] = lambda payload: None
     _send(lane, _nano(16_384))
     [sent] = lane["sent"]
-    assert len(lane["measured"]) == 1 and COMPACTED in sent["messages"][0]["content"]
+    assert len(lane["measured"]) == 2 and COMPACTED in sent["messages"][0]["content"]
+    assert lane["measured"][1]["messages"] == sent["messages"]  # today's one measurement of the compacted twin
     assert sent["messages"] == _todays_compacted(lane) and sent["max_tokens"] == 4_096
+
+
+def test_a_compacted_twin_the_instance_can_count_keeps_its_exact_allowance(lane):
+    # The whole candidate cannot be counted (a transient refusal), its compacted twin can: today's path measured
+    # that twin, so its exact count (not the small approximate estimate) still sizes the reply.
+    counts = iter((None, 200_000))
+    lane["window"], lane["count"] = 262_144, lambda payload: next(counts)
+    _send(lane, _nano(262_144))
+    [sent] = lane["sent"]
+    assert len(lane["measured"]) == 2 and lane["measured"][1]["messages"] == sent["messages"]
+    assert sent["max_tokens"] == 262_144 - 200_000  # exact: no slack, below the 65,536 ceiling
 
 
 @pytest.mark.parametrize("physical", [None, ua.PhysicalAttemptContext(

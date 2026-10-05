@@ -362,3 +362,36 @@ def test_an_owner_terminal_names_output_exhaustion_not_a_provider_failure():
     assert "classified the failure as an empty response." in empty
     unknown = loop_transport.provider_failure_hint({"_last_llm_error": "x", "_last_llm_error_kind": "not_a_kind"})
     assert "classified the failure as a provider failure." in unknown
+
+
+def test_a_configured_candidate_that_exhausts_reaches_the_next_round_not_a_redial(tmp_path, no_sleep, monkeypatch):
+    """The real configured-route walk: the primary fails before dispatch, the fallback candidate
+    answers but spends its reply allowance. That candidate's kind survives the walk (it is no
+    outage), so the next ORDINARY round carries the host fact; the exhausted request is not
+    redialed inside the same round under the primary's wait."""
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "other/model")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    monkeypatch.setattr(loop_transport, "interruptible_wait_sleep", lambda _sec, _wake: False)
+    from dataclasses import replace
+    from tests.test_context_fit_v664 import _plan
+
+    plan = _plan(preferred="max", window=1_000_000, known=True)
+
+    def rebind(plan_, tools, _messages, *, model, use_local, **kwargs):  # a route switch keeps the captured core
+        rebound = replace(plan_, model=model, route_fp=f"route-{model}")
+        tools._ctx.context_fit_plan = rebound
+        return rebound, "max"
+
+    monkeypatch.setattr(loop_mod, "_rebind_context_fit_plan", rebind)
+    llm = _ScriptedLLM(_released_connect, _incident_reply(0), OK_RESPONSE)
+    kwargs = _loop_kwargs(tmp_path, llm, [])
+    kwargs["tools"]._ctx.context_fit_plan = plan
+    result, usage, _trace = run_llm_loop(**kwargs)
+
+    assert result == "done" and llm.calls == 3
+    primary, fallback, next_round = llm.requests
+    assert fallback["model"] == "other/model" and _host_facts(fallback["messages"]) == []
+    assert len(_host_facts(next_round["messages"])) == 1  # the fact reached the next round
+    assert [row.get("phase") for row in _events(tmp_path, "network_wait")] in ([], ["entered", "ended"])
+    assert len(_events(tmp_path, "llm_round")) == 1  # one usable round; the exhausted one consumed its own

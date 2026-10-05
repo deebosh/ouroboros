@@ -276,7 +276,7 @@ def fallback_chain_allowed(
         return False
     if last_error_kind == "provider_outcome_unknown":
         return new_generation_after_unknown(ctx, accumulated_usage)
-    return last_error_kind not in ("context_overflow", "deadline_exhausted")
+    return last_error_kind not in ("context_overflow", "deadline_exhausted", "llm_output_exhausted")
 
 
 def reconcile_transport_wait(

@@ -311,3 +311,41 @@ def test_the_forced_lookahead_and_send_share_one_measurement_allowance_and_ident
     # Main's PLANNED allowance is measured on the canonical transcript, the sent one on the sealed
     # candidate (the wire projection differs by a few hundred tokens at most, well inside the slack).
     assert abs(ctx.accumulated_usage["_context_reply_allowance_tokens"] - request.max_completion_tokens) < 1_000
+
+
+@pytest.mark.parametrize("mode", ["nano", "max"])
+def test_the_budget_probe_prices_the_reply_the_window_leaves(monkeypatch, tmp_path, mode):
+    """The last-fit probe (a priced copy of the transcript, never sent) is built under its own Main
+    measurement: a rendered Nano reserves the reply its 128K window leaves, Max the whole ceiling."""
+    from dataclasses import replace
+
+    from tests.test_context_fit_v664 import _plan
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "unused")
+    monkeypatch.setattr("ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0})
+    plan = replace(_plan(preferred=mode, window=128_000, known=True), initial_mode=mode)
+    owner_ctx = SimpleNamespace(context_fit_plan=plan, active_context_mode=mode, task_metadata={}, model_turn_state=None)
+    priced = []
+
+    def fits(**kwargs):
+        if kwargs.get("request") is not None:  # the exact probe: record its price basis and stop here
+            priced.append(kwargs["request"])
+            raise _Captured()
+        return kwargs.get("reservation_count", 1) == 1  # the proxy: one fits, two do not, so the probe runs
+
+    monkeypatch.setattr(task_pacing, "wrapup_reservation_fits", fits)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    messages = [{"role": "system", "content": "policy " * 2_000}, {"role": "user", "content": "wrap up " * 40_000}]
+    ctx = _ctx(drive_logs=logs, llm=LLMClient(api_key="unused"), active_model=plan.model, task_type="task",
+               tools=SimpleNamespace(_ctx=owner_ctx), messages=[dict(message) for message in messages], tool_schemas=_TOOLS)
+    ceiling = task_pacing.resolve_cost_ceiling(None, normalize_budget_profile(None), root_cap_usd=50.0)
+    with usage_accounting.usage_scope(usage_accounting.UsageScope(
+        drive_root=tmp_path, task_id="task1", root_task_id="task1",
+    )), pytest.raises(_Captured):
+        _check_budget_limits(ctx, None, ceiling)
+    [probe] = priced
+    if mode == "nano":
+        assert 8_192 < probe.max_completion_tokens < 65_536  # the window's room, not the ceiling
+    else:
+        assert probe.max_completion_tokens == 65_536
