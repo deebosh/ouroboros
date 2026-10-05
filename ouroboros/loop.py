@@ -312,6 +312,23 @@ def _provider_unavailable_result(
     return with_terminal_notice(text, usage, llm_trace)
 
 
+def _output_exhausted_notice(facts: Any) -> str:
+    """The one host fact the next ordinary round reads after a reply that ended on its
+    output limit before any visible text or tool call (owner decision 2026-10-05, Q2=A).
+
+    Names only what that attempt's own records carry (``_usage_response.output_exhaustion_facts``):
+    the allowance its receipt shows was sent and the reasoning tokens its provider reported.
+    Byte-stable apart from those numbers; how to continue stays Ouroboros's decision (BIBLE P5).
+    """
+    facts = facts if isinstance(facts, dict) else {}
+    sent, reasoning = facts.get("sent_allowance_tokens"), facts.get("reasoning_tokens")
+    return ("[SYSTEM NOTICE]\nThe provider ended your previous reply on its length limit before any "
+            "visible text or tool call; nothing from it was kept."
+            + (f" The reply allowance sent was {sent} tokens." if sent else "")
+            + (f" The provider reported {reasoning} reasoning tokens for it." if reasoning is not None else "")
+            + " Decide how to continue: a smaller step, a tool, or an honest final report.")
+
+
 def _apply_runtime_overrides(
     ctx: Any,
     active_model: str,
@@ -609,6 +626,20 @@ def run_llm_loop(
                     tools, error_kind=last_error_kind, drive_logs=drive_logs,
                     task_id=task_id, emit_progress=emit_progress, transport_episode=transport_wait):
                 transport_wait = None  # The leaf wake owns resumption, without a provider probe.
+                continue
+            if (msg is None and last_error_kind == "llm_output_exhausted"
+                    and not provider_no_call_source(accumulated_usage, False)[0]):
+                # Output exhaustion is no outage: no configured-route walk, no provider terminal.
+                # One host fact, then the next ordinary round decides under the existing round,
+                # time and money limits. A round still holding an unresolved attempt may start no
+                # new generation, so it keeps the recovery below (provider_no_call_source decides).
+                if transport_wait is not None:  # the provider answered, so a wait episode ends
+                    transport_wait = _reconcile_transport_wait(
+                        transport_wait, tools._ctx, msg_present=False, error_kind=last_error_kind,
+                        drive_logs=drive_logs, task_id=task_id, model=active_model, emit_progress=emit_progress)
+                _append_or_merge_user_message(
+                    messages, _output_exhausted_notice(accumulated_usage.get("_last_llm_output_exhausted")))
+                pending_no_tool_budget = True  # an unfinished no-tool round keeps the same budget tail (#1223)
                 continue
             limit_ctx.active_model, limit_ctx.active_use_local = active_model, active_use_local
             # Configured routes before any wait; an active episode owns its own outcome.

@@ -17,11 +17,17 @@ from __future__ import annotations
 
 import copy
 import json
+import queue
 
+import httpx
 import pytest
 
+import ouroboros.loop as loop_mod
 import ouroboros.loop_llm_call as call_mod
+import ouroboros.loop_transport as loop_transport
 from ouroboros import usage_accounting as ua
+from ouroboros.loop import _output_exhausted_notice, run_llm_loop
+from ouroboros.tools.registry import ToolRegistry
 from ouroboros._usage_response import output_exhaustion_facts, reported_reasoning_tokens, response_finish_reason
 from ouroboros.loop_llm_call import (
     _COOLDOWN_ERROR_KINDS,
@@ -225,3 +231,120 @@ def test_empty_stop_reply_is_retried_as_an_ordinary_empty_response(tmp_path, no_
     assert [call["bypass_response_cache"] for call in llm.requests] == [False, False]
     assert [row["finish_reason"] for row in _events(tmp_path, "llm_empty_response")] == ["stop"]
     assert "_last_llm_error_kind" not in usage and "_last_llm_output_exhausted" not in usage
+
+
+# ------------------------------------------------------------------ the next ordinary round (T10)
+
+HOST_FACT = "[SYSTEM NOTICE]\nThe provider ended your previous reply on its length limit"
+
+
+def _custody_failure(cause_cls, state):
+    try:
+        raise RuntimeError("Connection error.") from cause_cls("socket failure")
+    except RuntimeError as exc:
+        exc.physical_attempt_capture = ua.PhysicalAttemptCapture(
+            attempt_id=f"pa-{state}", model="test-model", provider="openrouter", state=state,
+            candidate_measurement_kind="opaque")
+        return exc
+
+
+def _death():  # a dispatched request whose socket died: its outcome stays unknown
+    return _custody_failure(httpx.ReadError, "unresolved")
+
+
+def _released_connect():  # a $0 connect failure before dispatch: no transport
+    return _custody_failure(httpx.ConnectError, "released")
+
+
+def _no_chain(**_kwargs):
+    raise AssertionError("output exhaustion must not walk the configured routes")
+
+
+def _quiet_chain(**kwargs):  # the configured routes answer nothing
+    return None, kwargs["active_model"], kwargs["active_use_local"], kwargs["context_fit_plan"], kwargs["active_context_mode"]
+
+
+def _loop_kwargs(tmp_path, llm, notes):
+    return dict(messages=[{"role": "user", "content": "go"}], tools=ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path),
+                llm=llm, drive_logs=tmp_path, emit_progress=lambda text, **_meta: notes.append(text),
+                incoming_messages=queue.Queue(), task_id="t-exhaust-loop", drive_root=tmp_path)
+
+
+def _host_facts(messages):
+    return [row for row in messages if row.get("role") == "user" and str(row.get("content") or "").startswith(HOST_FACT)]
+
+
+@pytest.fixture
+def loop_env(monkeypatch):
+    # Configured routes exist, so entering the round recovery would reach the chain.
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _no_chain)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "other/model")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+
+
+def test_exhaustion_adds_one_host_fact_and_the_next_ordinary_round_answers(tmp_path, loop_env, no_sleep):
+    llm = _ScriptedLLM(_incident_reply(0), OK_RESPONSE, receipts=[_receipt(216)])
+    result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, llm, []))
+
+    assert result == "done" and llm.calls == 2  # no same-request retry, no route walk, no forced call
+    first, second = (request["messages"] for request in llm.requests)
+    assert _host_facts(first) == []
+    assert [row["content"] for row in _host_facts(second)] == [
+        _output_exhausted_notice({"sent_allowance_tokens": 216, "reasoning_tokens": 216})]
+    assert "allowance sent was 216 tokens" in _host_facts(second)[0]["content"]
+    assert second[:len(first)] == first  # appended: the exhausted request stays a prefix of the next
+    assert [(row["round"], row["finish_reason"]) for row in _events(tmp_path, "llm_empty_response")] == [(1, "length")]
+    assert [row["round"] for row in _events(tmp_path, "llm_round")] == [2]  # the next ORDINARY round answered
+    assert "forced_finalization" not in trace
+    # The usable reply cleared every stamp the exhausted one left.
+    for key in ("_last_llm_error_kind", "_last_llm_error", "_last_llm_output_exhausted",
+                "execution_status", "reason_code", RETRY_WALL_EXHAUSTED_KEY):
+        assert key not in usage
+
+
+def test_repeated_exhaustion_runs_to_the_existing_round_limit(tmp_path, loop_env, no_sleep, monkeypatch):
+    """No separate counter: every exhausted round leaves one fact and the loop goes on until an
+    existing limit (here the round limit, whose own forced call reads every fact) ends it."""
+    monkeypatch.setenv("OUROBOROS_MAX_ROUNDS", "3")
+    llm = _ScriptedLLM(*[_incident_reply(index) for index in range(6)])
+    result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, llm, []))
+
+    assert llm.calls == 4  # rounds 1-3, then the round-limit rail's forced call
+    assert [len(_host_facts(request["messages"])) for request in llm.requests] == [0, 1, 2, 3]
+    assert [row["round"] for row in _events(tmp_path, "llm_empty_response")] == [1, 2, 3, 4]
+    assert _events(tmp_path, "provider_incomplete_response") == []
+    assert usage["reason_code"] == "round_limit" and usage.get("execution_status") != "infra_failed"
+    assert trace["forced_finalization"]["reason_code"] == "round_limit"
+    assert result.startswith("⚠️ Task exceeded MAX_ROUNDS (3)")
+
+
+def test_exhaustion_over_an_unresolved_attempt_starts_no_new_generation(tmp_path, loop_env, no_sleep):
+    """The fence: a round still holding an unresolved attempt (a granted transport-death repeat)
+    may start no new generation, so an exhausted repeat keeps the no-resend terminal."""
+    llm = _ScriptedLLM(_death, _incident_reply(0), OK_RESPONSE)
+    kwargs = _loop_kwargs(tmp_path, llm, [])
+    kwargs["task_type"] = "presence"  # inline Presence alone keeps the bounded paid repeat
+    kwargs["tools"]._ctx.is_direct_chat = True
+    kwargs["tools"]._ctx.current_task_type = "presence"
+    _result, usage, trace = run_llm_loop(**kwargs)
+
+    assert llm.calls == 2  # the death and its one repeat; no round over the unresolved attempt
+    assert usage["_last_llm_error_kind"] == "llm_output_exhausted"
+    assert trace["forced_finalization"]["source"] == "provider_outcome_unknown_no_resend"
+    assert all(_host_facts(request["messages"]) == [] for request in llm.requests)
+
+
+def test_exhaustion_ends_an_active_transport_wait_episode(tmp_path, loop_env, no_sleep, monkeypatch):
+    """The provider answered, so the outage episode ends at the exhausted reply (a later round
+    must not inherit a stale episode, which would reshape its deadline and Stop handling)."""
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _quiet_chain)
+    monkeypatch.setattr(loop_transport, "interruptible_wait_sleep", lambda _sec, _wake: False)
+    llm = _ScriptedLLM(_released_connect, _incident_reply(0), OK_RESPONSE)
+    result, _usage, _trace = run_llm_loop(**_loop_kwargs(tmp_path, llm, []))
+
+    assert result == "done" and llm.calls == 3
+    waits = [(row["phase"], row.get("detail")) for row in _events(tmp_path, "network_wait")]
+    assert waits[0][0] == "entered"
+    assert waits[-1] == ("ended", "error_kind_changed:llm_output_exhausted")
+    assert len(_host_facts(llm.requests[-1]["messages"])) == 1
