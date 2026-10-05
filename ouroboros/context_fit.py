@@ -528,15 +528,21 @@ def tool_schema_tokens(tools: Optional[List[Dict[str, Any]]]) -> int:
 
 
 def bounded_prompt_tokens_for_payload(prompt_payload: Dict[str, Any], fallback_chars: int) -> int:
-    """The density witness's basis: the fit estimator's own token count for a
-    request payload (messages + tools, images at the proxy), or ``fallback_chars
-    // 4`` when there is no message list. Kept beside the estimator so the two
-    can never diverge; ``estimate_message_chars`` dropped tool_call objects and
-    made density ~1.4x high on the tool-heavy shape (measure_main_fit multiplies
-    THIS quantity)."""
+    """The density witness's basis (``capability_evidence.MAIN_DENSITY_BASIS``): the
+    fit estimator's own token count for a request payload (messages + tools,
+    images at the proxy, a top-level ``system`` — the Messages API's separate
+    field — counted as a leading system message), or ``fallback_chars // 4``
+    when there is no message list. Kept beside the estimator so the two can
+    never diverge; ``estimate_message_chars`` dropped tool_call objects and made
+    density ~1.4x high on the tool-heavy shape, and an uncounted ``system``
+    over-sized the direct-Anthropic reply by its whole length (measure_main_fit
+    and the send finalizer multiply THIS quantity)."""
     try:
         messages = prompt_payload.get("messages")
         if isinstance(messages, list):
+            system = prompt_payload.get("system")
+            if isinstance(system, (str, list)) and system:
+                messages = [{"role": "system", "content": system}, *messages]
             return int(estimate_context_prompt_tokens(
                 messages, prompt_payload.get("tools") or prompt_payload.get("functions")))
     except Exception:

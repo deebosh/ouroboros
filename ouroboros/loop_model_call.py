@@ -815,6 +815,7 @@ def _physical_context_for_fit(disposition: Any) -> PhysicalAttemptContext:
         capacity_total_tokens=measurement.capacity_total_tokens,
         context_target_miss=disposition.action == "send_target_miss",
         automatic_pass_used=disposition.automatic_pass_used,
+        measurement_density=measurement.measurement_density,
     )
 
 
