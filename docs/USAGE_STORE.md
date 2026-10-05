@@ -162,7 +162,8 @@ own, and renames the store `usage.sqlite.exported-<UTC>`. A later upgrade
 imports that journal again, including what the older release added. The
 journal the import kept is set aside as `usage_attempts.jsonl.pre-export-<UTC>`;
 a journal that changed after the import, or one without a store, is never
-overwritten.
+overwritten: move it aside by hand to export (the rows an older release added
+after the import are not in the store).
 
 ## 8. Explicit history audit
 

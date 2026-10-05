@@ -77,59 +77,67 @@ def publication(root, event):
 
     The append may invoke a result writer (result lock -> obligations lock).
     Never hold the obligations lock across that callback or await another owner.
+    A set update that fails (unreadable, contended, a disk error) never stops the row:
+    it owes a rebuild, which the next start merges from the retained chain.
     """
     from ouroboros import delegate_custody as c
 
-    with o.locked(root):
-        rows = o._read(root, "custody_open", missing_ok=True)
-        before = dict(rows)
-        rid, iid = str(event.get("run_id") or ""), str(event.get("invocation_id") or "")
-        kind = event["type"]
-        # Work is addressable before its source event can be lost.
-        if kind == c.START_REQUESTED and iid:
-            rows.setdefault(f"invocation:{iid}", {"request": event})
-        runs = {key[4:]: _decode(facts["custody"]) for key, facts in rows.items() if key.startswith("run:")}
-        c._apply(runs, event)
-        if kind == c.STARTED and rid in runs:
-            rows[f"run:{rid}"] = {"custody": vars(runs[rid])}
-        if rows != before:
-            o._write(root, "custody_open", rows)
+    rid, iid = str(event.get("run_id") or ""), str(event.get("invocation_id") or "")
+    kind = event["type"]
+
+    def publish():
+        with o.locked(root):
+            rows = o._read(root, "custody_open", missing_ok=True)
+            before = dict(rows)
+            # Work is addressable before its source event can be lost.
+            if kind == c.START_REQUESTED and iid:
+                rows.setdefault(f"invocation:{iid}", {"request": event})
+            runs = {key[4:]: _decode(facts["custody"]) for key, facts in rows.items() if key.startswith("run:")}
+            c._apply(runs, event)
+            if kind == c.STARTED and rid in runs:
+                rows[f"run:{rid}"] = {"custody": vars(runs[rid])}
+            if rows != before:
+                o._write(root, "custody_open", rows)
+
+    def discharge():
+        with o.locked(root):
+            rows = o._read(root, "custody_open", missing_ok=True)
+            before = dict(rows)
+            runs = {key[4:]: _decode(facts["custody"]) for key, facts in rows.items() if key.startswith("run:")}
+            # Even with no STARTED in the set, retained closing receipts can accept
+            # later output/patch facts without reading the event chain.
+            debts = o._read(root, "delegated_runs", missing_ok=True)
+            prior_debts = {key: dict(value) for key, value in debts.items()}
+            if rid and rid not in runs:
+                for facts in debts.values():
+                    raw = facts.get("closed_runs", {}).get(rid)
+                    if raw:
+                        runs[rid] = _decode(raw)
+                        break
+            c._apply(runs, event)
+            for run_id, entry in runs.items():
+                if entry.settled and entry.task_id:
+                    facts = dict(debts.get(entry.task_id, {}))
+                    receipts = dict(facts.get("closed_runs", {}))
+                    receipts[run_id] = vars(entry)
+                    debts[entry.task_id] = {**facts, "task_id": entry.task_id, "closed_runs": receipts}
+                if _held(entry):
+                    rows[f"run:{run_id}"] = {"custody": vars(entry)}
+                else:
+                    rows.pop(f"run:{run_id}", None)
+            if iid and (kind == c.STARTED or (kind == c.START_FAILED and event.get("definite") is True)):
+                rows.pop(f"invocation:{iid}", None)
+            # Publish the closing receipt before dropping its open-custody member.
+            if debts != prior_debts:
+                o._write(root, "delegated_runs", debts)
+            if rows != before or not o.path(root, "custody_open").exists():
+                o._write(root, "custody_open", rows)
+
+    o._bookkeeping(root, "custody", publish)
     landed = [False]
     yield landed
-    if not landed[0]:
-        return
-    with o.locked(root):
-        rows = o._read(root, "custody_open", missing_ok=True)
-        before = dict(rows)
-        runs = {key[4:]: _decode(facts["custody"]) for key, facts in rows.items() if key.startswith("run:")}
-        # Even with no STARTED in the set, retained closing receipts can accept
-        # later output/patch facts without reading the event chain.
-        debts = o._read(root, "delegated_runs", missing_ok=True)
-        prior_debts = {key: dict(value) for key, value in debts.items()}
-        if rid and rid not in runs:
-            for facts in debts.values():
-                raw = facts.get("closed_runs", {}).get(rid)
-                if raw:
-                    runs[rid] = _decode(raw)
-                    break
-        c._apply(runs, event)
-        for run_id, entry in runs.items():
-            if entry.settled and entry.task_id:
-                facts = dict(debts.get(entry.task_id, {}))
-                receipts = dict(facts.get("closed_runs", {}))
-                receipts[run_id] = vars(entry)
-                debts[entry.task_id] = {**facts, "task_id": entry.task_id, "closed_runs": receipts}
-            if _held(entry):
-                rows[f"run:{run_id}"] = {"custody": vars(entry)}
-            else:
-                rows.pop(f"run:{run_id}", None)
-        if iid and (kind == c.STARTED or (kind == c.START_FAILED and event.get("definite") is True)):
-            rows.pop(f"invocation:{iid}", None)
-        # Publish the closing receipt before dropping its open-custody member.
-        if debts != prior_debts:
-            o._write(root, "delegated_runs", debts)
-        if rows != before or not o.path(root, "custody_open").exists():
-            o._write(root, "custody_open", rows)
+    if landed[0]:
+        o._bookkeeping(root, "custody discharge", discharge)
 
 
 def rebuild(root, *, replace=False):

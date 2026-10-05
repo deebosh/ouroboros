@@ -185,6 +185,35 @@ def test_failed_close_keeps_open_member(tmp_path, monkeypatch):
     assert not o.members(tmp_path, "custody_open")["run:run"]["custody"]["settled"]
 
 
+def test_a_custody_row_lands_when_its_set_cannot_be_updated(tmp_path, monkeypatch):
+    """Delegated custody follows the bookkeeping rule: the event row lands and emit reports its own
+    fate when the set is torn or its lock is contended; the next start merges the chain."""
+    from contextlib import contextmanager
+
+    from ouroboros import delegate_custody as c
+    from ouroboros.startup_migrations import prepare_startup_state
+
+    prepare_startup_state(tmp_path)
+    mark = tmp_path / "state" / "obligations" / o.REBUILD_MARK
+    o.path(tmp_path, "custody_open").write_bytes(b"")  # torn while running
+    assert c.emit(tmp_path, c.STARTED, {"run_id": "run", "task_id": "task"})
+    assert mark.exists()
+    assert prepare_startup_state(tmp_path)["imported"] is True and not mark.exists()
+    assert "run:run" in o.members(tmp_path, "custody_open")
+
+    @contextmanager
+    def contended(_root):
+        raise TimeoutError("obligations lock unavailable")
+        yield
+
+    monkeypatch.setattr(o, "locked", contended)
+    assert c.emit(tmp_path, c.SETTLED, {"run_id": "run", "task_id": "task", "state": "succeeded"})
+    monkeypatch.undo()
+    assert mark.exists()
+    rows = c.event_log_path(tmp_path).read_text(encoding="utf-8").splitlines()
+    assert json.loads(rows[-1])["type"] == c.SETTLED
+
+
 def test_first_import_classifies_once_and_stamps(tmp_path, monkeypatch):
     from ouroboros import startup_migrations as m
     directory = tmp_path / "task_results"

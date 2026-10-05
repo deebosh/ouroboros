@@ -945,7 +945,8 @@ def export_journal(root: pathlib.Path | str) -> Dict[str, Any]:
         provenance = txn.meta("import") or {}
         if kept.exists():
             if kept.stat().st_size != (provenance.get("source") or {}).get("size"):
-                raise UsageAccountingError(f"refusing to overwrite a journal that changed after the import: {kept}")
+                raise UsageAccountingError(f"refusing to overwrite a journal that changed after the import: {kept}; "
+                                           "move it aside to export (its rows after the import are not in the store)")
             # The journal the import kept in place: set aside, never lost.
             os.replace(kept, kept.with_name(f"{kept.name}.pre-export-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"))
         records = txn.conn.execute("SELECT * FROM attempts ORDER BY seq_first, seq").fetchall()
