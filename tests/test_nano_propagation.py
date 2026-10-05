@@ -48,17 +48,13 @@ def test_the_physical_context_of_a_main_fit_carries_its_density():
     _validate_candidate_facts({"candidate_measurement_kind": "opaque", "physical_context": asdict(physical)}, 1)
 
 
-def test_chat_carries_nano_mode_to_physical_target(monkeypatch):
+def test_the_mode_reaches_the_send_only_through_the_bound_physical_context():
+    """No ``context_mode`` keyword travels the call chain: the bound PhysicalAttemptContext
+    carries ``rendered_mode`` and the transport finalizer reads it from there."""
+    import inspect
+
     from ouroboros.llm import LLMClient
+    from ouroboros.llm_local import _LocalLaneMixin
 
-    client = LLMClient()
-    captured = {}
-    monkeypatch.setattr(client, "_resolve_remote_target", lambda _model: {"provider": "openai"})
-
-    def remote(target, *_args, **_kwargs):
-        captured.update(target)
-        return {"content": "ok"}, {}
-
-    monkeypatch.setattr(client, "_chat_remote", remote)
-    client.chat([{"role": "user", "content": "hello"}], "openai::test", context_mode="nano")
-    assert captured["context_mode"] == "nano"
+    for function in (LLMClient.chat, LLMClient.chat_async, _LocalLaneMixin._chat_local, _LocalLaneMixin._build_local_candidate):
+        assert "context_mode" not in inspect.signature(function).parameters, function.__qualname__

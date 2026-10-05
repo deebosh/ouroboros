@@ -1369,7 +1369,6 @@ def call_llm_with_retry(
                 "model_role": model_role, "model_turn_state": model_turn_state,
                 "model_account_override": model_account_override,
                 "processing_preference": processing_preference,
-                "context_mode": getattr(physical_context, "rendered_mode", None),
                 "reasoning_effort": effort,
                 "max_tokens": MAIN_LOOP_MAX_TOKENS,
                 **main_loop_wire_options(model, allow_server_web_search=allow_server_web_search,
