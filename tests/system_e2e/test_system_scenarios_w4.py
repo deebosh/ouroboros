@@ -26,7 +26,8 @@ artifact / a recorded WIRE fact / the byte truth of the worktree:
   write → boot looks the stash up by attempt id, restores the owner's work
   uncommitted and clears the marker (nothing was applied); (b) a half-written
   ``pending_boot_smoke`` tx whose merge commit never reached HEAD → boot rolls
-  back typed (no junk ``failed-update-*`` ref is minted for a non-attempt);
+  back typed (no junk ``failed-update-*`` ref is minted for a non-attempt) and
+  keeps a clear-only handoff that the next boot, in a fresh process, clears;
   (c) merge applied + crash before the restart smoke → boot runs the smoke,
   finalizes, restores the stashed dirty work and clears the tx.
 * S21 — CANCELLATION WITH CHAT LINEAGE (the wave-2 W2-F1 counterpart of S7): the

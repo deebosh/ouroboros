@@ -917,15 +917,12 @@ def test_s17_acceptance_reject_rework_accept(e2e_clone, tmp_path_factory, answer
     review_script = ReviewScript({
         "acceptance": [W3A_ACCEPT_REJECT] * 3 + [W3A_ACCEPT_PASS] * 3,
     })
-    # Both answer forms retain V2 through separate quorum/final-slot wakes;
-    # repeated collection must not buy a third panel or exhaust the script.
-    # A new hash is selectable only after the whole response has been held.
-    rework = ([{"final": S14_ANSWER_V2}] if answer_form == "answer_sha256" else [])
-    rework.append(_completion_step(S14_ANSWER_V2, answer_form=answer_form))
+    # Both answer forms retain V2 through separate quorum/final-slot wakes; repeated collection must
+    # not buy a third panel or exhaust the script. A new hash is selectable only once the whole response was held.
     stub = _HoldingStubModel(
-        [{"final": S14_ANSWER_V1}, *rework,
-         _keep_until_acceptance_settled(S14_ANSWER_V2, wave_ordinal=2,
-                                       answer_form=answer_form)],
+        [{"final": S14_ANSWER_V1}, *([{"final": S14_ANSWER_V2}] if answer_form == "answer_sha256" else []),
+         _completion_step(S14_ANSWER_V2, answer_form=answer_form),
+         _keep_until_acceptance_settled(S14_ANSWER_V2, wave_ordinal=2, answer_form=answer_form)],
         review_script=review_script,
     )
     with stub:
@@ -972,8 +969,7 @@ def test_s17_acceptance_identical_rework_is_free_replay_refusal(
     # forms must replay its paid verdict at $0 without a new panel.
     stub = _HoldingStubModel(
         [{"final": S14_ANSWER_V1},
-         _keep_until_acceptance_settled(S14_ANSWER_V1, wave_ordinal=1,
-                                       answer_form=answer_form)],
+         _keep_until_acceptance_settled(S14_ANSWER_V1, wave_ordinal=1, answer_form=answer_form)],
         review_script=review_script,
     )
     with stub:

@@ -13,7 +13,7 @@ polling (``wait_until`` over ``ArtifactOracle`` readers), keyless throughout:
   fanout receipt in the parent's forked drive, quiescence (the child's terminal
   ``task_done`` precedes the parent's; the parent's terminal is clean, not the
   degraded ``children_unabsorbed`` path), the child result reaching the parent
-  verbatim (marker in the parent's durable ``wait_tasks`` tool row), the
+  verbatim (marker in the complete ``wait_tasks`` result its durable row references), the
   authoritative disposition row on the task-tree ledger, and the root cost rollup
   keys on the parent's terminal event.
 * S7 — CANCELLATION (single): a keepalive task is cancelled over the same HTTP
