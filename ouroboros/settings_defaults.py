@@ -255,8 +255,12 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_RUNTIME_MODE": "advanced",
     # Context mode: nano | low | max. Owner-only working-context size profile. max = full always-on docs +
     # current memory granularity; low = ARCHITECTURE as a navigation map + the memory view held under the
-    # 250k Low target (older memory by address), for ~250k-window / local models. Cognitive-horizon knob (BIBLE P1): the agent cannot lower it
-    # (owner-only), and it never changes model / reasoning-effort / output-token budgets.
+    # 250k Low target (older memory by address), for ~250k-window / local models; nano = Low's books, the
+    # compact memory view and a tool-schema selection held under the 85k Nano target, for small local models.
+    # Cognitive-horizon knob (BIBLE P1): the agent cannot lower it (owner-only); it never changes the model or
+    # the reasoning effort, and it never fixes an output-token cap: the reply follows the route window
+    # (context_budget.reply_allowance_tokens; nano keeps at least 8,192 and an unknown window lets the
+    # 85k target stand in), while low and max always send the caller's ceiling.
     "OUROBOROS_CONTEXT_MODE": "max",
     # One-window compatibility tombstone for the retired persistent auto-Low mechanism.
     # It never sizes or routes context and no runtime writer may set it true.  An explicit
