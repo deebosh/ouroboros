@@ -552,13 +552,19 @@ def run_chat_viewport_smoke(
 
                 # The reader's own wheel leaves the live edge. Aim it outside any
                 # card scrollport (WebKit swallows a wheel there, see
-                # feed_wheel_point); a wheel that moved nothing is retried
-                # inside one 30 s deadline.
+                # feed_wheel_point); only a wheel that moved nothing at all is
+                # retried, inside one 30 s deadline.
+                page.evaluate("""() => {
+                    window.__readerScrolls = 0;
+                    document.querySelector('#chat-messages').addEventListener(
+                        'scroll', () => { window.__readerScrolls += 1; }, {passive: true});
+                }""")
                 deadline = time.monotonic() + 30
                 while True:
                     point = feed_wheel_point(page)
                     evidence.point = point
                     page.mouse.move(point["x"], point["y"])
+                    scrolls_before = page.evaluate("() => window.__readerScrolls")
                     page.mouse.wheel(0, -300)
                     remaining_ms = (deadline - time.monotonic()) * 1000
                     assert remaining_ms > 0, "the reader's wheel did not leave the live edge within 30 seconds"
@@ -572,7 +578,8 @@ def run_chat_viewport_smoke(
                         )
                         break
                     except PlaywrightTimeoutError:
-                        continue
+                        moved = page.evaluate("() => window.__readerScrolls") != scrolls_before
+                        assert not moved, "the reader's wheel moved the feed but did not leave the live edge"
                 page.evaluate(_SETTLE_TWO_FRAMES)
                 hidden_top = page.locator("#chat-messages").evaluate("node => node.scrollTop")
                 page.evaluate(
