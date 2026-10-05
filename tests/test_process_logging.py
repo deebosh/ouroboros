@@ -363,3 +363,17 @@ def test_a_failed_managed_update_is_recorded_once(monkeypatch, caplog, function_
     assert response.status_code == 500
     records = [r for r in caplog.records if r.exc_info and r.exc_info[1] is error]
     assert len(records) == 1 and records[0].levelno == logging.ERROR
+
+
+def test_the_bootstrap_is_inert_inside_the_pytest_process(tmp_path):
+    """Restart and shutdown tests run ``server.main()`` in the shared xdist worker; the conftest
+    keeps the bootstrap from leaving handlers, a root level or hooks behind for later tests."""
+    import threading
+
+    from ouroboros.process_logging import configure_process_logging
+
+    root = logging.getLogger()
+    before = (list(root.handlers), root.level, threading.excepthook, sys.excepthook)
+    configure_process_logging(drive_logs=tmp_path / "logs")
+    assert (list(root.handlers), root.level, threading.excepthook, sys.excepthook) == before
+    assert not (tmp_path / "logs").exists()
