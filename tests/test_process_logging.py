@@ -187,8 +187,10 @@ def test_without_any_handler_the_interpreter_print_stays_in_charge(tmp_path):
 
 
 @pytest.mark.serial
-@pytest.mark.skipif(sys.platform == "win32", reason="forkserver is POSIX-only; spawn is covered on every platform")
-@pytest.mark.parametrize("start_method", ["spawn", "forkserver"])
+@pytest.mark.parametrize("start_method", [
+    "spawn",
+    pytest.param("forkserver", marks=pytest.mark.skipif(sys.platform == "win32", reason="forkserver is POSIX-only")),
+])
 def test_worker_logging_is_configured_only_in_a_real_pool_child(tmp_path, start_method):
     completed = _run(f"""
         import logging, multiprocessing
