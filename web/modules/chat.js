@@ -2782,7 +2782,10 @@ export function createChatInstance({
                     inputHistorySeededFromServer = true;
                 }
 
-                const wasFirstLoad = !historyLoaded, opensRoom = !sourceHydrated;
+                const wasFirstLoad = !historyLoaded;
+                // The preview a failed first read leaves is no source read: the first
+                // source read after it still opens the room for a reader who followed.
+                const opensAfterPreview = !sourceHydrated && followingAtStart && reading.generation === generationAtStart;
                 historyLoaded = sourceHydrated = true;
                 lastHistorySyncSucceeded = true;
                 messagesDiv.dataset.historyHydrated = 'true';
@@ -2798,8 +2801,10 @@ export function createChatInstance({
                 if (reading.pending) {
                     updateMessagesPadding(false);
                     reading.position();
-                } else if ((wasFirstLoad && reading.stick)
-                        || (opensRoom && followingAtStart && reading.generation === generationAtStart)) {
+                } else if (wasFirstLoad && reading.stick) {
+                    updateMessagesPadding();
+                    reading.followAfterLayout();
+                } else if (opensAfterPreview) {
                     updateMessagesPadding();
                     reading.followAfterLayout();
                 }
