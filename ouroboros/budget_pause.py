@@ -734,12 +734,12 @@ def _exact_continuation_row(limit_ctx: Any, ctx: Any, *, pause_id: str, rail: st
              "unanswered_tool_call_ids": pending,
              "unanswered_policy": "not_re_executed_execution_unknown",
              "budget_tail": getattr(limit_ctx, "budget_tail", "tool")}
-    # The rail already stamped its terminal projection on the live usage, and a
-    # hold leaves its own transient row there; neither may travel into the
-    # resumed loop's eventual honest terminal.
+    # The rail already stamped its terminal projection on the live usage, a hold leaves its
+    # own transient row there, and the round's started stamp is a monotonic reading the pause
+    # would stretch into the round's duration; none may travel into the resumed loop.
     usage_for_state = {key: value for key, value in usage.items()
                        if key not in ("execution_status", "reason_code",
-                                      "_best_effort_extracted", "budget_pause_hold")}
+                                      "_best_effort_extracted", "budget_pause_hold", "_llm_round_started")}
     state = {
         **continuation_state(ctx, messages, trace, usage_for_state, limit_ctx.round_idx,
                              list(limit_ctx.tool_schemas or []), seen),

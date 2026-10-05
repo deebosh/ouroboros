@@ -348,3 +348,25 @@ def test_effort_facts_with_legacy_option_status_survive_logs_without_notices(tmp
     assert {key: written[key] for key in facts} == facts
     assert frames == [written]
     assert "toast_once" not in written and "task_incident" not in written
+
+
+def test_llm_usage_keeps_review_wave_and_slot_ids_only_when_the_review_scope_set_them(tmp_path):
+    """#807: the durable row keeps the ids the review emitter stamped and invents none."""
+    from supervisor import events as ev_module
+
+    (tmp_path / "logs").mkdir()
+
+    class FakeCtx:
+        DRIVE_ROOT = tmp_path
+
+        def update_budget_from_usage(self, usage):
+            pytest.fail("the writer runs once per loop turn, never per event")
+
+    review = {"review_skill": "skill-a", "review_wave_id": "wave-1", "review_slot_id": "slot-2"}
+    base = {"type": "llm_usage", "task_id": "t", "category": "review", "usage": {"prompt_tokens": 3}}
+    ev_module._handle_llm_usage({**base, **review}, FakeCtx())
+    ev_module._handle_llm_usage({**base, "review_slot_id": ""}, FakeCtx())
+    first, second = [json.loads(line) for line in
+                     (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert {key: first[key] for key in review} == review
+    assert not any(key in second for key in review)
