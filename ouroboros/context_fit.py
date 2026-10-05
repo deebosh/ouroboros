@@ -218,7 +218,8 @@ class ContextFitPlan:
             contents, start = _view_projections(
                 self.core, {form: json.loads(self.projection(form).system_content_json)[0]["text"] for form in books},
                 self.user_content_json, preferred=self.preferred_mode, start=start_mode, tool_schemas=tool_schemas,
-                window_tokens=window_tokens, known_window=known_window, output_reserve=output_reserve, ratio=ratio)
+                window_tokens=window_tokens, known_window=known_window, output_reserve=output_reserve, ratio=ratio,
+                resident=True)  # a running task's list, enable_tools additions included
 
         def project(projection: Optional[ContextFitProjection]) -> Optional[ContextFitProjection]:
             if projection is not None and projection.mode in contents:
@@ -778,12 +779,15 @@ def _request_tokens(system_content: List[Dict[str, Any]], user_content_json: str
 
 def _view_projections(core: ContextCore, governance: Mapping[str, str], user_content_json: str, *, preferred: str,
                       tool_schemas: Optional[List[Dict[str, Any]]], window_tokens: int, known_window: bool, output_reserve: int,
-                      ratio: float, start: Optional[str] = None) -> Tuple[Dict[str, Tuple[List[Dict[str, Any]], Dict]], str]:
+                      ratio: float, start: Optional[str] = None, resident: bool = False,
+                      ) -> Tuple[Dict[str, Tuple[List[Dict[str, Any]], Dict]], str]:
     """Each mode's ``(system content, view receipt)`` and the mode the task starts in.
 
     ``governance`` is block A by book form. A mode's fixed part is its request without my memory
-    plus the schemas it sends (Nano's selection); view and starting mode are ``memory_floor.mode_views``
-    of the core's snapshot, so a new route re-renders both from the same capture.
+    plus the schemas it sends: the owner-mode selection of ``tool_schemas`` on the first request,
+    or, ``resident``, the list a running task already sends (an ``enable_tools`` addition counts,
+    whatever the mode). View and starting mode are ``memory_floor.mode_views`` of the core's
+    snapshot, so a new route re-renders both from the same capture.
     """
     form = {mode: "low" if core.compact_reference_docs or mode == "nano" else mode for mode in ("max", "low", "nano")}
     if not core.memory_view_json:
@@ -791,7 +795,8 @@ def _view_projections(core: ContextCore, governance: Mapping[str, str], user_con
     from ouroboros import memory_floor
     from ouroboros.memory_view import snapshot_from_json
     from ouroboros.tool_policy import select_tool_schemas
-    sent = {mode: select_tool_schemas(tool_schemas or [], context_mode=mode) for mode in form}  # what each mode sends
+    names = [schema["function"]["name"] for schema in tool_schemas or []] if resident else None
+    sent = {mode: select_tool_schemas(tool_schemas or [], context_mode=mode, schema_names=names) for mode in form}
     fixed = {mode: _request_tokens(_system_blocks(core, governance[form[mode]]), user_content_json)
              + tool_schema_tokens(list(sent[mode].schemas)) for mode in form}
     views, start = memory_floor.mode_views(snapshot_from_json(core.memory_view_json), preferred=preferred, start=start,
@@ -852,16 +857,22 @@ def build_context_fit_plan(
         preferred=preferred, tool_schemas=tool_schemas, window_tokens=int(evidence.window_tokens or 0),
         known_window=known_window, output_reserve=output_reserve, ratio=ratio)
 
+    from ouroboros.context_budget import OWNER_NANO_TARGET_TOKENS, context_mode_limits
+    from ouroboros.tool_policy import select_tool_schemas
+
+    # The task-input pointer is decided on the calibrated Nano request: the schemas it sends and its reply floor.
+    nano_sent_tokens = tool_schema_tokens(list(select_tool_schemas(tool_schemas or [], context_mode="nano").schemas))
+    nano_reserve = context_mode_limits("nano", preferred, output_reserve)[1]
+
     def _projection(mode: str) -> ContextFitProjection:
         nonlocal input_source
-        from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_NANO_TARGET_TOKENS
 
         system_content, memory_facts = contents[mode]
         system_content_json = json.dumps(system_content, ensure_ascii=False, sort_keys=True)
         estimated = _request_tokens(system_content, core.user_content_json)
         user_projection = None
         target = OWNER_NANO_TARGET_TOKENS if mode == "nano" else None
-        if preferred == "nano" and target is not None and estimated + NANO_MIN_HEADROOM_TOKENS > target:
+        if preferred == "nano" and target is not None and math.ceil((estimated + nano_sent_tokens) * ratio) + nano_reserve > target:
             # The original owner input stays exact in the captured core and
             # existing source store. Only its initial Nano delivery changes;
             # this is neither the external-assignment compiler nor a summary.

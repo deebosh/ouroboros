@@ -342,3 +342,48 @@ def test_direct_openai_and_openrouter_keep_the_two_system_items_and_one_notice(t
         assert [block["text"] for block in wire[0]["content"]] == [a] and [block["text"] for block in wire[1]["content"]] == [b]
         assert HOST_CONTEXT_NOTICE_BEFORE_TASK in wire[2]["content"] and wire[2]["content"].endswith(c)
         assert target["wire_layout"] == {"system_prefix_split": True, "moved_blocks": 1}
+
+
+def test_the_task_input_pointer_follows_the_calibrated_nano_request_and_the_floor_counts_resident_schemas(tmp_path, monkeypatch):
+    """A11. The pointer trigger compares the CALIBRATED Nano request, schemas it sends included, plus the
+    reply floor with the target: a fitting calibrated input gets no pointer, and a schema-heavy request that
+    only the schemas push over the target gets one. On a route switch the floor's fixed part counts the
+    schemas a running task actually sends (an enable_tools addition), not a fresh Nano selection that drops them."""
+    from types import SimpleNamespace
+
+    from ouroboros import context, context_fit
+
+    env, memory, _rooms = world(tmp_path)
+    task = {"type": "task", "text": "x" * 240_000, **MAIN}  # ~60K raw tokens: under the target alone, over it with the schemas
+    core = context._capture_context_core(env, memory, task, None, None)
+    big = [{"type": "function", "function": {"name": f"tool_{i}", "description": "d" * 4_000,
+                                             "parameters": {"type": "object", "properties": {}}}} for i in range(30)]
+    meta = [{"type": "function", "function": {"name": name, "description": "m", "parameters": {"type": "object", "properties": {}}}}
+            for name in ("enable_tools", "list_available_tools")]
+    heavy_meta = [{"type": "function", "function": {"name": "enable_tools", "description": "d" * 120_000,  # ~30K tokens Nano DOES send
+                                                    "parameters": {"type": "object", "properties": {}}}}, meta[1]]
+
+    def plan(tools, ratio):
+        monkeypatch.setattr(context_fit, "_route_calibration_ratio", lambda *_a, **_kw: ratio)
+        return context._build_context_fit_plan(env, core, task, preferred_mode="nano", tool_schemas=tools,
+                                               route_resolver=lambda *_a, **_kw: ({"model": "m", "provider": "p"}, SimpleNamespace(
+                                                   route_fp="r", status="asserted", stale=False, window_tokens=1_000_000)))
+
+    pointer = lambda built: built.nano_projection.user_content_json is not None  # noqa: E731
+    assert not pointer(plan(meta, 1.0))  # 60K + floor < 85K
+    assert not pointer(plan(meta + big, 1.0))  # schemas the Nano request does not send do not count
+    assert pointer(plan(heavy_meta, 1.0))  # the 30K of schemas the Nano request sends push it over
+    assert not pointer(plan(heavy_meta, 0.8))  # calibrated: (60K + 30K) x 0.8 + floor fits the target
+    assert pointer(plan(meta, 1.5))  # calibrated the other way: a dense tokenizer makes the same input a pointer
+
+    # The floor on a route switch: the resident list (a big schema enable_tools added) narrows Nano's room.
+    built = plan(meta, 1.0)
+    bare = built.reproject_for_route(window_tokens=1_000_000, known_window=True, ratio=1.0, output_reserve=65_536,
+                                     tool_schemas=meta, start_mode="nano")
+    loaded = built.reproject_for_route(window_tokens=1_000_000, known_window=True, ratio=1.0, output_reserve=65_536,
+                                       tool_schemas=meta + big, start_mode="nano")
+    room = lambda plan_: plan_.nano_projection.memory_facts["floor"]["allowance_tokens"]  # noqa: E731
+    assert room(bare) - room(loaded) >= 30_000
+    # The first request keeps the owner-mode selection: a full list is not what Nano sends there.
+    assert (built.nano_projection.memory_facts["floor"]["physical_allowance_tokens"]
+            == plan(meta + big, 1.0).nano_projection.memory_facts["floor"]["physical_allowance_tokens"])
