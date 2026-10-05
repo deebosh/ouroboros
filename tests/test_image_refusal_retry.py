@@ -534,3 +534,46 @@ def test_a_nano_retry_sends_under_the_refused_attempts_reply_allowance(tmp_path,
     msg, _cost, mode = loop._call_round_model(context)
     assert msg["content"] == "seen as text" and mode == "nano"
     assert checked == [(20_000, True, True, False, False)]
+
+
+class _Completion:
+    def __init__(self, body):
+        self.body = body
+
+    def model_dump(self):
+        return copy.deepcopy(self.body)
+
+
+@pytest.mark.parametrize("model", [MAIN, "acme/never-listed-1"], ids=["direct-openai", "openrouter"])
+def test_the_real_transport_records_the_sent_images_and_retries_without_them(root, monkeypatch, model):
+    """Through the production send path: the finalized wire candidate names its images at the
+    binding seam, the provider refuses it, and one text-only retry answers on the same route."""
+    from types import SimpleNamespace
+
+    from ouroboros import llm_fallback
+
+    monkeypatch.setenv("OUROBOROS_MODEL", model)
+    seen = []
+
+    def create(**payload):
+        carried = "QUFBQQ==" in json.dumps(payload.get("messages"))
+        seen.append(carried)
+        if carried:
+            raise _ProviderError(400)
+        return _Completion({"id": "c", "object": "chat.completion", "model": model.split("::")[-1], "choices": [
+            {"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "seen as text"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}})
+
+    client = LLMClient()
+    remote = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(client, "_get_remote_client", lambda _target: remote)
+    monkeypatch.setattr(llm_fallback, "consume_stream", lambda response, **_kw: response)
+    ctx = _round(root, client)
+    ctx.active_model = model
+    with ua.usage_scope(ua.UsageScope(drive_root=root, task_id="t-img", root_task_id="t-img")):
+        msg, _cost, _mode = loop._call_round_model(ctx)
+    assert msg is not None and msg.get("content") == "seen as text"
+    assert seen[0] is True and seen[-1] is False
+    assert [list(images) for images in ctx.accumulated_usage[vr.REFUSED_IMAGES_KEY].values()] == [[DIGEST_A]]
+    finals = [states[-1] for states in _ledger(root).values()]  # request-wire recovery may add refused attempts
+    assert finals[-1] == "settled" and set(finals[:-1]) == {"unresolved"}
