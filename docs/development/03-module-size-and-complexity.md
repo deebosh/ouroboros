@@ -104,10 +104,12 @@ the answer.
 
 - **Evaluate the whole operation as the project grows.** For a changed data
   reader, weigh growth in history, object count and project size, including
-  nested repetition, cold caches and concurrent users of shared resources. A
-  once-per-boot or explicit-owner scan is still allowed; its cost belongs to
-  the whole operation, not separately to every child, file or lookup it
-  visits. Where growth can materially hurt responsiveness, show evidence at a
+  nested repetition, cold caches and concurrent users of shared resources. An
+  installation migration or repair is an explicit lifecycle job with a durable
+  watermark; ordinary startup does not reconstruct unrelated history. An
+  explicit-owner scan (an audit the owner starts, a rebuild job) is allowed;
+  its cost belongs to that job, which runs outside the dialogue's process
+  (ARCHITECTURE invariant 10). Where growth can materially hurt responsiveness, show evidence at a
   representative scale on the affected path. First remove redundant work or
   reuse a validated view within one operation; add a projection, cache or
   other mechanism only when that simpler change is insufficient. A batch names
