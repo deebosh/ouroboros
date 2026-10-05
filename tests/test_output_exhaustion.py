@@ -364,30 +364,34 @@ def test_an_owner_terminal_names_output_exhaustion_not_a_provider_failure():
     assert "classified the failure as a provider failure." in unknown
 
 
-def test_a_configured_candidate_that_exhausts_reaches_the_next_round_not_a_redial(tmp_path, no_sleep, monkeypatch):
-    """The real configured-route walk: the primary fails before dispatch, the fallback candidate
-    answers but spends its reply allowance. That candidate's kind survives the walk (it is no
-    outage), so the next ORDINARY round carries the host fact; the exhausted request is not
-    redialed inside the same round under the primary's wait."""
+def _walk_loop(tmp_path, monkeypatch, *script, fallbacks="other/model", reachable=None):
+    """The real loop with the real configured-route walk (a route switch keeps the captured core)."""
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
-    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "other/model")
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", fallbacks)
     monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
     monkeypatch.setattr(loop_transport, "interruptible_wait_sleep", lambda _sec, _wake: False)
+    monkeypatch.setattr(loop_transport, "upstream_transport_reachable", lambda *_a, **_kw: reachable or {})
     from dataclasses import replace
     from tests.test_context_fit_v664 import _plan
 
-    plan = _plan(preferred="max", window=1_000_000, known=True)
-
-    def rebind(plan_, tools, _messages, *, model, use_local, **kwargs):  # a route switch keeps the captured core
+    def rebind(plan_, tools, _messages, *, model, use_local, **kwargs):
         rebound = replace(plan_, model=model, route_fp=f"route-{model}")
         tools._ctx.context_fit_plan = rebound
         return rebound, "max"
 
     monkeypatch.setattr(loop_mod, "_rebind_context_fit_plan", rebind)
-    llm = _ScriptedLLM(_released_connect, _incident_reply(0), OK_RESPONSE)
+    llm = _ScriptedLLM(*script)
     kwargs = _loop_kwargs(tmp_path, llm, [])
-    kwargs["tools"]._ctx.context_fit_plan = plan
-    result, usage, _trace = run_llm_loop(**kwargs)
+    kwargs["tools"]._ctx.context_fit_plan = _plan(preferred="max", window=1_000_000, known=True)
+    return (llm, *run_llm_loop(**kwargs))
+
+
+def test_a_configured_candidate_that_exhausts_reaches_the_next_round_not_a_redial(tmp_path, no_sleep, monkeypatch):
+    """The real configured-route walk: the primary fails before dispatch, the fallback candidate
+    answers but spends its reply allowance. That candidate's kind survives the walk (it is no
+    outage), so the next ORDINARY round carries the host fact; the exhausted request is not
+    redialed inside the same round under the primary's wait."""
+    llm, result, usage, _trace = _walk_loop(tmp_path, monkeypatch, _released_connect, _incident_reply(0), OK_RESPONSE)
 
     assert result == "done" and llm.calls == 3
     primary, fallback, next_round = llm.requests
@@ -395,3 +399,31 @@ def test_a_configured_candidate_that_exhausts_reaches_the_next_round_not_a_redia
     assert len(_host_facts(next_round["messages"])) == 1  # the fact reached the next round
     assert [row.get("phase") for row in _events(tmp_path, "network_wait")] in ([], ["entered", "ended"])
     assert len(_events(tmp_path, "llm_round")) == 1  # one usable round; the exhausted one consumed its own
+
+
+def test_an_exhausted_candidate_ends_the_walk_before_the_next_configured_route(tmp_path, no_sleep, monkeypatch):
+    """With two configured routes, the first one's exhaustion is the round's outcome: the second
+    route is not dialed with the same transcript, and the next ordinary round carries the fact."""
+    llm, result, _usage, _trace = _walk_loop(tmp_path, monkeypatch, _released_connect, _incident_reply(0), OK_RESPONSE,
+                                             fallbacks="other/model,third/model")
+    assert result == "done" and llm.calls == 3
+    primary, fallback, next_round = llm.requests
+    assert fallback["model"] == "other/model" and next_round["model"] == primary["model"]
+    assert len(_host_facts(next_round["messages"])) == 1
+
+
+@pytest.mark.parametrize("script,reachable", [
+    ((_death, _incident_reply(0), OK_RESPONSE), {"kind": "upstream_http", "status_code": 200}),  # no episode yet
+    ((_death, _released_connect, _incident_reply(0), OK_RESPONSE), None),  # inside the unknown outcome's episode
+])
+def test_an_exhausted_candidate_after_an_unknown_primary_keeps_its_wait_and_its_fact(
+        tmp_path, no_sleep, monkeypatch, script, reachable):
+    """An outstanding unknown outcome owns the round's wait, whether its episode starts now or is
+    already open: the exhausted candidate neither ends the task nor drops that custody, and its
+    host fact reaches the continuation the wait authorizes (one fact, not a repeated request)."""
+    llm, result, usage, _trace = _walk_loop(tmp_path, monkeypatch, *script, reachable=reachable)
+    assert result == "done" and llm.calls == len(script)
+    assert len(_host_facts(llm.requests[-1]["messages"])) == 1
+    assert llm.requests[-1]["messages"] != llm.requests[-2]["messages"]
+    assert "entered" in [row.get("phase") for row in _events(tmp_path, "network_wait")]
+    assert "_pending_transport_outcome" not in usage  # the usable reply closed the unknown record

@@ -366,7 +366,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_reconcile_transport_wait", "_run_cross_model_fallback_chain",
         "_context_overflow_retries", "_context_reclaim_materializations",
         "_context_reclaim_passes", "_dispatch_round_model", "_emit_checkpoint_event",
-        "_measure_round_main_fit", "_rebind_context_fit_plan", "_run_main_reclaim",
+        "_measure_round_main_fit", "_output_exhausted_notice", "_rebind_context_fit_plan", "_run_main_reclaim",
         "_server_web_allowed_by_task", "_task_deadline_epoch", "call_llm_with_retry",
         "compact_tool_history_llm", "last_physical_attempt_capture", "seal_task_transcript",
     })),

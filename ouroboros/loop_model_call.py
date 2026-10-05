@@ -410,8 +410,9 @@ def _run_cross_model_fallback_chain(
             # (A same-family candidate wrote its notice into the shared transcript, so its fit stays with it.)
             tool_schemas[:], tools._ctx._route_left_out_tool_names = resident
             invalidate_task_cache_splits(task_id)
-        if _walk_fenced(tools._ctx, accumulated_usage):
-            break
+        if _walk_fenced(tools._ctx, accumulated_usage) or str(
+                accumulated_usage.get("_last_llm_error_kind") or "") == "llm_output_exhausted":
+            break  # an exhausted candidate answered: its outcome is the round's, no further route is dialed
         _cooled(fallback_model, fallback_use_local, fallback_role)
         previous_model, previous_tag = fallback_model, ftag
     fenced = msg is None and _walk_fenced(tools._ctx, accumulated_usage)
@@ -502,12 +503,17 @@ def _recover_failed_round(limit_ctx: Any, tools: ToolRegistry, msg: Any, episode
             round_idx=limit_ctx.round_idx, event_queue=limit_ctx.event_queue, accumulated_usage=usage,
             task_type=limit_ctx.task_type, emit_progress=emit_progress, context_fit_plan=context_fit_plan,
             active_context_mode=active_context_mode)
-        if (msg is None and not _walk_fenced(ctx, usage) and usage.get("_last_llm_error_kind") != "llm_output_exhausted"
+        outstanding = usage.get("_pending_transport_outcome") or pending
+        exhausted = usage.get("_last_llm_error_kind") == "llm_output_exhausted"
+        if (msg is None and not _walk_fenced(ctx, usage) and (outstanding or not exhausted)
                 and (kind in _ROUND_WAIT_KINDS or usage.get("_pending_transport_outcome"))):
             # The round's own outage or unknown outcome owns its wait: a later candidate's
-            # failure never re-aims it (nor the probe's expected route). A candidate that
-            # answered but spent its reply allowance keeps that kind: the loop's next round reads it.
-            outstanding = usage.get("_pending_transport_outcome") or pending
+            # failure never re-aims it (nor the probe's expected route). A candidate that answered
+            # but spent its reply allowance keeps that kind when no attempt is outstanding (the
+            # loop's next round reads it); otherwise its host fact waits for the continuation.
+            if exhausted:
+                _loop()._append_or_merge_user_message(
+                    limit_ctx.messages, _loop()._output_exhausted_notice(usage.get("_last_llm_output_exhausted")))
             usage["_last_llm_error_kind"] = "provider_outcome_unknown" if outstanding else kind
             if outstanding:
                 usage["_pending_transport_outcome"] = outstanding
