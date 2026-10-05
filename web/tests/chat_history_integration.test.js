@@ -71,6 +71,24 @@ async function scrollEdge(f, scrollTop = 0) {
     }
 }
 
+// Reading protection pins any row the reader can see; park every history row
+// off-screen so the page budget, not the viewport, decides what is released.
+function offScreen(t) {
+    const oldRect = ElementStub.prototype.getBoundingClientRect;
+    ElementStub.prototype.getBoundingClientRect = function () {
+        return this.dataset.historyId
+            ? { top: 1000, bottom: 1020, left: 0, right: 100, width: 100, height: 20 }
+            : oldRect.call(this);
+    };
+    t.after(() => { ElementStub.prototype.getBoundingClientRect = oldRect; });
+}
+
+// The reader turned back into history: an upward wheel away from the top edge.
+function readUp(f) {
+    f.messages.scrollTop = 400;
+    for (const handler of f.messages.listeners.get('wheel')) handler({ type: 'wheel', deltaY: -1, target: f.messages, timeStamp: 0 });
+}
+
 // One saved message and nothing else: every page below it is empty down to the
 // archive floor. This is the sparse Project room that grew a 64-click pill.
 const sparseRoom = (t, floor = 5) => fixture(t,
@@ -107,15 +125,7 @@ test('a walked-out sparse room asks for nothing more, however often the reader s
 });
 
 test('reading to the oldest page hides the button; ↓ returns to the present with one read', async (t) => {
-    // Reading protection pins any row the reader can see; park every history row
-    // off-screen so the page budget, not the viewport, decides what is released.
-    const oldRect = ElementStub.prototype.getBoundingClientRect;
-    ElementStub.prototype.getBoundingClientRect = function () {
-        return this.dataset.historyId
-            ? { top: 1000, bottom: 1020, left: 0, right: 100, width: 100, height: 20 }
-            : oldRect.call(this);
-    };
-    t.after(() => { ElementStub.prototype.getBoundingClientRect = oldRect; });
+    offScreen(t);
     const recent = page([row('chat:900', 'Newest saved message')], 'page:recent', 'before:1');
     const older = [
         page([row('chat:300', 'Older one')], 'page:1', 'before:2'),
@@ -142,13 +152,7 @@ test('reading to the oldest page hides the button; ↓ returns to the present wi
 test('Load more history only ever reads older pages, however deep the reader goes', async (t) => {
     // The livelock of 2026-10-02: a 3-page cache released page zero, the button
     // then read it back as "newer", the next press re-read the deep page, forever.
-    const oldRect = ElementStub.prototype.getBoundingClientRect;
-    ElementStub.prototype.getBoundingClientRect = function () {
-        return this.dataset.historyId
-            ? { top: 1000, bottom: 1020, left: 0, right: 100, width: 100, height: 20 }
-            : oldRect.call(this);
-    };
-    t.after(() => { ElementStub.prototype.getBoundingClientRect = oldRect; });
+    offScreen(t);
     const deep = 7;
     const f = fixture(t, page([row('chat:9000', 'Newest')], 'page:recent', 'before:1'), (cursor) => {
         const index = Number(cursor.split(':').at(-1));
@@ -165,13 +169,7 @@ test('Load more history only ever reads older pages, however deep the reader goe
 
 test('reading to the beginning of a long room leaves no dead button behind released pages', async (t) => {
     // Rows stay off-screen, so the 3-page budget releases the newest pages as the reader goes deep.
-    const oldRect = ElementStub.prototype.getBoundingClientRect;
-    ElementStub.prototype.getBoundingClientRect = function () {
-        return this.dataset.historyId
-            ? { top: 1000, bottom: 1020, left: 0, right: 100, width: 100, height: 20 }
-            : oldRect.call(this);
-    };
-    t.after(() => { ElementStub.prototype.getBoundingClientRect = oldRect; });
+    offScreen(t);
     const span = (from, to) => ({ v: 1, view: 'room', upper: { chat: 600, progress: 0 }, spans: {
         chat: { from, to, chain: 'retained', gaps: [] }, progress: { from: 0, to: 0, chain: 'empty', gaps: [] } } });
     const recent = { ...page([row('chat:550', 'Newest')], 'page:recent', 'before:500'), coverage: span(500, 600) };
@@ -185,6 +183,54 @@ test('reading to the beginning of a long room leaves no dead button behind relea
     assert.deepEqual(f.calls, [null, 'before:500', 'before:400', 'before:300', 'before:200', 'before:100']);
     const button = f.messages.querySelector('.chat-load-older').querySelector('.chat-load-older-btn');
     assert.equal(button.hidden, true, 'at the beginning no control offers a press that reads nothing');
+});
+
+test('a refresh while the reader reads older history leaves the next press reading older', async (t) => {
+    // A task finishes while the reader is a page back: the newest read moved on and
+    // let its oldest row go. Re-anchoring there sent the next press to rows below
+    // the reader, newer than what they were reading (the press "returned nothing").
+    offScreen(t);
+    const f = fixture(t, page([row('chat:500', 'Newest at open')], 'page:recent', 'before:500'), (cursor) => {
+        const end = Number(cursor.split(':').at(-1));
+        return page([row(`chat:${end - 50}`, `Row ${end - 50}`)], `page:${end}`, end > 100 ? `before:${end - 100}` : null);
+    });
+    await f.refresh();
+    await f.clickOlder();
+    readUp(f);
+    await f.refresh(page([row('chat:600', 'Arrived while reading')], 'page:recent', 'before:600'));
+    for (let n = 0; n < 20; n += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    await f.clickOlder();
+    assert.deepEqual(f.calls, [null, 'before:500', null, 'before:400'],
+        'the refresh re-anchors nothing; the press reads the page older than the one being read');
+    assert.equal(f.bubbles().filter(node => node.dataset.historyId === 'chat:500').length, 1,
+        'the row the newest read let go stays between the reader and the present');
+    // Back at the present (↓), the next shifted read re-anchors as before.
+    globalThis.document.byId.get('chat-scroll-bottom').click();
+    for (let n = 0; n < 20; n += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    await f.refresh(page([row('chat:700', 'Newest again')], 'page:recent', 'before:700'));
+    for (let n = 0; n < 20; n += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(f.calls.slice(4), [null, null], 'a reader following the newest message gets the re-anchored chain');
+});
+
+test('a gap opening while the reader reads older history leaves the press reading older', async (t) => {
+    offScreen(t);
+    const span = (from, to, upper) => ({ v: 1, view: 'room', upper: { chat: upper, progress: 0 }, spans: {
+        chat: { from, to, chain: 'retained', gaps: [] }, progress: { from: 0, to: 0, chain: 'empty', gaps: [] } } });
+    const f = fixture(t, { ...page([row('chat:900', 'Newest at open')], 'page:recent', 'before:800'), coverage: span(800, 1000, 1000) },
+        (cursor) => {
+            const end = Number(cursor.split(':').at(-1));
+            return { ...page([row(`chat:${end - 50}`, `Row ${end - 50}`)], `page:${end}`, `before:${end - 100}`),
+                coverage: span(end - 100, end, 1000) };
+        });
+    await f.refresh();
+    await f.clickOlder();
+    readUp(f);
+    // A reconnect after a long sleep: the newest read starts past everything loaded.
+    await f.refresh({ ...page([row('chat:1500', 'After the sleep')], 'page:recent', 'before:1400'), coverage: span(1400, 1600, 1600) });
+    for (let n = 0; n < 20; n += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    await f.clickOlder();
+    assert.deepEqual(f.calls, [null, 'before:800', null, 'before:700'],
+        'the press goes on above the reader; the gap below waits for ↓');
 });
 
 test('live message adopts its physical history identity without replacing the visible bubble', async (t) => {
@@ -278,13 +324,7 @@ test('one older-navigation action crosses a sparse page and displays the next ph
 });
 
 test('retained history nodes still dedupe after navigation exceeds the live key FIFO', async (t) => {
-    const oldRect = ElementStub.prototype.getBoundingClientRect;
-    ElementStub.prototype.getBoundingClientRect = function () {
-        return this.dataset.historyId
-            ? { top: 1000, bottom: 1020, left: 0, right: 100, width: 100, height: 20 }
-            : oldRect.call(this);
-    };
-    t.after(() => { ElementStub.prototype.getBoundingClientRect = oldRect; });
+    offScreen(t);
     const rows = Array.from({ length: 2500 }, (_, i) => row(`chat:${i}`, `Retained answer ${i}`));
     const pack = index => page(rows.slice(Math.max(0, rows.length - (index + 1) * 150), rows.length - index * 150),
         `page:${index}`, (index + 1) * 150 < rows.length ? `older:${index + 1}` : null);

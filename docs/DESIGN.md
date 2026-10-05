@@ -744,7 +744,10 @@ and `Load more history` reads the next older messages of the same room, only
 ever older ones (owner decisions 2026-09-14 and 2026-10-05). It shows only while
 older history exists, and one press keeps reading until messages land or the
 room's beginning is reached, so no press is empty. A positive scroll gesture at
-the reading edge loads the same way. Narration (task progress) keeps loading
+the reading edge loads the same way. Messages arriving while the reader is in
+older history never move where the next press goes on: it reads above what is
+being read, and anything a long absence left unloaded below is read by the
+return to the present. Narration (task progress) keeps loading
 alongside the conversation, but only the conversation keeps the control: once the
 room's beginning is reached it leaves, even if older narration of the oldest
 cards remains unread.

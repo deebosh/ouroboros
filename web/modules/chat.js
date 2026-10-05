@@ -700,6 +700,8 @@ export function createChatInstance({
     });
 
     function withStableViewport(mutate, options) { return reading.mutate(mutate, options); }
+    // Turned back into history, or on the way to a place: not following the newest message.
+    const readingHistory = () => !reading.stick || reading.pending;
 
     function withRemoteActivity(mutate) {
         _remoteActivityDepth += 1;
@@ -2732,12 +2734,16 @@ export function createChatInstance({
                 const oldRecentIds = recentHistoryIds;
                 const admitted = acceptRecentWindow(data, messages);
                 const pagerBeforeRecent = historyPager.getState();
-                const rechainRecent = admitted && !data.reason_code && pagerBeforeRecent.initialized && !pagerBeforeRecent.canNewer
-                    && [...oldRecentIds].some(id => !recentHistoryIds.has(id));
+                // A reader in older history keeps the chain `Load more history` goes on
+                // from, and the rows the newest read let go stay below them; a shifted
+                // window re-anchors only a reader following the newest message.
+                const reader = readingHistory();
+                const rechainRecent = admitted && !reader && !data.reason_code && pagerBeforeRecent.initialized
+                    && !pagerBeforeRecent.canNewer && [...oldRecentIds].some(id => !recentHistoryIds.has(id));
                 const result = historyPager.acceptRecent(data);
                 if (result.status !== 'applied') applyHistoryMessages(messages, { fromReconnect });
                 const recentState = historyPager.getState();
-                const releasableRecentIds = !admitted || rechainRecent || recentState.canNewer ? [] : oldRecentIds;
+                const releasableRecentIds = !admitted || rechainRecent || reader || recentState.canNewer ? [] : oldRecentIds;
                 withStableViewport(() => releaseHistoryIds(releasableRecentIds));
                 if (rechainRecent && !destroyed) void historyPager.latest();
                 if (armedAtStart) {
@@ -3410,9 +3416,11 @@ export function createChatInstance({
     // so only the server's per-request read ceiling can land one empty: keep
     // reading until rows land or the room's history ends. When the newest read has
     // moved past the pager's chain (the room grew while open), the chain is first
-    // re-anchored at that read, so the same press goes on into the missing older rows.
+    // re-anchored at that read, so the same press goes on into the missing rows;
+    // a reader in older history with older rows left goes on above them instead.
     async function loadHistoryAtEdge(direction) {
-        if (direction === 'older' && historyWindow?.horizonGap && !historyPager.getState().canNewer) {
+        const { canNewer, canOlder } = historyPager.getState();
+        if (direction === 'older' && historyWindow?.horizonGap && !canNewer && !(canOlder && readingHistory())) {
             const rebased = await historyPager.latest();
             if (destroyed || rebased.status !== 'applied') return rebased;
         }
