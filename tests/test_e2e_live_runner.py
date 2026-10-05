@@ -263,14 +263,21 @@ def test_config_sha256_is_secret_free_and_key_independent():
 # The run-wide budget ledger
 # --------------------------------------------------------------------------- #
 
-def test_lane_spend_sums_the_settled_product_ledger_and_counts_unknown_costs(tmp_path):
-    """rc.15 run3: telemetry summed 114.81, the product ledger 141.63 (skill review, advisory, synthesis write no row)."""
-    (state := tmp_path / "data" / "state").mkdir(parents=True)
-    rows = [{"state": "settled", "cost_final": True, "cost_usd": 1.5}, {"state": "settled", "cost_final": True, "cost_usd": 0.25},
-            {"state": "settled", "cost_final": True, "cost_usd": None}, {"state": "settled", "cost_final": False, "cost_usd": 99.0},
-            {"state": "pending", "cost_usd": 99.0}, {"state": "settled", "cost_final": True, "cost_usd": True}, "not json"]
-    (state / "usage_attempts.jsonl").write_text("\n".join(r if isinstance(r, str) else json.dumps(r) for r in rows) + "\n", encoding="utf-8")
-    assert run_live_lanes.lane_spend(tmp_path / "data") == (1.75, 2)
+def test_lane_spend_reads_the_usage_store_of_a_store_era_lane(tmp_path):
+    from ouroboros import usage_accounting as ua
+    from ouroboros import usage_store
+
+    data = tmp_path / "data"
+    (data / "state").mkdir(parents=True)
+    for cost, final in ((1.5, True), (0.25, True), (None, True), (99.0, False)):
+        held = ua.reserve_attempt(ua.AttemptRequest(model="m", provider="test", drive_root=data, task_id="t",
+                                                    root_task_id="t", reservation_usd=0.0, global_limit_usd=1000.0))
+        ua.mark_dispatched(held)
+        ua.settle_attempt(held, {}, cost_usd=cost, cost_final=final)
+    ua.reserve_attempt(ua.AttemptRequest(model="m", provider="test", drive_root=data, task_id="t",
+                                         root_task_id="t", reservation_usd=99.0, global_limit_usd=1000.0))
+    usage_store.forget(data)
+    assert run_live_lanes.lane_spend(data) == (1.75, 0)  # an unknown price is never stored final
     assert run_live_lanes.lane_spend(tmp_path / "absent") == (0.0, 0)
 
 

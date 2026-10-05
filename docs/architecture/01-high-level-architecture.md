@@ -162,14 +162,13 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── usage_accounting.py  ← Physical attempts: reserved→dispatched→settled|unresolved, reserved→released; global/root/group admission, candidate/manifest, raw `local_answer_owner_pid` (§6)
       ├── _usage_response.py   ← Accounting usage normalizer; adapters also read raw usage (§6)
       ├── usage_admission.py   ← Whole-work group binding/admission and review-wave fit (§6)
-      ├── _usage_rows.py       ← Pure summaries, limits/integrity, call counts, breakdowns and Skill Review projections
-      ├── _usage_rows_memo.py  ← Shared strict generation: sparse validation, finals, root/group cash, fold times; cold parse/render outside lock, detached public rows, display-only stale reads
+      ├── _usage_rows.py       ← The one reducer (per-row summary deltas), limits/integrity, call counts, breakdowns and Skill Review projections
       ├── _usage_money.py      ← Precision-60 Decimal cash; six-place half-even admission; raw literals retained
       ├── _usage_wait.py       ← Owned pre-send lock slices and joined async bridge; existing controls/custody
       ├── _usage_cache_splits.py ← process-local cache split by task/provider/route/review; a missing entry prices full cache write (§6)
       ├── skill_review_usage.py ← Read-only final-row projection for `(review_skill, review_wave_id)`; no second ledger (§6)
-      ├── usage_ledger.py      ← Money lock, append/fsync, validation and tail quarantine; imported by accounting (§6)
-      ├── usage_compaction.py, usage_legacy_import.py ← Seq-preserving ledger compaction and one-time legacy import (§6 Budget tracking; docs/USAGE_COMPACTION.md)
+      ├── usage_ledger.py      ← Shared row rules, typed money errors and the name-tier money lock (§6)
+      ├── usage_store.py, usage_journal.py ← `state/usage.sqlite`: attempts, summaries, bindings, dirty owners, lock tiers; one-time journal import, downgrade export (docs/USAGE_STORE.md)
       ├── cost_projection.py   ← The ONE projection of task cost for every producer: `accounted_upper_bound_usd`, null as None (never $0.00), `COST_OPENNESS_FIELDS` beside every amount (the optional scoped `cost_presentation` carrier among them); the retired `cost_usd[_with_children]` spellings are read-only tolerance (a diverged stored pair resolves deprecated-wins) (§6 Budget tracking)
       ├── delegate_custody.py  ← Delegated-run custody: `delegate_run_*`, `containment_faults.jsonl`, OWNED/FOREIGN/UNKNOWN, `Idempotency-Key`/`retry_of`, typed cancel, `daemon_says_absent`, patch-apply intent and ownership refusals (§6 Delegated subagents)
       ├── delegate_custody_reconcile.py, delegate_state_sweep.py ← Reconciliation sweeps of delegated runs (a review-owned row is cancelled only behind an owner cancellation; a review invocation is never re-posted) and the terminal-plus-age sweep of leftover recovery/supervision state (§6 Delegated subagents)
@@ -677,10 +676,11 @@ Bundled resources use the CLI / Headless Boundary lookup order rather than assum
 │   ├── state/
 │   │   ├── state.json             ← runtime state + compatibility cost projection; never the monetary authority
 │   │   ├── queue_snapshot.json    ← durable PENDING/RUNNING recovery projection + worker counts + explicit worker_pool_disabled_reason (§5)
-│   │   ├── usage_attempts.jsonl   ← append-only monetary authority: per-attempt id + state transitions; a settled attempt with cost=None and a numeric reservation bound counts at the bound (§6 Budget tracking)
+│   │   ├── usage.sqlite           ← the monetary authority: one row per attempt plus summaries, bindings and dirty owners kept by each write (docs/USAGE_STORE.md)
+│   │   ├── usage_attempts.jsonl.imported ← the retired journal after the one-time import; read only by the explicit history audit
 │   │   ├── skill_review_root_tasks.jsonl ← append-only compact index derived from per-skill `review_history.jsonl` (writer `skill_review_history.append_history_once`, bounded-tail reader `skill_readiness._skill_names_from_review_history`); 20 MB warning at `context_budget.SKILL_REVIEW_ROOT_TASKS_WARN_BYTES`
-│   │   ├── usage_attempts.quarantine.jsonl ← loud quarantine of a proven-corrupt final row; the validated prefix stays readable
-│   │   ├── usage_import_watermark.json ← resumable idempotent legacy-import watermark
+│   │   ├── usage_attempts.quarantine.jsonl ← the journal's proven-corrupt final row, quarantined by the import (integrity disclosed)
+│   │   ├── usage_import_watermark.json ← pre-ledger import watermark (restored by the downgrade export)
 │   │   ├── request_wire_compatibility.json ← cross-process locked, schema-versioned 14-day exact-route wire evidence (request_wire_contract.py)
 │   │   ├── capability_evidence.json ← sourced model-capability evidence (capability_evidence.py)
 │   │   ├── extra-ca-bundle/<digest>.pem ← certifi plus the owner's `OUROBOROS_EXTRA_CA_BUNDLE` PEM, content-addressed so a changed owner file rotates every path-keyed cache (siblings older than a day pruned); the one path every first-party HTTP client verifies against (net_transport.py)
@@ -743,7 +743,7 @@ Bundled resources use the CLI / Headless Boundary lookup order rather than assum
 │   │   ├── supervisor.jsonl       ← runtime ledger: workers/supervisor
 │   │   ├── task_reflections.jsonl ← canonical reflection log
 │   │   └── containment_faults.jsonl ← append-only compact projection of containment incidents (delegate_custody.py)
-│   ├── archive/                   ← rotated logs, rescue snapshots, archived managed repos
+│   ├── archive/                   ← rotated logs, rescue snapshots, archived managed repos; `usage_ledger/` retained, never written
 │   └── uploads/                   ← chat file attachments (paperclip)
 ├── Deliverables/                  ← bare user_files filenames land here (OUROBOROS_DELIVERABLES_ROOT; sibling of projects/, outside repo/ and data/, never GC-pruned)
 └── ouroboros.pid                  ← launcher PID lock; platform lock auto-released on crash

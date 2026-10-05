@@ -1,7 +1,6 @@
 """Effort constraints and evidence through the existing physical send drivers."""
 import asyncio
 import copy
-import json
 
 import pytest
 
@@ -24,6 +23,7 @@ from tests.test_request_wire_recovery_phase2b import (
 from tests.test_request_wire_recovery_phase2b import (
     evidence_root as _evidence_root,
 )
+from tests._usage_store_testing import ledger_rows
 
 evidence_root = _evidence_root
 
@@ -148,7 +148,7 @@ def test_enum_without_scalar_echo_reaches_driver_and_learns_only_after_success(
     assert usage["effort"]["sent"] == {"extra_body.reasoning": {"effort": applied, "exclude": False}}
     assert usage["effort"]["reported"] is None
     assert usage["request_wire"]["applied_effort_source"] == "sent_candidate"
-    rows = [json.loads(line) for line in (tmp_path / ua.LEDGER_REL).read_text().splitlines()]
+    rows = ledger_rows(tmp_path)
     assert rows[-1]["state"] == "settled"
     assert rows[-1]["effort"] == usage["effort"]
     assert "effort_resolution" not in rows[-1] and "effort_resolution" not in usage
@@ -541,10 +541,8 @@ def test_original_preference_survives_native_mapping_in_usage_and_ledger(evidenc
         attach_processing_receipt(target, usage)
     assert usage["effort"]["requested"] == requested
     assert usage["effort"]["reported"] is None
-    rows = [json.loads(line) for line in (tmp_path / ua.LEDGER_REL).read_text().splitlines()]
-    reserved = next(row for row in rows if row["state"] == "reserved")
-    assert reserved["effort"] == usage["effort"]
-    assert rows[-1]["state"] == "settled"
+    rows = ledger_rows(tmp_path)  # one row per attempt: the settled row carries the candidate effort
+    assert [row["state"] for row in rows] == ["settled"]
     assert rows[-1]["effort"] == usage["effort"]
 
 
@@ -583,7 +581,7 @@ def test_native_omission_is_recorded_without_inventing_provider_effort(tmp_path,
         "requested": "ultra", "sent": {}, "sent_state": "omitted", "sent_source": "host_candidate",
         "reported": None, "report_source": None,
     }
-    rows = [json.loads(line) for line in (tmp_path / ua.LEDGER_REL).read_text().splitlines()]
+    rows = ledger_rows(tmp_path)
     assert rows[-1]["state"] == "settled"
     assert rows[-1]["effort"] == usage["effort"]
 
@@ -609,7 +607,7 @@ def test_local_driver_retains_known_intent_with_omitted_effort(tmp_path, monkeyp
         "requested": "ultra", "sent": {}, "sent_state": "omitted", "sent_source": "host_candidate",
         "reported": None, "report_source": None,
     }
-    rows = [json.loads(line) for line in (tmp_path / ua.LEDGER_REL).read_text().splitlines()]
+    rows = ledger_rows(tmp_path)
     assert rows[-1]["state"] == "settled" and rows[-1]["effort"] == usage["effort"]
 
 
@@ -635,9 +633,9 @@ def test_late_receipt_keeps_candidate_effort_without_inheriting_an_older_report(
         # A historical administrative row may contain an older observation.
         ua._transition(reservation, "settled", settle_reason="abandoned", cost_usd=None, cost_final=False,
                        effort={**request.effort, "reported": "high", "report_source": "provider_response"})
+        assert ledger_rows(tmp_path)[-1]["effort"]["reported"] == "high"
         ua.settle_attempt(reservation, {}, cost_usd=0.25, cost_final=True)
-    rows = [json.loads(line) for line in (tmp_path / ua.LEDGER_REL).read_text().splitlines()]
-    assert rows[-2]["effort"]["reported"] == "high"
+    rows = ledger_rows(tmp_path)
     assert rows[-1]["effort"] == request.effort
     assert rows[-1]["settle_reason"] == "late_receipt"
     assert rows[-1]["cost_usd"] == 0.25 and rows[-1]["cost_final"] is True

@@ -75,7 +75,7 @@ def test_preset_images_reach_real_main_transport(subscription_transport, catalog
     assert calls == [("codex", "explicit-main", "exact-model")]
     assert messages == original
     assert len(gateway.creates) == 1 and len(gateway.accepted_operations) == 1
-    assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "settled"]
+    assert [(row["state"], row["revision"]) for row in ledger(root)] == [("settled", 3)]
 
 
 def test_image_capability_is_exact_role_account_and_not_a_global_overlay(catalog):

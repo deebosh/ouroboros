@@ -458,9 +458,8 @@ def check_version_sync(env: Any) -> Tuple[dict, int]:
 def check_budget(env: Any) -> Tuple[dict, int]:
     """Check budget remaining with warning thresholds.
 
-    Server-side only: the projection folds the whole usage ledger, and a worker
-    process verifying itself at construction must not pay that fold (and take
-    the money lock) once per worker; the server's own check already covers the
+    Server-side only: a worker verifying itself at construction need not read
+    the money store once per worker; the server's own check already covers the
     install, and every reservation re-checks the limits anyway.
     """
     from ouroboros.utils import in_worker_process
@@ -485,9 +484,8 @@ def check_budget(env: Any) -> Tuple[dict, int]:
         if total_budget is None:
             return {"status": "unconfigured"}, 0
         else:
-            from ouroboros.usage_accounting import ensure_legacy_imported, usage_projection
+            from ouroboros.usage_accounting import usage_projection
 
-            ensure_legacy_imported(accounting_root)
             accounting = usage_projection(accounting_root, global_limit_usd=total_budget)
             spent = float(accounting.get("accounted_usd") or 0.0)
             remaining = float(accounting.get("remaining_known_usd") or 0.0)
@@ -725,7 +723,6 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
         SUPERVISOR_LOG_WARN_BYTES,
         TASK_REFLECTIONS_LOG_WARN_BYTES,
         TOOLS_LOG_WARN_BYTES,
-        USAGE_LEDGER_WARN_BYTES,
     )
 
     rotation_expected = (
@@ -734,20 +731,6 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
         "supervisor rotation tick (rotate_chat_log_if_needed pattern)."
     )
     return (
-        (
-            "state/usage_attempts.jsonl",
-            USAGE_LEDGER_WARN_BYTES,
-            "Warm reservations validate only appended rows under the monetary lock; "
-            "cold/replaced views prepare history outside it (_usage_rows_memo.py). "
-            "Size-triggered compaction (usage_compaction.py, CPL4-C6) should hold the file "
-            "far below this — growth can mean broken compaction, a large "
-            "unfoldable residue, a policy abort, refusal on the name tier "
-            "(no kernel locks), or a file that has not yet outgrown the floor "
-            "its last committed pass stamped into the ledger header (declined "
-            "before the pass, so no event). Check usage_ledger_compaction_refused or "
-            "usage_ledger_compaction_skipped in events.jsonl; the two snapshot-race "
-            "exits before archive/swap only log warnings, without a typed event.",
-        ),
         ("logs/events.jsonl", EVENTS_LOG_WARN_BYTES, rotation_expected),
         ("logs/tools.jsonl", TOOLS_LOG_WARN_BYTES, rotation_expected),
         ("logs/supervisor.jsonl", SUPERVISOR_LOG_WARN_BYTES, rotation_expected),

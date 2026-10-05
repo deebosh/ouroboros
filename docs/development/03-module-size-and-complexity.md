@@ -135,8 +135,8 @@ the answer.
   `ouroboros/jsonl_tail.py` (doubling live tail, three newest archives,
   coverage facts) for history endpoints and the per-task recent-activity
   sections alike; the
-  fingerprint-keyed render cache in `ouroboros/_usage_rows_memo.py`, held while
-  its input is unchanged and invalidated only by advance/refold, never by TTL;
+  usage store's summary rows (`ouroboros/usage_store.py`): current money facts
+  kept by the writing transaction, so no render is cached at all;
   the `task_result_facts.py` stat-invalidated result memo and the
   task-event SSE v2 cursor discipline, whose rules are stated once in
   ARCHITECTURE §3 "Chat and Projects".

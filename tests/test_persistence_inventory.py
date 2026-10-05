@@ -810,6 +810,9 @@ STALE_ROW_EXEMPTIONS = frozenset({
     # "none in this tree ... nothing reads or recreates it". Confirmed by grep —
     # the string `project_source_locks` appears in no .py file.
     "state/project_source_locks",
+    # The retired compactor's archive: "none since the usage store" — kept as
+    # evidence, read only by the explicit history audit (model_send_seal).
+    "archive/usage_ledger/segment_*.jsonl",
 })
 
 

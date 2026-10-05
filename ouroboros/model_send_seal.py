@@ -438,14 +438,16 @@ def reconcile_model_send_seals(
     Bounded reconciliation riding the existing startup-sweep family: every
     ``model_send`` seal must join exactly one accounting attempt (any terminal
     state, including refused-before-dispatch), and every attempt DISPATCHED
-    THROUGH THE SEALING SEAM (its ledger ``candidate_manifest_ref`` carries
+    THROUGH THE SEALING SEAM (its ``candidate_manifest_ref`` carries
     ``model_send_seal_version``) must still resolve to its durable seal. An
     orphan on either side is a typed durable fact — the sweep deletes no seals
-    and fabricates no attempts. "No attempt row" is asked of the live replay
-    UNION the compaction archive, never of the live file alone, because a
-    folded attempt is absent from it by design. Fail-soft: an unreadable
-    ledger is UNKNOWN accounting state and skips every conclusion, and so is
-    an archive that cannot be read. Manifests promoted from a
+    and fabricates no attempts. "No attempt row" is asked of the usage store
+    UNION the retained journal evidence (the imported journal and the old
+    compaction archive: an attempt folded before the store existed is absent
+    from the store by design). Fail-soft: an unreadable store is UNKNOWN
+    accounting state and skips every conclusion, and so is retained evidence
+    that cannot be read. This is the explicit audit's history read (the whole
+    store via ``read_usage_records``), never an ordinary path. Manifests promoted from a
     child drive (``promoted_call_manifest``) are excluded — their attempt rows
     legitimately live in the child's ledger, not this one.
     """
@@ -463,7 +465,7 @@ def reconcile_model_send_seals(
         # before its live snapshot so a newly created seal cannot be mistaken
         # for an orphan merely because its reservation arrived after the read.
         manifest_paths = _seal_manifest_paths(root, max_manifests)
-        finals = {str(row["attempt_id"]): row for row in read_usage_records(root, final_only=True)}
+        finals = {str(row["attempt_id"]): row for row in read_usage_records(root)}
     except Exception:
         log.debug("model_send reconciliation skipped: ledger state unknown", exc_info=True)
         report["status"] = "unknown"
@@ -496,30 +498,7 @@ def _reconcile_seal_directions(
     manifest_paths: List[pathlib.Path],
 ) -> None:
     live_ids = set(finals)
-    archive_loaded = False
-    archived_ids: Optional[frozenset] = None
-
-    def _attempt_row_exists(attempt_id: str) -> bool:
-        nonlocal archive_loaded, archived_ids
-        if attempt_id in live_ids:
-            return True
-        if not archive_loaded:
-            archive_loaded = True
-            try:
-                from ouroboros.usage_compaction import archived_attempt_ids
-
-                # One validated history snapshot per pass, not one full chain
-                # walk per seal. Its lifetime is this batch, independent of the
-                # reader's cross-call cache TTL. The next pass reads anew.
-                archived_ids = archived_attempt_ids(root)
-            except Exception:
-                log.debug("model_send reconciliation: archived history unknown", exc_info=True)
-        # UNKNOWN skips reverse accusations for this pass; forward checks below
-        # still use the known live rows. Never turn a failed read into absence.
-        if archived_ids is None:
-            report["status"] = "unknown"
-        return archived_ids is None or attempt_id in archived_ids
-
+    seals: List[Tuple[Dict[str, Any], Dict[str, Any], str]] = []
     for manifest_path in manifest_paths:
         report["manifests_checked"] = report.get("manifests_checked", 0) + 1
         try:
@@ -533,8 +512,14 @@ def _reconcile_seal_directions(
         if not isinstance(seal, dict):
             continue
         report["seals"] += 1
-        attempt_id = str(seal.get("attempt_id") or manifest.get("call_id") or "")
-        if attempt_id and not _attempt_row_exists(attempt_id):
+        seals.append((manifest, seal, str(seal.get("attempt_id") or manifest.get("call_id") or "")))
+    # One retained-evidence scan per pass, for the ids the store does not hold.
+    retained = _retained_attempt_ids(root, {attempt_id for _m, _s, attempt_id in seals
+                                            if attempt_id and attempt_id not in live_ids})
+    if retained is None:  # UNKNOWN skips reverse accusations; never a failed read as absence
+        report["status"] = "unknown"
+    for manifest, seal, attempt_id in seals:
+        if attempt_id and retained is not None and attempt_id not in live_ids and attempt_id not in retained:
             report["orphan_seals"] += 1
             _write({
                 "type": VIOLATION_EVENT_TYPE,
@@ -580,3 +565,48 @@ def _reconcile_seal_directions(
                 "observed": {"basis": "", "sha256": "", "size": 0},
                 "divergence_class": "missing_seal_record",
             })
+
+
+def _retained_attempt_ids(root: pathlib.Path, wanted: set) -> Optional[set]:
+    """The ids of ``wanted`` that retained money evidence holds: the retired
+    journal files (``state/usage_attempts.jsonl*``: the imported journal) and
+    the old compaction archive segments (``archive/usage_ledger/``), newest
+    first, stopping once every id is found. A plain id scan for the explicit
+    audit: no chain verification, no hashes. ``None`` when a retained file
+    cannot be read (unknown, never absence)."""
+    if not wanted:
+        return set()
+
+    def newest_first(paths):
+        def mtime(path):
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                return 0.0
+        return sorted((path for path in paths if path.is_file()), key=mtime, reverse=True)
+
+    files = newest_first((root / "state").glob("usage_attempts.jsonl*"))
+    archive = root / "archive" / "usage_ledger"
+    if archive.is_dir():
+        files += newest_first(archive.iterdir())
+    needles = {attempt_id.encode("utf-8"): attempt_id for attempt_id in wanted}
+    found: set = set()
+    try:
+        for path in files:
+            with open(path, "rb") as handle:
+                for line in handle:
+                    if not any(needle in line for needle in needles):
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    attempt_id = str(row.get("attempt_id") or "") if isinstance(row, dict) else ""
+                    if attempt_id in wanted:
+                        found.add(attempt_id)
+                        if len(found) == len(wanted):
+                            return found
+    except OSError:
+        log.debug("model_send reconciliation: retained evidence unreadable", exc_info=True)
+        return None
+    return found

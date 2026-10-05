@@ -234,20 +234,20 @@ def credit_preflight(key: str, *, timeout: float = 10.0) -> dict:
 # --------------------------------------------------------------------------- #
 
 def lane_spend(data_root: pathlib.Path) -> tuple[float, int]:
-    """``(USD over the lane's SETTLED physical-attempt ledger rows, unknown-cost rows)``: ``state/usage_attempts.jsonl`` is
-    the product's money authority; ``llm_usage`` telemetry misses skill review/advisory/synthesis (run3: 114.81 vs 141.63)."""
-    path = pathlib.Path(data_root) / "state" / "usage_attempts.jsonl"
-    spent, unknown = 0.0, 0
-    for line in (path.read_text(encoding="utf-8").splitlines() if path.is_file() else []):
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict) and row.get("state") == "settled" and row.get("cost_final") is True:
-            cost = row.get("cost_usd")
-            priced = isinstance(cost, (int, float)) and not isinstance(cost, bool)
-            spent, unknown = spent + (float(cost) if priced else 0.0), unknown + (0 if priced else 1)
-    return spent, unknown
+    """``(USD over the lane's SETTLED physical-attempt rows, unknown-cost rows)``: ``state/usage.sqlite`` is the
+    product's money authority; ``llm_usage`` telemetry misses skill review/advisory/synthesis (run3: 114.81 vs 141.63)."""
+    store = pathlib.Path(data_root) / "state" / "usage.sqlite"
+    if not store.is_file():
+        return 0.0, 0
+    import sqlite3
+
+    conn = sqlite3.connect(f"{store.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        costs = [cost for (cost,) in conn.execute("SELECT cost_usd FROM attempts WHERE state='settled' AND cost_final=1")]
+    finally:
+        conn.close()
+    priced = [float(cost) for cost in costs if cost is not None]
+    return sum(priced), len(costs) - len(priced)
 
 
 class RunBudget:

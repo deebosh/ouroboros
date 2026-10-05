@@ -13,6 +13,7 @@ import pytest
 import ouroboros.gateway.models as provider_api
 from ouroboros.llm import LLMClient
 from ouroboros.usage_accounting import current_usage_scope
+from tests._usage_store_testing import ledger_rows
 
 
 class _Request:
@@ -636,23 +637,16 @@ def test_provider_test_attempts_are_physically_accounted_without_chat_side_effec
     assert client.probe_provider_readiness("openai/test", settings=settings)["ok"] is True
     assert client.probe_provider_readiness("openai/test", settings=settings)["error"] == "Rate limited"
 
-    rows = [
-        json.loads(line)
-        for line in (tmp_path / "state" / "usage_attempts.jsonl").read_text().splitlines()
-    ]
-    by_attempt = {}
-    for row in rows:
-        if row.get("kind") == "attempt":
-            by_attempt.setdefault(row["attempt_id"], []).append(row)
-    assert len(by_attempt) == 2
-    finals = [attempt_rows[-1] for attempt_rows in by_attempt.values()]
+    # One current row per attempt; revision 3 = reserved, dispatched, terminal.
+    finals = [row for row in ledger_rows(tmp_path) if row.get("kind") == "attempt"]
+    assert len({row["attempt_id"] for row in finals}) == len(finals) == 2
     assert sorted(row["state"] for row in finals) == ["settled", "unresolved"]
-    for attempt_rows in by_attempt.values():
-        assert [row["state"] for row in attempt_rows[:2]] == ["reserved", "dispatched"]
-        assert attempt_rows[-1]["task_id"] == "system:provider_test"
-        assert attempt_rows[-1]["root_task_id"] == "system:provider_test"
-        assert attempt_rows[-1]["category"] == "provider_test"
-        assert attempt_rows[-1]["source"] == "provider_test"
+    for row in finals:
+        assert row["revision"] == 3
+        assert row["task_id"] == "system:provider_test"
+        assert row["root_task_id"] == "system:provider_test"
+        assert row["category"] == "provider_test"
+        assert row["source"] == "provider_test"
     events_path = tmp_path / "logs" / "events.jsonl"
     events = [json.loads(line) for line in events_path.read_text().splitlines()]
     assert not any(row.get("type") in {"llm_round", "llm_usage", "chat", "progress"} for row in events)
@@ -684,14 +678,15 @@ def test_response_log_and_accounting_expose_only_controlled_error(
         status, body = _post({"provider_id": "openrouter"})
     assert status == 200
     assert body == {"ok": False, "error": "Model request failed"}
-    ledger = (tmp_path / "state" / "usage_attempts.jsonl").read_text()
+    stored = ledger_rows(tmp_path)
+    ledger = json.dumps(stored, default=str)
     rendered = json.dumps(body) + caplog.text + ledger
     assert secret not in rendered
     assert encoded not in rendered
     assert "user:" not in rendered
     assert f"api_key={secret}" not in rendered
     assert f"Basic {encoded}" not in rendered
-    final = json.loads(ledger.splitlines()[-1])
+    final = stored[-1]
     assert final["state"] == "unresolved"
     assert "***REDACTED***" in final["reason"]
 

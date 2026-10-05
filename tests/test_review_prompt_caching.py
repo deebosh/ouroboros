@@ -12,6 +12,7 @@ import pytest
 
 from ouroboros.llm import LLMClient, supports_message_cache_control
 from ouroboros.tools.review_helpers import cached_prompt_blocks
+from tests._usage_store_testing import ledger_rows
 
 # The shipped global default (config.SETTINGS_DEFAULTS["OUROBOROS_PROMPT_CACHE_TTL"]):
 # the review lanes' former REVIEW_CACHE_TTL constant collapsed into that setting, so
@@ -1225,7 +1226,6 @@ def test_is_tos_rejection_classification():
 
 
 def test_tos_rejection_settles_zero_with_reason(tmp_path):
-    import json as _json
 
     from ouroboros import usage_accounting as ua
 
@@ -1242,10 +1242,7 @@ def test_tos_rejection_settles_zero_with_reason(tmp_path):
     assert projection["settled_usd"] == 0.0
     assert projection["attempt_counts"].get("settled") == 1
 
-    rows = [
-        _json.loads(line)
-        for line in (tmp_path / "state" / "usage_attempts.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
+    rows = ledger_rows(tmp_path)
     settled = [row for row in rows if row.get("state") == "settled"]
     assert settled and settled[-1]["settle_reason"] == "tos_rejection"
     assert settled[-1]["cost_usd"] == 0.0

@@ -8,6 +8,7 @@ import pytest
 
 from tests._budget_pause_exact_helpers import _install_queue
 from tests.test_owner_continue import _interrupted, NONCE
+from tests._usage_store_testing import ledger_rows
 
 
 def test_publication_failure_cannot_dispatch_and_replay_repairs_same_action(tmp_path, monkeypatch):
@@ -145,7 +146,7 @@ def test_physical_claim_linearizes_with_pause_without_network_lock(tmp_path, mon
         else:
             assert future.result(timeout=4) == "response" and sent
     with ua._locked(tmp_path):
-        rows = list(ua._final_rows(ua._read_records_locked(tmp_path)).values())
+        rows = list({row['attempt_id']: row for row in ledger_rows(tmp_path)}.values())
     assert rows[-1]["state"] == ("released" if pause_before_claim else "settled")
 
 

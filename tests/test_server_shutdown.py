@@ -722,7 +722,7 @@ def _supervisor_harness(monkeypatch, tmp_path, steps):
     monkeypatch.setattr(server, "_supervisor_thread", None)
     monkeypatch.setattr(server, "_consciousness", None)
     monkeypatch.setattr(server, "_apply_settings_to_env", noop)
-    monkeypatch.setattr(server, "ensure_legacy_imported", noop)
+    monkeypatch.setattr("ouroboros.usage_store.migrate_from_journal", noop)
     monkeypatch.setattr(server, "_bootstrap_supervisor_repo", lambda _s: (True, "ok"))
     monkeypatch.setattr(server, "_runtime_branch_defaults", lambda: ("dev", "stable"))
     # Startup notices have their own real delivery/state consumer tests. This

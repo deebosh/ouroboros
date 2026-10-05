@@ -8,8 +8,7 @@ every ``delegate_wait``, ``delegate_start``, task start and completion is the
 "full-history scan filtered down to the answer" DEVELOPMENT §03 forbids on an
 interactive path.
 
-This module is the warm-cache half of the fix, the shape of
-``ouroboros/_usage_rows_memo.py``: an in-process copy of the custody rows plus
+This module is the warm-cache half of the fix: an in-process copy of the custody rows plus
 a fingerprint of the chain prefix they were read from, advanced by folding only
 the bytes appended since the previous read and REFOLDED FROM SCRATCH on any
 doubt. The durable rows stay the one authority (ARCHITECTURE §10, invariants 10
@@ -19,7 +18,7 @@ for that call instead of caching an "empty because unreadable" answer. It is
 deliberately NOT the durable compact projection §03 also names
 (``containment_faults.jsonl`` is that shape): each process pays one cold fold.
 
-Fingerprint rule (the ledger's ``_read_new_records_locked``): the memo's
+Fingerprint rule: the memo's
 segments must be the chain's first ``k`` segments by ``(st_dev, st_ino)`` in
 order — a rotated live file keeps its inode under its archive name, so the
 prefix it consumed stays consumed; every consumed segment has

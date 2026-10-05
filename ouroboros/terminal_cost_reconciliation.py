@@ -62,9 +62,9 @@ def _refresh_costs(root: pathlib.Path, owners: set[str], recovery_tasks: dict) -
     if not owners:
         return
     try:
-        usage.ensure_legacy_imported(root)
-        # One post-recovery view; a failure never turns into per-owner fallback.
-        breakdown = usage.usage_breakdown(root)
+        # One post-recovery view of every owner's summary bucket; a failure never
+        # turns into per-owner fallback.
+        breakdown = usage.usage_breakdown(root, include_owners=True)
     except Exception:
         for key in list(_EQUAL_PROJECTIONS):
             if key[0] == root_key:
@@ -131,9 +131,22 @@ def reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
     from ouroboros.usage_ledger import is_abandoned_settlement
     from supervisor.queue import task_has_live_ownership
 
+    from ouroboros import usage_store
+
     root = pathlib.Path(drive_root).resolve()
-    rows = usage.read_usage_records(root, final_only=True)
+    # Recovery candidates are the store's open set (partial index); projection
+    # candidates are the owners the store marked dirty. Acknowledging a dirty
+    # owner after its projection is the duty's later step; until then every
+    # dirty owner is compared each pass (the equality memo skips unchanged ones).
+    with usage_store.read(root) as txn:
+        rows = txn.open_attempts()
+        owners = txn.dirty_owner_ids()
     tasks, refresh = {}, set()
+    for owner in owners:
+        try:
+            refresh.add(validate_task_id(owner))
+        except ValueError:
+            continue  # Empty or system:* accounting scopes own no task result.
     gateway, gateway_unavailable = None, False
 
     def eligible_task(task_id):
@@ -170,13 +183,6 @@ def reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
             if kind not in {"attempt", "usage_baseline_group"} or any(row.get(key) for key in usage.REVIEW_ATTRIBUTION_KEYS):
                 continue
             task_id = str(row.get("task_id") or "")
-            # Settled/compacted attribution still owes projection after a failed write.
-            for owner in (task_id, str(row.get("root_task_id") or "")):
-                try:
-                    validate_task_id(owner)
-                except ValueError:
-                    continue  # Empty or system:* accounting scopes own no task result.
-                refresh.add(owner)
             remote = row.get("provider") == "claudexor"
             abandoned = is_abandoned_settlement(row)
             if (kind != "attempt"
@@ -206,7 +212,8 @@ def reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
                 elif disposition == "abandoned":
                     if abandoned:
                         continue
-                    state = usage.terminalize_abandoned_attempt(reservation, reason="owner_task_terminal", expected_seq=row.get("seq"))
+                    state = usage.terminalize_abandoned_attempt(
+                        reservation, reason="owner_task_terminal", expected_revision=row.get("revision"))
                     if state not in {"settled", "released"}:
                         continue
                 else:

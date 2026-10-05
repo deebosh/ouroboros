@@ -324,21 +324,8 @@ SCRATCHPAD_MAX_CONTENT_CHARS = 60_000
 # degrade with file size (BIBLE P2: the class was caught by the owner, not by
 # any instrument — these thresholds are the instrument). Same family as
 # SCRATCHPAD_BLOAT_WARN_CHARS above: a health-invariant WARNING, not a gate.
-#
-# Ledger: retain the historical 20MB growth tripwire (the 2026-07-23 incident).
-# Warm writers now validate only the tail; cold parsing runs outside the money
-# lock and revalidates its generation under it. Size still affects cold parsing,
-# full projections and compaction, not the cost of every reservation. Since
-# CPL4-C6, size-triggered compaction (config.USAGE_LEDGER_COMPACT_BYTES) should
-# hold the file below this. Growth can reflect a large unfoldable residue,
-# compaction that is broken or refused, or a file that has not yet outgrown the
-# growth floor its last committed pass stamped into the ledger header (declined
-# before the pass, so no typed event). The name tier (no kernel
-# locks) emits usage_ledger_compaction_refused once per process per data root;
-# a policy abort (_Abort) emits usage_ledger_compaction_skipped once per process
-# per (data root, reason). The two snapshot-race exits before archive/swap only
-# log warnings, without a typed event.
-USAGE_LEDGER_WARN_BYTES = 20_000_000
+# The money record (state/usage.sqlite) is not one of them: its readers address
+# summary rows and single attempts, so its size does not reach them.
 # events/tools/supervisor/task_reflections logs are ROTATION-BOUNDED since the
 # CPL4-C1..C4 rotation train (same 800KB rotator and supervisor tick as
 # chat/progress). 8MB = 10x the rotation cap: these warnings fire only if

@@ -42,9 +42,8 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 # transplants its domain; only the D16 L-C2 usage split exists so far. The
 # domain-specific standalone tests travel with their own rows.
 LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
-    "ouroboros/usage_legacy_import.py": ("ouroboros/usage_accounting.py", "_usage", frozenset({
-        "_legacy_snapshot", "_locked", "_read_records_locked_cached",
-    })),
+    # (The D16 L-C2 usage leaf, usage_legacy_import.py, retired with the usage
+    # store: its import became usage_store.migrate_from_journal.)
     # D08 lane rows. The queue/pool declared sets grew past the reference table
     # where post-cutoff upstream helpers stayed on the facade (the deferred
     # cancel/custody organ); every set below is the tool-derived exact read set.

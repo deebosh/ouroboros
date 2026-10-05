@@ -598,7 +598,7 @@ EVOLUTION_BUDGET_RESERVE: float = 2.0  # Stop evolution when remaining < this
 
 
 def set_budget_limit(limit: float) -> None:
-    """Set total budget limit for budget_pct."""
+    """Set the total budget limit the budget readers use."""
     global TOTAL_BUDGET_LIMIT
     TOTAL_BUDGET_LIMIT = limit
 
@@ -644,10 +644,9 @@ def budget_remaining(
         projection = None
     try:
         if projection is None:
-            from ouroboros.usage_accounting import ensure_legacy_imported, usage_projection
+            from ouroboros.usage_accounting import usage_projection
             from ouroboros.usage_ledger import UsageLockUnavailable
 
-            ensure_legacy_imported(DRIVE_ROOT)
             with contextlib.suppress(*((UsageLockUnavailable,) if allow_stale else ())):
                 projection = usage_projection(DRIVE_ROOT, global_limit_usd=total, allow_stale=allow_stale)
             if projection is None or (
@@ -767,10 +766,9 @@ def _openrouter_ledger_settled(breakdown: Optional[Dict[str, Any]] = None) -> Op
     the tracked side of the drift comparison."""
     try:
         if breakdown is None:
-            from ouroboros.usage_accounting import ensure_legacy_imported, usage_breakdown
+            from ouroboros.usage_accounting import usage_writer_snapshot
 
-            ensure_legacy_imported(DRIVE_ROOT)
-            breakdown = usage_breakdown(DRIVE_ROOT)
+            breakdown = usage_writer_snapshot(DRIVE_ROOT)
         bucket = dict(breakdown.get("by_provider") or {}).get("openrouter") or {}
         return float(bucket.get("settled_usd") or 0.0)
     except Exception:
@@ -956,22 +954,6 @@ def _apply_openrouter_ground_truth(st: Dict[str, Any], snapshot: Dict[str, Any],
             st["budget_drift_alert"] = False
 
 
-def budget_pct(st: Dict[str, Any]) -> float:
-    """Return ledger-derived budget percent used."""
-    total = float(TOTAL_BUDGET_LIMIT or 0.0)
-    if total <= 0:
-        return 0.0
-    try:
-        from ouroboros.usage_accounting import ensure_legacy_imported, usage_projection
-
-        ensure_legacy_imported(DRIVE_ROOT)
-        projection = usage_projection(DRIVE_ROOT, global_limit_usd=total)
-        return (float(projection.get("accounted_usd") or 0.0) / total) * 100.0
-    except Exception:
-        log.exception("Budget ledger unavailable while calculating percent")
-        return 100.0
-
-
 def update_budget_from_usage(usage: Dict[str, Any]) -> bool:
     """Refresh the legacy state projection from the physical-attempt ledger.
 
@@ -1016,7 +998,6 @@ def update_budget_from_usage(usage: Dict[str, Any]) -> bool:
 
     from ouroboros.usage_accounting import (
         UsageLedgerCorrupt,
-        ensure_legacy_imported,
         usage_projection,
         usage_writer_snapshot,
     )
@@ -1028,14 +1009,11 @@ def update_budget_from_usage(usage: Dict[str, Any]) -> bool:
     # A DISPLAY read (``allow_stale``: this runs on the supervisor loop once per turn with
     # ``llm_usage`` events): a lagging snapshot carries its own lower marker, so it never regresses money.
     try:
-        ensure_legacy_imported(DRIVE_ROOT)
         breakdown = usage_writer_snapshot(DRIVE_ROOT, allow_stale=True)
         total_limit = float(TOTAL_BUDGET_LIMIT or 0.0)
         projection_snapshot = breakdown.pop("_usage_projection", None)
         if total_limit > 0 and isinstance(projection_snapshot, dict):
             from ouroboros._usage_rows import _with_limit
-            # Totals only (issue #1002): per-root money is a ledger render nothing reads back from here.
-            projection_snapshot.pop("by_root", None)
             projection = _with_limit(projection_snapshot, total_limit)
         else:
             projection = (
@@ -1128,9 +1106,8 @@ def budget_breakdown(st: Dict[str, Any]) -> Dict[str, float]:
     """Aggregate accounted physical-attempt cost by category."""
     breakdown: Dict[str, float] = {}
     try:
-        from ouroboros.usage_accounting import ensure_legacy_imported, usage_breakdown
+        from ouroboros.usage_accounting import usage_breakdown
 
-        ensure_legacy_imported(DRIVE_ROOT)
         ledger = usage_breakdown(DRIVE_ROOT, allow_stale=True)
         for category, bucket in dict(ledger.get("by_category") or {}).items():
             breakdown[str(category)] = float(bucket.get("accounted_usd") or 0.0)
@@ -1147,9 +1124,8 @@ def model_breakdown(st: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
     """Aggregate physical calls/tokens/accounted cost by model."""
     breakdown: Dict[str, Dict[str, float]] = {}
     try:
-        from ouroboros.usage_accounting import ensure_legacy_imported, usage_breakdown
+        from ouroboros.usage_accounting import usage_breakdown
 
-        ensure_legacy_imported(DRIVE_ROOT)
         ledger = usage_breakdown(DRIVE_ROOT, allow_stale=True)
         buckets = dict(ledger.get("by_model") or {})
         unattributed = dict(ledger.get("unattributed") or {}).get("model") or {}
@@ -1170,27 +1146,21 @@ def model_breakdown(st: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
 
 
 def per_task_cost_summary(max_tasks: int = 10, tail_bytes: int = 512_000) -> List[Dict[str, Any]]:
-    """Return task cost summary from ledger-attributed physical attempts."""
-    del tail_bytes  # compatibility-only; the append-only ledger is replayed in full
-    tasks: Dict[str, Dict[str, Any]] = {}
+    """The costliest tasks by accounted spend: the indexed task summaries, never
+    a scan of attempts (``accounted_num`` orders; amounts come from the exact
+    decimal text)."""
+    del tail_bytes  # compatibility-only
     try:
-        from ouroboros.usage_accounting import ensure_legacy_imported, usage_breakdown
+        from ouroboros import usage_store
 
-        ensure_legacy_imported(DRIVE_ROOT)
-        ledger = usage_breakdown(DRIVE_ROOT)
-        for task_id, bucket in dict(ledger.get("by_task") or {}).items():
-            tasks[str(task_id)] = {
-                "task_id": str(task_id),
-                "cost": float(bucket.get("accounted_usd") or 0.0),
-                "rounds": int(bucket.get("physical_calls") or 0),
-                "model": "",
-            }
+        with usage_store.read(DRIVE_ROOT) as txn:
+            buckets = [(key, txn.bucket("task", key)) for key in txn.top_keys("task", max_tasks)]
     except Exception:
         log.error("Failed to calculate ledger per-task cost summary", exc_info=True)
         raise
-
-    sorted_tasks = sorted(tasks.values(), key=lambda x: x["cost"], reverse=True)
-    return sorted_tasks[:max_tasks]
+    tasks = [{"task_id": key, "cost": float(bucket.render_summary()["accounted_usd"]),
+              "rounds": int(bucket.physical), "model": ""} for key, bucket in buckets]
+    return sorted(tasks, key=lambda x: x["cost"], reverse=True)
 
 
 def reconstruct_task_cost(
@@ -1215,11 +1185,10 @@ def reconstruct_task_cost(
             from ouroboros.cost_projection import (
                 COST_SCOPE_OWN, build_cost_presentation, honest_accounted_amount,
             )
-            from ouroboros.usage_accounting import ensure_legacy_imported, usage_breakdown
+            from ouroboros.usage_accounting import usage_breakdown
 
             authority_root = pathlib.Path(drive_root) if drive_root is not None else DRIVE_ROOT
             if breakdown is None:
-                ensure_legacy_imported(authority_root)
                 bucket = usage_breakdown(authority_root, task_id=want)
             else:
                 from ouroboros._usage_rows import _breakdown_bucket, _with_integrity
@@ -1322,9 +1291,8 @@ def status_text(workers_dict: Dict[int, Any], pending_list: list,
         lines.append("queue_warning: running>0 while busy=0")
     accounting_available = True
     try:
-        from ouroboros.usage_accounting import ensure_legacy_imported, usage_breakdown, usage_projection
+        from ouroboros.usage_accounting import usage_breakdown, usage_projection
 
-        ensure_legacy_imported(DRIVE_ROOT)
         ledger_breakdown = usage_breakdown(DRIVE_ROOT, allow_stale=True)  # /status renders on the loop
         ledger_projection = (
             usage_projection(DRIVE_ROOT, global_limit_usd=TOTAL_BUDGET_LIMIT, allow_stale=True)

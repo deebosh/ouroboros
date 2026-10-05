@@ -2,7 +2,7 @@
 import contextlib
 import json
 import logging
-import time
+import pathlib
 from collections import Counter
 from types import SimpleNamespace
 
@@ -14,6 +14,7 @@ from ouroboros import terminal_cost_reconciliation as reconciliation
 from ouroboros import usage_accounting as usage
 from supervisor import events_task_done as done
 from supervisor import queue
+from tests._usage_store_testing import ledger_rows
 
 
 @pytest.fixture
@@ -164,20 +165,20 @@ def test_result_lineage_change_invalidates_without_ledger_change(env):
     attempt(env)
     attempt(env, "old-child", logical="old", cost=0.6)
     warm(env)
-    ledger = (env.root / usage.LEDGER_REL).read_bytes()
+    ledger = ledger_rows(env.root)
     task(env, root_task_id="old", parent_task_id="", delegation_role="root",
          original_task_id="old", timeout_retry_from="old")
     maintenance._reconcile_abandoned_usage(env.root)
     row = task_results.load_task_result(env.root, "root")
     assert row["accounted_upper_bound_usd_with_children"] == 0.6
-    assert (env.root / usage.LEDGER_REL).read_bytes() == ledger
+    assert ledger_rows(env.root) == ledger
 
 
 def test_detached_basis_detects_in_place_changes_and_absent_bucket_integrity(env, monkeypatch):
     task(env)
     attempt(env, "child", logical="root")  # root's own bucket is absent
     warm(env)
-    breakdown = usage.usage_breakdown(env.root)
+    breakdown = usage.usage_breakdown(env.root, include_owners=True)
     monkeypatch.setattr(usage, "usage_breakdown", lambda *_a, **_kw: breakdown)
     counts = observe(monkeypatch)
     maintenance._reconcile_abandoned_usage(env.root)
@@ -301,7 +302,7 @@ def test_unavailable_breakdown_invalidates_old_proof_without_per_owner_fallback(
 
     monkeypatch.setattr(usage, "usage_breakdown", unavailable)
     maintenance._reconcile_abandoned_usage(env.root)
-    assert calls == [{}] and not reconciliation._EQUAL_PROJECTIONS
+    assert calls == [{"include_owners": True}] and not reconciliation._EQUAL_PROJECTIONS
     monkeypatch.setattr(usage, "usage_breakdown", breakdown)
     counts = observe(monkeypatch)
     maintenance._reconcile_abandoned_usage(env.root)
@@ -309,21 +310,24 @@ def test_unavailable_breakdown_invalidates_old_proof_without_per_owner_fallback(
 
 
 def test_foreign_live_owner_never_imports_or_reads_foreign_money(env, monkeypatch):
+    from ouroboros import usage_store
+
     foreign = env.root / "foreign"
     task(env, budget_drive_root=str(foreign))
     attempt(env)
     env.live.add("root")
-    imported = usage.ensure_legacy_imported
+    opened = usage_store.store_tier
     calls = []
 
-    def checked(root):
-        calls.append(root)
-        assert root != foreign, "foreign accounting must follow eligibility"
-        return imported(root)
+    def checked(root, **kw):
+        # Every store access (migration included) resolves its tier here first.
+        calls.append(pathlib.Path(root).resolve())
+        assert calls[-1] != foreign.resolve(), "foreign accounting must follow eligibility"
+        return opened(root, **kw)
 
-    monkeypatch.setattr(usage, "ensure_legacy_imported", checked)
+    monkeypatch.setattr(usage_store, "store_tier", checked)
     maintenance._reconcile_abandoned_usage(env.root)
-    assert calls == [env.root]
+    assert calls and set(calls) == {env.root.resolve()}
     assert not foreign.exists() and not reconciliation._EQUAL_PROJECTIONS
     assert "accounted_upper_bound_usd" not in task_results.load_task_result(env.root, "root")
 
@@ -412,34 +416,21 @@ def test_memo_is_root_scoped_and_pruned_by_current_attribution(env):
     assert key(other) in reconciliation._EQUAL_PROJECTIONS
 
 
-@pytest.mark.parametrize("compact", [False, True])
-def test_settled_system_scopes_own_no_result_but_their_real_root_still_does(env, monkeypatch, caplog, compact):
-    from ouroboros import usage_compaction
-
+def test_settled_system_scopes_own_no_result_but_their_real_root_still_does(env, caplog):
     task(env)
     attempt(env)
     # Probe/test money settles under non-task ``system:*`` scopes; one such scope
     # still rolls up into a real root that no row of its own names.
     task(env, "owed")
     attempt(env, "system:update_letter", logical="owed", cost=0.6, non_task=True)
-    for _ in range(20 if compact else 1):
-        for scope in ("system:capability_probe", "system:provider_test", "system:update_letter"):
-            attempt(env, scope, logical="owed" if scope == "system:update_letter" else None, cost=0.0,
-                    non_task=True)
+    for scope in ("system:capability_probe", "system:provider_test", "system:update_letter"):
+        attempt(env, scope, logical="owed" if scope == "system:update_letter" else None, cost=0.0,
+                non_task=True)
     task(env, "broken")
     attempt(env, "broken")
     broken = task_results.task_result_path(env.root, "broken")
     broken.write_bytes(b"{broken")
-    if compact:
-        monkeypatch.setattr(usage_compaction, "_fold_clock", lambda: time.time() + 1_000_000)
-        with usage._locked(env.root) as heartbeat:
-            assert usage_compaction.compact_usage_ledger_locked(env.root, heartbeat=heartbeat)
-            rows = usage._read_records_locked_cached(env.root)
-        grouped = {(row.get("task_id"), row.get("root_task_id")) for row in rows
-                   if row.get("kind") == "usage_baseline_group"}
-        assert {("system:capability_probe", "system:capability_probe"),
-                ("system:update_letter", "owed")} <= grouped
-    ledger = (env.root / usage.LEDGER_REL).read_bytes()
+    ledger = ledger_rows(env.root)
     caplog.set_level(logging.WARNING, logger=reconciliation.__name__)
 
     for _ in range(3):
@@ -448,7 +439,7 @@ def test_settled_system_scopes_own_no_result_but_their_real_root_still_does(env,
     # A malformed real task keeps its diagnostic; non-task scopes add none.
     assert [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING] == [
         "Reconciled task cost refresh failed for broken"] * 3
-    assert (env.root / usage.LEDGER_REL).read_bytes() == ledger
+    assert ledger_rows(env.root) == ledger
     assert sorted(path.name for path in (env.root / "task_results").iterdir()) == [
         "broken.json", "owed.json", "root.json"]
     assert broken.read_bytes() == b"{broken"
@@ -496,10 +487,10 @@ def test_real_ownership_predicate_still_fences_projection_and_recovery(env, monk
             link = {"control_only": True, "subject_task_id": "subject", "controller": primary["controller"], "source_ref": primary["source_ref"]}
             task(env, **{review_operation.OPERATIONS_FIELD: {"operation": link}})
     assert queue.task_has_live_ownership("root")
-    ledger = (env.root / usage.LEDGER_REL).read_bytes()
+    ledger = ledger_rows(env.root)
     original = task_results.task_result_path(env.root, "root").read_bytes()
     maintenance._reconcile_abandoned_usage(env.root)
-    assert (env.root / usage.LEDGER_REL).read_bytes() == ledger
+    assert ledger_rows(env.root) == ledger
     assert task_results.task_result_path(env.root, "root").read_bytes() == original
     usage.settle_attempt(reservation, cost_usd=0.4, cost_final=True)
     maintenance._reconcile_abandoned_usage(env.root)
@@ -543,20 +534,22 @@ def test_canonical_probe_does_not_fallback_if_authority_moves_during_comparison(
         pytest.skip(f"symlink unavailable: {exc}")
     task(env, budget_drive_root=str(alias))
     attempt(env)
-    imported = usage.ensure_legacy_imported
+    from ouroboros import usage_store
+
+    opened = usage_store.store_tier
     project = done._authoritative_terminal_cost
     foreign = env.root / "foreign"
 
-    def imports(root):
-        assert root.resolve() == env.root, "probe must not enter foreign accounting"
-        return imported(root)
+    def imports(root, **kw):
+        assert pathlib.Path(root).resolve() == env.root.resolve(), "probe must not enter foreign accounting"
+        return opened(root, **kw)
 
     def moved(*args, **kw):
         alias.unlink()
         alias.symlink_to(foreign, target_is_directory=True)
         return project(*args, **kw)
 
-    monkeypatch.setattr(usage, "ensure_legacy_imported", imports)
+    monkeypatch.setattr(usage_store, "store_tier", imports)
     monkeypatch.setattr(done, "_authoritative_terminal_cost", moved)
     maintenance._reconcile_abandoned_usage(env.root)
     assert not foreign.exists() and not reconciliation._EQUAL_PROJECTIONS

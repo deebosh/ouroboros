@@ -1342,13 +1342,8 @@ def budget_line(force: bool = False) -> str:
         try:
             if DATA_DIR is None:
                 raise RuntimeError("message bus data root is not initialized")
-            from ouroboros.usage_accounting import (
-                ensure_legacy_imported,
-                usage_projection,
-                usage_writer_snapshot,
-            )
+            from ouroboros.usage_accounting import usage_projection, usage_writer_snapshot
 
-            ensure_legacy_imported(DATA_DIR)
             total = float(TOTAL_BUDGET_LIMIT or 0.0)
             accounting = (  # display of scalars, sent from the supervisor loop too: no per-root map
                 usage_projection(DATA_DIR, global_limit_usd=total, include_roots=False, allow_stale=True)

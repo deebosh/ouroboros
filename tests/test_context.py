@@ -353,17 +353,6 @@ class TestHotStoreGrowthInvariant:
         result = build_health_invariants(env)
         assert "HOT STORE GROWTH" not in result
 
-    def test_ledger_growth_warns_with_lock_remediation(self, tmp_path):
-        from ouroboros.context_budget import USAGE_LEDGER_WARN_BYTES
-
-        env = _make_health_env(tmp_path)
-        _grow_ledger(tmp_path / "state" / "usage_attempts.jsonl", USAGE_LEDGER_WARN_BYTES + 1)
-
-        result = build_health_invariants(env)
-        assert "HOT STORE GROWTH" in result
-        assert "state/usage_attempts.jsonl" in result
-        assert "monetary lock" in result
-
     def test_rotated_log_thresholds_are_regression_tripwires(self, tmp_path):
         """events/tools/supervisor/task_reflections rotate on the supervisor
         tick (CPL4-C1..C4); their thresholds fire only when rotation is broken."""
@@ -413,11 +402,10 @@ class TestHotStoreGrowthInvariant:
 
     def test_isolated_benchmark_sentinel_suppresses_warnings(self, tmp_path):
         from supervisor.state import ISOLATED_BENCHMARK_SENTINEL
-        from ouroboros.context_budget import PROGRESS_LOG_WARN_BYTES, USAGE_LEDGER_WARN_BYTES
+        from ouroboros.context_budget import PROGRESS_LOG_WARN_BYTES
 
         env = _make_health_env(tmp_path)
         _grow_file(tmp_path / "logs" / "progress.jsonl", PROGRESS_LOG_WARN_BYTES + 1)
-        _grow_ledger(tmp_path / "state" / "usage_attempts.jsonl", USAGE_LEDGER_WARN_BYTES + 1)
         (tmp_path / ISOLATED_BENCHMARK_SENTINEL).write_text("isolated\n", encoding="utf-8")
 
         result = build_health_invariants(env)

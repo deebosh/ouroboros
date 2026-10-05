@@ -65,6 +65,15 @@ def _daemon_pin_matched() -> Optional[bool]:
         return None
 
 
+def run_startup_phase(liveness: list, phase: str, step: Callable[[], Any]) -> Any:
+    """Run one startup step under its own visible sub-phase (a stall inside it is
+    journaled with that name), then publish ``startup`` again."""
+    liveness[1], liveness[0] = loop_phase_facts(liveness, phase), time.monotonic()
+    result = step()
+    liveness[1], liveness[0] = loop_phase_facts(liveness, "startup"), time.monotonic()
+    return result
+
+
 def loop_phase_facts(liveness: list, phase: str, *, new_tick: bool = False) -> dict:
     """The measurements the LOOP THREAD publishes with its own liveness stamp.
 
@@ -363,7 +372,7 @@ def _start_supervisor_liveness_watchdog(
                     stack = _loop_thread_stack(watched_ident, facts=flags)
                     # A startup stall is a generation that has not finished initializing: no
                     # native chat answers for it, so the line says only what is true.
-                    starved = ("startup has not finished" if facts.get("phase") == "startup"
+                    starved = ("startup has not finished" if str(facts.get("phase") or "").startswith("startup")
                                else "new-message intake starved (native chat still answers)")
                     log.error("Supervisor loop STALLED ~%.0fs in phase %s — %s; loop thread is at: %s",
                               gap, facts.get("phase"), starved, stack[-1] if stack else "(stack unavailable)")

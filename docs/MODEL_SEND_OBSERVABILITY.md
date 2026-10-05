@@ -228,5 +228,6 @@ from "our two copies agree" to "the durable record agrees with the wire".
   (#1195 F1). Unknown accounting evidence does not become an orphan claim;
   the sweep records facts without deleting records or fabricating attempts.
 - `tests/test_model_send_seal.py` covers reconstruction, typed divergence,
-  non-blocking dispatch and reverse joins. Compacted history is resolved through
-  the live/archive union described in [Usage compaction](USAGE_COMPACTION.md).
+  non-blocking dispatch and reverse joins. History folded before the usage store
+  existed is resolved through the retained evidence described in
+  [Usage store](USAGE_STORE.md#8-explicit-history-audit).
