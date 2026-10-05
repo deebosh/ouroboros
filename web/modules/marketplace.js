@@ -382,18 +382,20 @@ function showStatus(host, message, tone) {
 
 
 async function loadInstalled({ signal: externalSignal } = {}) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3000);
-    // Link caller signal so refresh() cancels stale installed-lookups too.
-    const onExternalAbort = () => controller.abort();
+    // The primary installed read is bounded only by its caller (a newer
+    // refresh); the optional live-details enrichment has its own 3 s bound,
+    // so a slow installed-skill list never turns installed state unavailable.
+    const enrichment = new AbortController();
+    const timer = setTimeout(() => enrichment.abort(), 3000);
+    const onExternalAbort = () => enrichment.abort();
     if (externalSignal) {
-        if (externalSignal.aborted) controller.abort();
+        if (externalSignal.aborted) enrichment.abort();
         else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
     }
     try {
         const [data, catalog] = await Promise.all([
-            fetchJson('/api/marketplace/clawhub/installed', { signal: controller.signal }),
-            fetchJson('/api/extensions', { signal: controller.signal }).catch(() => null),
+            fetchJson('/api/marketplace/clawhub/installed', externalSignal ? { signal: externalSignal } : {}),
+            fetchJson('/api/extensions', { signal: enrichment.signal }).catch(() => null),
         ]);
         if (!Array.isArray(data?.skills)) throw new Error('Installed skills response is unavailable.');
         const uiTabSkills = new Set(
@@ -448,6 +450,7 @@ export function initMarketplace(pane, controlsHost = null) {
         results: [],
         installedMap: new Map(),
         installedUnavailable: true,
+        enrichmentUnavailable: false,
         catalogLoaded: false,
         cursor: '',
         cursorHistory: [],
@@ -494,7 +497,7 @@ export function initMarketplace(pane, controlsHost = null) {
         if (!cardVisible) showStatus(pane, `${slug}: ${message}`, tone);
     }
 
-    async function refresh() {
+    async function refresh({ installed: readInstalled = true } = {}) {
         if (destroyed) return;
         syncControlsForMode();
         const query = String(state.query || '').trim();
@@ -505,14 +508,20 @@ export function initMarketplace(pane, controlsHost = null) {
         const myController = new AbortController();
         activeController = myController;
         const myToken = ++refreshToken;
+        // Typing searches the registry only; the installed state it already
+        // knows is kept, and an unknown or unavailable one is read again.
+        const withInstalled = readInstalled || state.installedUnavailable;
         try {
             const [catalog, installed] = await Promise.all([
                 runSearch(state, { signal: myController.signal }).then(data => ({ data }), error => ({ error })),
-                loadInstalled({ signal: myController.signal }),
+                withInstalled ? loadInstalled({ signal: myController.signal }) : null,
             ]);
             if (destroyed || myToken !== refreshToken) return;
-            state.installedUnavailable = !installed.available;
-            if (installed.available) state.installedMap = installed.map;
+            if (installed) {
+                state.installedUnavailable = !installed.available;
+                state.enrichmentUnavailable = installed.available && !installed.enrichmentAvailable;
+                if (installed.available) state.installedMap = installed.map;
+            }
             state.installedMap.pendingBySlug = getPendingBySlug();
             if (catalog.error) throw catalog.error;
             const data = catalog.data;
@@ -534,9 +543,9 @@ export function initMarketplace(pane, controlsHost = null) {
             });
             const mode = query ? 'search' : 'browse';
             const official = state.onlyOfficial ? ' · official only' : '';
-            if (!installed.available) {
+            if (state.installedUnavailable) {
                 showStatus(pane, 'Installed skills could not be read. Previous installed details are shown where available; Refresh to retry.', 'warn');
-            } else if (!installed.enrichmentAvailable) {
+            } else if (state.enrichmentUnavailable) {
                 showStatus(pane, `${state.results.length} skills · live widget details unavailable. Refresh to retry.`, 'warn');
             } else if (registryWarnings.length) {
                 showStatus(pane, `${state.results.length} skill${state.results.length === 1 ? '' : 's'} · ${mode}${official} · ${state.registryPath} · ${registryWarnings[0]}`, 'warn');
@@ -559,10 +568,10 @@ export function initMarketplace(pane, controlsHost = null) {
         }
     }
 
-    function scheduleRefresh(immediate) {
+    function scheduleRefresh(immediate, options = {}) {
         if (destroyed) return;
         if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(refresh, immediate ? 0 : 300);
+        debounceTimer = setTimeout(() => refresh(options), immediate ? 0 : 300);
     }
 
     pane._marketplaceRefresh = () => {
@@ -699,7 +708,7 @@ export function initMarketplace(pane, controlsHost = null) {
         state.query = event.target.value || '';
         state.cursor = '';
         state.cursorHistory = [];
-        scheduleRefresh(false);
+        scheduleRefresh(false, { installed: false });
     });
     queryInput.addEventListener('keydown', (event) => {
         // Enter triggers the same immediate search as the button.
