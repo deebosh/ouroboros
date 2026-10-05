@@ -47,6 +47,7 @@ _CONTEXT = _object({
     "route_fp": _STRING, "round_id": _STRING,
     "target_total_tokens": _NULL_INT, "capacity_total_tokens": _NULL_INT,
     "context_target_miss": {"type": "boolean"}, "automatic_pass_used": {"type": "boolean"},
+    "measurement_density": {"type": ["number", "null"]},
 })
 _CAPTURE = _object({
     **{key: _STRING for key in ("attempt_id", "model", "provider", "provider_code", "provider_error_type", "provider_error")},

@@ -345,7 +345,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/loop_forced_finalization.py": ("ouroboros/loop.py", "_loop", frozenset({
         'DeliveryCandidate', '_LoopExitContext', '_append_or_merge_user_message',
         '_call_forced_model_once', '_child_disposition_state', '_claimed_child_dispositions',
-        '_current_delivery_candidate', '_degrade_retained_delivery_candidate', '_delivery_evidence_state',
+        '_context_reclaim_materializations', '_current_delivery_candidate', '_degrade_retained_delivery_candidate', '_delivery_evidence_state',
         '_delivery_replace_required', '_direct_child_results', '_drain_forced_owner_directives',
         '_drain_incoming_messages', '_emit_checkpoint_event', '_finalize_forced_services',
         '_finalize_task_services', '_force_plan_decision', '_force_plan_disclosure',

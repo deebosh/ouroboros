@@ -13,8 +13,8 @@ import copy
 import logging
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from ouroboros.context_budget import (  # the typed overflow lives with the overflow vocabulary; this name stays importable here
-    LocalContextTooLargeError,  # noqa: F401
+from ouroboros.context_budget import (  # the typed overflow lives with the overflow vocabulary
+    LocalContextTooLargeError,
     context_overflow_message,
     estimate_message_chars as _estimate_message_chars,  # beside its proxy constant; the historical private name
 )
