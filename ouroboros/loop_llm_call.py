@@ -33,8 +33,8 @@ from ouroboros.pricing import emit_llm_usage_event, estimate_cost_optional, infe
 from ouroboros.send_clock import main_send_scope
 from ouroboros.task_pacing import main_loop_wire_options
 from ouroboros.transport_custody import attempt_custody_event_fields, is_pre_dispatch_transport_failure, is_retryable_transport_death
-from ouroboros._usage_response import provider_cost_value as _provider_cost_value
-from ouroboros.usage_accounting import PhysicalAttemptContext, UsageAccountingError, bind_physical_attempt_context
+from ouroboros._usage_response import OUTPUT_LIMIT_FINISH_REASONS, output_exhaustion_facts, provider_cost_value as _provider_cost_value, response_finish_reason
+from ouroboros.usage_accounting import PhysicalAttemptContext, UsageAccountingError, bind_physical_attempt_context, last_physical_attempt_capture
 from ouroboros.utils import (
     append_jsonl,
     emit_cognitive_operation_event,
@@ -166,6 +166,9 @@ _TRANSPORT_DEATH_BACKOFF_SEC = (4.0, 8.0)
 # the wait episode's free redial re-enters call_llm_with_retry with the SAME
 # round id, so the budget must not re-arm per invocation.
 TRANSPORT_DEATHS_KEY = "_transport_deaths"
+# A local pre-dispatch refusal's own candidate facts (``LocalContextTooLargeError.refused_candidate``), for the
+# round's one strict-shrink retry; a wait's reprepare rebinds the physical context of the remaining attempts.
+REFUSED_CANDIDATE_KEY, REBOUND_PHYSICAL_CONTEXT_KEY = "_refused_candidate", "_physical_context_rebound"
 
 
 def transient_retry_max(default_retries: int) -> int:
@@ -188,29 +191,34 @@ def transient_retry_max(default_retries: int) -> int:
     return max(int(default_retries), value)
 
 
-def _empty_response_log_msg(usage: Dict[str, Any], is_provider_glitch: bool) -> str:
+def _empty_response_log_msg(usage: Dict[str, Any], is_provider_glitch: bool, exhausted: bool = False) -> str:
     """Honest message for an empty/incomplete LLM response: a transient provider
     body-error (OpenRouter 429/5xx inside an HTTP 200, surfaced as usage
     ``provider_error``) that a same-model reroute could not escape is named as
-    itself, not as a blank finish_reason=null glitch. Pure: the error KIND is owned
-    by the caller's typed assignment (``_cooldown_kind_for_empty_response``)."""
+    itself, not as a blank finish_reason=null glitch, and an output-exhausted reply
+    as itself. Pure: the error KIND is owned by the caller's typed assignment."""
     provider_error = usage.get("provider_error") if isinstance(usage, dict) else None
     if isinstance(provider_error, dict):
         return f"Provider returned a body error (code={provider_error.get('code')}): {provider_error.get('message')}"
     if is_provider_glitch:
         return "Provider returned incomplete response (finish_reason=null)"
+    if exhausted:
+        return "LLM reply ended on its output limit before any visible text or tool call"
     return "LLM returned empty response (no content, no tool_calls)"
 
 
 def _classify_empty_response(usage: Dict[str, Any], msg: Dict[str, Any]) -> Tuple[str, bool, bool]:
     """Classify an empty / no-tool-call response → (event_type, is_provider_glitch,
-    permanent_body_error). A TYPED non-transient body error (WA1 kind
-    ``provider_error``: auth / quota / bad_request) is PERMANENT — a same-model
-    reroute already failed in the transport, so retrying here only burns the
-    transient budget. Only rate_limit / provider_transient body errors and a bare
-    ``finish_reason=null`` glitch are retryable."""
-    finish_reason = msg.get("finish_reason") or msg.get("stop_reason")
-    if str(finish_reason or "").strip().lower() in _STRUCTURED_CONTEXT_OVERFLOW_CODES:
+    permanent), reading the finish once (``response_finish_reason``). Structured
+    overflow and a TYPED non-transient body error (WA1 kind ``provider_error``: auth /
+    quota / bad_request) are PERMANENT — a same-model reroute already failed in the
+    transport, so retrying here only burns the transient budget. So is output
+    exhaustion, an empty reply without a body error that ended on its output limit:
+    the same request ends the same way. It stays an ``llm_empty_response`` (the only
+    permanent one; its kind is ``llm_output_exhausted``). Only rate_limit /
+    provider_transient body errors and a missing or null finish (a glitch) retry."""
+    finish = str(response_finish_reason(usage, msg)[1] or "").strip().lower()
+    if finish in _STRUCTURED_CONTEXT_OVERFLOW_CODES:
         return "remote_context_overflow", False, True
     body_err = usage.get("provider_error") if isinstance(usage, dict) else None
     if isinstance(body_err, dict) and any(
@@ -218,16 +226,13 @@ def _classify_empty_response(usage: Dict[str, Any], msg: Dict[str, Any]) -> Tupl
         for key in ("code", "type")
     ):
         return "remote_context_overflow", False, True
-    is_provider_glitch = finish_reason is None
-    body_kind = str((body_err or {}).get("kind") or "") if isinstance(body_err, dict) else ""
-    permanent_body_error = bool(body_err) and body_kind not in ("rate_limit", "provider_transient")
-    if permanent_body_error:
-        event_type = "provider_body_error"
-    elif is_provider_glitch:
-        event_type = "provider_incomplete_response"
-    else:
-        event_type = "llm_empty_response"
-    return event_type, is_provider_glitch, permanent_body_error
+    if not body_err and finish in OUTPUT_LIMIT_FINISH_REASONS:
+        return "llm_empty_response", False, True
+    is_provider_glitch = not finish
+    transient_body = isinstance(body_err, dict) and body_err.get("kind") in ("rate_limit", "provider_transient")
+    permanent = bool(body_err) and not transient_body
+    event_type = "provider_body_error" if permanent else "provider_incomplete_response" if is_provider_glitch else "llm_empty_response"
+    return event_type, is_provider_glitch, permanent
 
 
 def _attempt_loop_budget(max_retries: int, attempt_cap: Optional[int]) -> int:
@@ -247,12 +252,13 @@ def _record_and_emit_empty_response(
 ) -> tuple:
     """Classify an empty / no-tool-call response, log + emit its events, and stamp
     accumulated_usage (last error / execution_status / reason_code / F1 cooldown kind).
-    Returns ``(event_type, is_provider_glitch, permanent_body_error)`` for the caller's
-    retry decision. Extracted from call_llm_with_retry to keep that loop readable."""
-    finish_reason = msg.get("finish_reason") or msg.get("stop_reason")
+    Returns ``(event_type, is_provider_glitch, permanent)`` for the caller's retry
+    decision. Extracted from call_llm_with_retry to keep that loop readable."""
+    finish_reason = response_finish_reason(usage, msg)[1]
     body_error = usage.get("provider_error") if isinstance(usage, dict) and isinstance(usage.get("provider_error"), dict) else {}
-    event_type, is_provider_glitch, permanent_body_error = _classify_empty_response(usage, msg)
-    log_msg = _empty_response_log_msg(usage, is_provider_glitch)
+    event_type, is_provider_glitch, permanent = _classify_empty_response(usage, msg)
+    exhausted = event_type == "llm_empty_response" and permanent  # the classifier's output exhaustion
+    log_msg = _empty_response_log_msg(usage, is_provider_glitch, exhausted)
     log.warning("%s, attempt %d/%d", log_msg, attempt + 1, transient_budget)
     _emit_empty_response_events(
         event_type, event_queue=event_queue, drive_logs=drive_logs,
@@ -272,18 +278,22 @@ def _record_and_emit_empty_response(
     if event_type == "remote_context_overflow":
         status, reason, kind = "infra_failed", "llm_api_error", "context_overflow"
     else:
-        status = "infra_failed" if (is_provider_glitch and not permanent_body_error) else "failed"
+        status = "infra_failed" if (is_provider_glitch and not permanent) else "failed"
         reason = event_type
-        # Cooldown signal for the F1 fallback gate (see helper; not a retry change).
-        kind = _cooldown_kind_for_empty_response(body_error, event_type)
+        # Cooldown signal for the F1 fallback gate (see helper; not a retry change); exhaustion never cools.
+        kind = "llm_output_exhausted" if exhausted else _cooldown_kind_for_empty_response(body_error, event_type)
     accumulated_usage.update({
         "_last_llm_error": _short_error_text(log_msg), "execution_status": status,
         "reason_code": reason, "_last_llm_error_kind": kind,
     })
+    if exhausted:  # this attempt's own facts for the next round's host fact (loop.run_llm_loop)
+        capture = last_physical_attempt_capture()  # the response's own receipt, read as send_clock reads it
+        sent = capture.max_completion_tokens if capture is not None and capture.state in {"settled", "dispatched"} else None
+        accumulated_usage["_last_llm_output_exhausted"] = output_exhaustion_facts(usage, sent)
     from ouroboros.loop_transport import stamp_owner_provider_message
     stamp_owner_provider_message(accumulated_usage, body_error)  # a body error's own sentence; a blank glitch has none
     accumulated_usage.get("_last_llm_call_meta", {}).update(failure_code=kind)
-    return event_type, is_provider_glitch, permanent_body_error
+    return event_type, is_provider_glitch, permanent
 
 
 def _cooldown_kind_for_empty_response(body_error: Dict[str, Any], event_type: str) -> str:
@@ -457,9 +467,8 @@ from ouroboros.context_budget import (  # one overflow vocabulary for every seam
     context_overflow_message as _context_overflow_message,
     output_or_body_size_message as _output_or_body_size_message,
 )
-_FORCED_INCOMPLETE_FINISH_REASONS = _STRUCTURED_CONTEXT_OVERFLOW_CODES | frozenset({
-    "length", "max_tokens", "tool_calls", "function_call", "tool_use",
-})
+_FORCED_INCOMPLETE_FINISH_REASONS = (_STRUCTURED_CONTEXT_OVERFLOW_CODES | OUTPUT_LIMIT_FINISH_REASONS
+                                     | frozenset({"tool_calls", "function_call", "tool_use"}))
 
 
 def forced_response_is_incomplete(response_meta: Optional[Dict[str, Any]]) -> bool:
@@ -987,6 +996,8 @@ def _record_llm_call_error(
     stamp_substitutions(ctx.accumulated_usage, error)
     ctx.accumulated_usage.update(execution_status="infra_failed", reason_code="llm_api_error")
     if classification.kind == "context_overflow":
+        if getattr(error, "refused_candidate", None):  # the local lane's pre-dispatch refusal: its own comparison facts
+            ctx.accumulated_usage[REFUSED_CANDIDATE_KEY] = dict(error.refused_candidate)
         overflow_event_type = "local_context_overflow" if isinstance(error, LocalContextTooLargeError) else "remote_context_overflow"
         append_jsonl(ctx.drive_logs / "events.jsonl", {
             "ts": utc_now_iso(), "type": overflow_event_type, **identity, "error": safe_error,
@@ -1095,6 +1106,8 @@ def _context_fit_event_fields(usage: Dict[str, Any]) -> Dict[str, Any]:
         "context_profile": str(usage.get("_context_profile") or ""),
         "context_measurement_basis": str(usage.get("_context_measurement_basis") or ""),
         "context_measurement_density": float(usage.get("_context_measurement_density") or 0.0),
+        "context_raw_input_tokens": int(usage.get("_context_raw_input_tokens") or 0),
+        "context_reply_allowance_tokens": int(usage.get("_context_reply_allowance_tokens") or 0),  # planned, not sent
         "context_target_total_tokens": usage.get("_context_target_total_tokens"),
         "context_capacity_total_tokens": usage.get("_context_capacity_total_tokens"),
         "context_target_deficit_tokens": usage.get("_context_target_deficit_tokens"),
@@ -1251,17 +1264,9 @@ def _replace_response_meta(
     target.clear()
     if usage is None or msg is None:
         return
-    for source, key in ((usage, "response_finish_reason"), (msg, "finish_reason"), (msg, "stop_reason")):
-        if key in source:
-            finish_present, finish_reason = True, source.get(key)
-            break
-    else:
-        finish_present, finish_reason = False, None
-    target.update({
-        "finish_reason_present": finish_present,
-        "finish_reason": finish_reason,
-        "tool_call_count": len(msg.get("tool_calls") or []),
-    })
+    finish_present, finish_reason = response_finish_reason(usage, msg)
+    target.update(finish_reason_present=finish_present, finish_reason=finish_reason,
+                  tool_call_count=len(msg.get("tool_calls") or []))
 
 
 def forced_response_parts(
@@ -1312,15 +1317,19 @@ def call_llm_with_retry(
     stop_retry_check: Optional[Callable[[], bool]] = None,
     model_role: str = "main", model_turn_state: Any = None,
     model_account_override: Optional[str] = None, processing_preference: Optional[str] = None,
-    model_context_observer: Any = None, send_clock_policy: Any = None,
+    model_context_observer: Any = None, send_clock_policy: Any = None, max_tokens: int = MAIN_LOOP_MAX_TOKENS,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[float]]:
-    """Call one model with bounded retries and deadline-aware transport."""
+    """Call one model with bounded retries and deadline-aware transport.
+
+    ``max_tokens`` is the LOGICAL caller ceiling (the strict-shrink retry passes the failed
+    attempt's sent allowance); the sent value lives on the physical candidate."""
     from ouroboros.model_slots import resolve_processing_preference
 
     processing_preference = resolve_processing_preference(model_role, override=processing_preference)
     _replace_response_meta(response_meta_out)
     drive_root = pathlib.Path(drive_logs).parent
-    accumulated_usage.pop(RETRY_WALL_EXHAUSTED_KEY, None)  # last-invocation marker (see key)
+    for key in (RETRY_WALL_EXHAUSTED_KEY, REFUSED_CANDIDATE_KEY, REBOUND_PHYSICAL_CONTEXT_KEY):
+        accumulated_usage.pop(key, None)  # last-invocation markers (see the keys)
     execution_id = str(accumulated_usage.setdefault("execution_id", new_execution_id()))
     round_id = f"{execution_id}:round:{round_idx}"
     _transport_death_repeats(accumulated_usage, round_id)  # drops another round's record before anything reads it
@@ -1347,29 +1356,17 @@ def call_llm_with_retry(
                 event_queue=event_queue, use_local=use_local, task_attempt=task_attempt, deadline_ts=deadline_ts,
             )
             _emit_live_log(event_queue, {
-                "type": "llm_round_started",
-                "task_id": task_id,
-                "task_type": task_type,
-                "execution_id": execution_id,
-                "round_id": round_id,
-                "llm_call_id": llm_call_id,
-                "round": round_idx,
-                "task_attempt": task_attempt,
-                "attempt": attempt + 1,
-                "model": model,
-                "reasoning_effort": effort,
-                "use_local": bool(use_local),
+                "type": "llm_round_started", "task_id": task_id, "task_type": task_type, "execution_id": execution_id,
+                "round_id": round_id, "llm_call_id": llm_call_id, "round": round_idx, "task_attempt": task_attempt,
+                "attempt": attempt + 1, "model": model, "reasoning_effort": effort, "use_local": bool(use_local),
             })
             kwargs = {
-                "messages": send_messages,
-                "tools": tools,
-                "model": model,
+                "messages": send_messages, "tools": tools, "model": model,
                 "model_role": model_role, "model_turn_state": model_turn_state,
                 "model_account_override": model_account_override,
                 "processing_preference": processing_preference,
-                "context_mode": getattr(physical_context, "rendered_mode", None),
                 "reasoning_effort": effort,
-                "max_tokens": MAIN_LOOP_MAX_TOKENS,
+                "max_tokens": max_tokens,
                 **main_loop_wire_options(model, allow_server_web_search=allow_server_web_search,
                                          bypass_response_cache=response_cache_bypass_requested),
                 "caller_deadline_ts": (None if deadline_ts is None
@@ -1388,7 +1385,7 @@ def call_llm_with_retry(
                     "tools": tools or [],
                     "model": model,
                     "reasoning_effort": effort,
-                    "max_tokens": MAIN_LOOP_MAX_TOKENS,
+                    "max_tokens": max_tokens,  # the logical caller ceiling; the sent allowance is the physical candidate's
                     "use_local": bool(use_local),
                     "allow_server_web_search": bool(allow_server_web_search),
                     "response_cache_bypass_requested": response_cache_bypass_requested,
@@ -1422,14 +1419,15 @@ def call_llm_with_retry(
             )
             host_route = usage.get("model_role_route") or {}
             model, use_local = host_route.get("model", model), host_route.get("use_local", use_local)
+            physical_context = accumulated_usage.pop(REBOUND_PHYSICAL_CONTEXT_KEY, physical_context)
             model_facts = usage.get("claudexor") or {}
             accumulated_usage["_model_route"] = dict(model_facts.get("route") or {})
             accumulated_usage["_model_substitutions"] = model_facts.get("substituted") or []
             context_fit_event_fields = _context_fit_event_fields(accumulated_usage) if physical_context is not None else {}
             _take_custom_receipts(usage, msg, accumulated_usage)
-            for stale in ("_last_llm_error", "_last_llm_error_kind", "_last_llm_retry_same_request",
-                          "_last_llm_status_code", "_last_llm_provider_code", "_last_llm_provider_message",
-                          "_last_llm_provider_fields", "_last_llm_provider_message_cut", "_last_llm_resource_refusal"):
+            for stale in ("_last_llm_error", "_last_llm_error_kind", "_last_llm_retry_same_request", "_last_llm_status_code",
+                          "_last_llm_provider_code", "_last_llm_provider_message", "_last_llm_provider_fields",
+                          "_last_llm_provider_message_cut", "_last_llm_resource_refusal", "_last_llm_output_exhausted"):
                 accumulated_usage.pop(stale, None)
             cost, display_model, provider, cost_estimated = _normalize_usage_cost(usage, model=model, use_local=use_local)
             accumulated_usage["_observed_route"] = observed_route_stamp(usage)
@@ -1484,7 +1482,7 @@ def call_llm_with_retry(
             if task_type == "presence": accumulated_usage["_presence_pre_dispatch_only"] = False  # a response reached the model
             _replace_response_meta(response_meta_out, usage, msg)
             if not tool_calls and (not content or not content.strip()):
-                event_type, is_provider_glitch, permanent_body_error = _record_and_emit_empty_response(
+                event_type, is_provider_glitch, permanent = _record_and_emit_empty_response(
                     usage=usage, msg=msg, accumulated_usage=accumulated_usage,
                     event_queue=event_queue, drive_logs=drive_logs, task_id=task_id,
                     execution_id=execution_id, round_id=round_id, llm_call_id=llm_call_id,
@@ -1493,19 +1491,18 @@ def call_llm_with_retry(
                     response_ref=response_ref, transient_budget=transient_budget,
                     context_fit_event_fields=context_fit_event_fields, task_attempt=task_attempt)
                 _emit_main_llm_call_state(event_queue, call_identity, "failed")
-                if event_type == "provider_incomplete_response" and not usage.get("provider_error"):
-                    response_cache_bypass_requested = True
-                if not permanent_body_error and attempt < transient_budget - 1 and TRANSPORT_DEATHS_KEY not in accumulated_usage:
-                    if _sleep_within_deadline(
-                        min(2.0 ** attempt, _TRANSIENT_BACKOFF_CAP_SEC), deadline_ts
-                    ):
+                if not permanent and attempt < transient_budget - 1 and TRANSPORT_DEATHS_KEY not in accumulated_usage:
+                    if _sleep_within_deadline(min(2.0 ** attempt, _TRANSIENT_BACKOFF_CAP_SEC), deadline_ts):
+                        # Only a glitch that is actually retried asks the gateway for a fresh response.
+                        response_cache_bypass_requested |= (
+                            event_type == "provider_incomplete_response" and not usage.get("provider_error"))
                         continue
                     _emit_retry_deadline_exhausted(
                         drive_logs, task_id=task_id, execution_id=execution_id,
                         round_id=round_id, round_idx=round_idx, attempt=attempt,
                         model=model, error_kind=event_type,
                     )
-                if _empty_response_wall_spent(is_provider_glitch, permanent_body_error, usage):
+                if _empty_response_wall_spent(is_provider_glitch, permanent, usage):
                     accumulated_usage[RETRY_WALL_EXHAUSTED_KEY] = True
                 return None, cost
             for stale in ("execution_status", "result_status", "reason_code", RETRY_WALL_EXHAUSTED_KEY, TRANSPORT_DEATHS_KEY, "_pending_transport_outcome"):
@@ -1540,16 +1537,9 @@ def call_llm_with_retry(
                 "response_ref": response_ref.get("manifest_ref") if response_ref else None,
             }
             _emit_live_log(event_queue, {
-                "type": "llm_round_finished",
-                "task_id": task_id,
-                "task_type": task_type,
-                "execution_id": execution_id,
-                "round_id": round_id,
-                "llm_call_id": llm_call_id,
-                "round": round_idx,
-                "task_attempt": task_attempt,
-                "attempt": attempt + 1,
-                "model": display_model,
+                "type": "llm_round_finished", "task_id": task_id, "task_type": task_type, "execution_id": execution_id,
+                "round_id": round_id, "llm_call_id": llm_call_id, "round": round_idx, "task_attempt": task_attempt,
+                "attempt": attempt + 1, "model": display_model,
                 **{key: _round_event[key] for key in (
                     "reasoning_effort", "cost_usd", "prompt_tokens", "completion_tokens", "cached_tokens",
                     "cache_write_tokens", "prompt_cache_ttl", "effort", "effort_resolution", "request_wire", "claudexor") if key in _round_event},
@@ -1568,6 +1558,9 @@ def call_llm_with_retry(
                 accumulated_usage["_model_route"] = dict(e.route)
             host_route = getattr(e, "model_role_route", {}) or {}
             model, use_local = host_route.get("model", model), host_route.get("use_local", use_local)
+            if REBOUND_PHYSICAL_CONTEXT_KEY in accumulated_usage:  # a wait's reprepare bound a new route inside this attempt
+                physical_context = accumulated_usage.pop(REBOUND_PHYSICAL_CONTEXT_KEY)
+                context_fit_event_fields = _context_fit_event_fields(accumulated_usage)
             if _handle_main_llm_call_exception(
                 e,
                 _LlmErrorContext(

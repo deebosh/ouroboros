@@ -672,7 +672,7 @@ def test_strict_shrink_predicate_requires_entire_physical_tuple():
     variants = {
         "provider": replace(accepted, provider="anthropic"),
         "model": replace(accepted, model="other-model"),
-        "reserve": replace(accepted, max_completion_tokens=2_048),
+        "larger_reserve": replace(accepted, max_completion_tokens=70_000),
         "route": replace(
             accepted,
             physical_context=replace(accepted.physical_context, route_fp="other-route"),
@@ -687,6 +687,8 @@ def test_strict_shrink_predicate_requires_entire_physical_tuple():
     }
     for label, candidate in variants.items():
         assert predicate(candidate) is False, label
+    # A smaller reply allowance is admitted: the retry's ceiling is the failed attempt's sent allowance.
+    assert predicate(replace(accepted, max_completion_tokens=2_048)) is True
 
 
 def test_overflow_retry_is_skipped_while_the_round_holds_an_unresolved_attempt(tmp_path, monkeypatch):

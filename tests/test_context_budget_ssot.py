@@ -36,13 +36,14 @@ def test_agent_context_budget_values_pinned():
 
 def test_reclaim_low_water_divisor_is_one_constant_read_at_call_time(monkeypatch):
     """CHECKLISTS item 20: the fit consumes the SSOT name (no bare literal), reads it
-    at call time so changing the one constant changes every pass, and the margin
-    is the LAST measurement field (appended; older readers stay positional-safe)."""
+    at call time so changing the one constant changes every pass, and the margin and
+    the later reply facts are APPENDED measurement fields (older readers stay positional-safe)."""
     from ouroboros import context_fit
 
     assert "RECLAIM_LOW_WATER_DIVISOR" in _src("ouroboros/context_fit.py")
     assert "/ 8" not in inspect.getsource(context_fit.measure_main_fit)
-    assert dataclasses.fields(context_fit.MainFitMeasurement)[-1].name == "low_water_margin_tokens"
+    assert [field.name for field in dataclasses.fields(context_fit.MainFitMeasurement)][-3:] == [
+        "low_water_margin_tokens", "raw_input_tokens", "reply_allowance_tokens"]
     assert context_fit.reclaim_low_water_margin(250_000, 500_000) == 31_250  # target binds
     assert context_fit.reclaim_low_water_margin(None, 70_000) == 8_750  # capacity alone
     assert context_fit.reclaim_low_water_margin(None, None) == 0  # nothing known

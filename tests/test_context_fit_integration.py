@@ -14,7 +14,6 @@ def _projection(mode: str):
         estimated_tokens=10,
         calibrated_tokens=10,
         calibration_ratio=1.0,
-        fits_known_window=None,
     )
 
 
@@ -334,6 +333,7 @@ def test_round_fit_reads_density_from_canonical_store_not_child_drive(tmp_path, 
 
     from ouroboros import loop
     from ouroboros.capability_evidence import (
+        MAIN_DENSITY_BASIS,
         canonical_evidence_root,
         record_token_density,
     )
@@ -348,7 +348,7 @@ def test_round_fit_reads_density_from_canonical_store_not_child_drive(tmp_path, 
         prompt_tokens=180_000,  # density 1.8
         source="dispatch_usage",
         route_fp=plan.route_fp,
-        basis="bounded_proxy",
+        basis=MAIN_DENSITY_BASIS,
     )
 
     ctx = loop._RoundModelCallContext(

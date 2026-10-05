@@ -118,3 +118,10 @@ def test_unknown_reply_space_is_an_optimistic_estimate_marked_unknown():
 ])
 def test_context_mode_limits(mode, owner_mode, expected):
     assert cb.context_mode_limits(mode, owner_mode, 65_536) == expected
+
+
+def test_nano_reserve_is_the_reply_floor_never_above_the_callers_ceiling():
+    # A local lane's quarter window (4,096 on 16K) is its own ceiling: the floor and the send agree on it.
+    assert cb.context_mode_limits("nano", "nano", 4_096) == (85_000, 4_096)
+    assert cb.context_mode_limits("nano", "max", 2_048) == (None, 2_048)
+    assert cb.context_mode_limits("low", "low", 4_096) == (250_000, 4_096)
