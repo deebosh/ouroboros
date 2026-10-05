@@ -41,12 +41,16 @@ _DIRECT_PROVIDER_LEGACY_DEFAULTS = {
     "openai": {
         # v6.82.0: the outgoing v6.81 OpenAI slot defaults (gpt-5.5 main/heavy,
         # gpt-5.4-mini light/fallback, both spellings) migrate to the new gpt-5.6
-        # slot defaults; all four models stay LIVE (no retirement remap).
+        # slot defaults; all four models stay LIVE (no retirement remap). The first
+        # direct main/code default (4.44.0 to 4.50.0-rc.9) was only ever stored as
+        # `openai::gpt-5.4`; Code is the Heavy key now.
         "OUROBOROS_MODEL": {
             "anthropic/claude-opus-4.6", "openai/gpt-5.5", "openai::gpt-5.5",
+            "openai::gpt-" + "5.4",
         },
         "OUROBOROS_MODEL_HEAVY": {
             "anthropic/claude-opus-4.6", "openai/gpt-5.5", "openai::gpt-5.5",
+            "openai::gpt-" + "5.4",
         },
         "OUROBOROS_MODEL_LIGHT": {
             "anthropic/claude-sonnet-4.6", "openai/gpt-5.4-mini", "openai::gpt-5.4-mini",
@@ -85,25 +89,25 @@ _DIRECT_PROVIDER_LEGACY_DEFAULTS = {
 }
 _DIRECT_PROVIDER_LEGACY_DEFAULTS["openai"]["OUROBOROS_MODEL_LIGHT"].add("openai::gpt-4.1")
 _DIRECT_PROVIDER_LEGACY_DEFAULTS["openai"]["OUROBOROS_MODEL_FALLBACKS"].add("openai::gpt-4.1")
+# Main/Code/Light default from v5.31.0-rc.1 to v5.32.0-rc.1 (Code is the Heavy key now).
 _LEGACY_GEMINI_31_FLASH_LITE = "google/gemini-" + "3.1-flash-lite"
-for _legacy_defaults in _DIRECT_PROVIDER_LEGACY_DEFAULTS.values():
-    for _slot in ("OUROBOROS_MODEL", "OUROBOROS_MODEL_HEAVY", "OUROBOROS_MODEL_LIGHT"):
-        _legacy_defaults[_slot].add(_LEGACY_GEMINI_31_FLASH_LITE)
 # Outgoing SHIPPED OpenRouter defaults, applied for EVERY
 # exclusive-direct provider (incl. cloudru/gigachat/minimax/deepseek, which have no per-provider
 # legacy table): before each defaults refresh a stored copy of the shipped default matched the
 # `current in {"", default}` check because SETTINGS_DEFAULTS still carried it;
 # after the defaults refresh these stored copies are still "the old DEFAULT, not
-# an explicit choice" and must keep migrating to the provider slots. All models
-# here stay LIVE (no retirement remap).
+# an explicit choice" and must keep migrating to the provider slots. Whether a
+# provider still serves an id here plays no part: it migrates because it was ours.
 _PRIOR_SHIPPED_SLOT_DEFAULTS = {
     "OUROBOROS_MODEL": {
+        _LEGACY_GEMINI_31_FLASH_LITE,
         "google/gemini-3.5-flash",
         "google/gemini-3.7-flash",
         "x-ai/grok-4.5",
     },
-    "OUROBOROS_MODEL_HEAVY": {"google/gemini-3.5-flash"},
+    "OUROBOROS_MODEL_HEAVY": {_LEGACY_GEMINI_31_FLASH_LITE, "google/gemini-3.5-flash"},
     "OUROBOROS_MODEL_LIGHT": {
+        _LEGACY_GEMINI_31_FLASH_LITE,
         "google/gemini-3.5-flash",
         "google/gemini-3.6-flash",
     },
