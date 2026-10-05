@@ -15,8 +15,7 @@ from dataclasses import asdict, replace
 import logging
 import pathlib
 import time
-import uuid
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Optional
 
 log = logging.getLogger("review_substrate")
 
@@ -198,23 +197,6 @@ def review_usage_category(surface: str) -> str:
     reservation identities carry, so the commit gate's admission and its
     scope-first hold name the same scope the substrate sends under."""
     return f"{surface}_review"
-
-
-def new_review_wave_id() -> str:
-    """A fresh review round id, for a review that names no wave and has no paid-cycle key."""
-    return f"wave-{uuid.uuid4().hex[:16]}"
-
-
-def resolve_review_wave(request: Any, review_meta: Mapping[str, Any], inherited: str = "") -> str:
-    """The round every reviewer send of ``request`` is billed to: the caller's wave
-    (skill review), the inherited scope's, the review's paid-cycle identity
-    (``retry_key``: one per commit, scope or acceptance cycle, shared by all its
-    slots and by a resumed run of it), or a fresh id. Recorded on the request, so
-    the returned run and a replay of the stored request keep the same wave."""
-    wave = str(review_meta.get("review_wave_id") or inherited or getattr(request, "retry_key", "") or "")
-    wave = wave or new_review_wave_id()
-    request.usage_attribution = {**review_meta, "review_wave_id": wave}
-    return wave
 
 
 class ReviewCoordinator:
@@ -871,6 +853,7 @@ from ouroboros.review_records import (  # noqa: E402, F401 -- intentional public
     ReviewRunResult,
     ReviewSlot,
     TYPED_FAILURE_FACT_KEYS,
+    resolve_review_wave,
 )
 
 from ouroboros.review_verdict import (  # noqa: E402, F401 -- intentional public re-exports

@@ -338,8 +338,8 @@ async def _multi_model_review_async(content: str, prompt: str,
 
     if not retry_key and not (usage_attribution or {}).get("review_wave_id"):
         # One round, one wave: each row sends its own request, so a fan-out without
-        # a paid-cycle key names its wave here (review_substrate.resolve_review_wave).
-        from ouroboros.review_substrate import new_review_wave_id
+        # a paid-cycle key names its wave here (review_records.resolve_review_wave).
+        from ouroboros.review_records import new_review_wave_id
 
         usage_attribution = {**(usage_attribution or {}), "review_wave_id": new_review_wave_id()}
     semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
