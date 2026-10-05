@@ -119,13 +119,22 @@ deployment connects a destination of its own.
   secret-redacting filter; tracebacks and structured extras do not.
 - The durable records stay the JSONL ledgers under `logs/` and the task drives
   (`docs/PERSISTENCE.md`); a file-tailing collector (OpenTelemetry Collector,
-  Vector, Fluent Bit) can ship them without any change to Ouroboros.
+  Vector, Fluent Bit) can ship them without any change to Ouroboros. The subset
+  an observer may rely on is the record passport,
+  `ouroboros/contracts/record_contract.py`: the anchor rows and their
+  guaranteed fields, correlation ids, which fields carry content, rotation, the
+  tools-row replica, the child task drives that are deleted after
+  `OUROBOROS_GC_RETENTION_DAYS`, and where money must be read (the accounting
+  views, never a sum of `llm_usage`). `docs/examples/log_collector/` is a
+  verified Vector setup that ships their metadata only.
 - An error tracker attaches from inside the process: an in-process extension
   skill loads in the server and in every worker, and can initialise a
   Sentry-compatible SDK (self-hosted Sentry, GlitchTip) installed into
   Ouroboros's own environment (in Docker, a layer of the image; a skill-declared
   dependency would move the extension out of process, where it cannot see these
   records). Turn frame-local capture off and pass events through
-  `ouroboros.observability.redact_projection` before they leave. Failures that
-  happen before the extension loads stay in the local logs only, as do the
-  launcher's and the Claudexor daemon's.
+  `ouroboros.observability.redact_projection` before they leave;
+  `docs/examples/error_tracker/` is a verified extension that does this and
+  says what still leaves (messages and exception text can quote task text).
+  Failures that happen before the extension loads stay in the local logs only,
+  as do the launcher's and the Claudexor daemon's.

@@ -15,6 +15,7 @@ import pathlib
 import time
 import uuid
 from typing import Any, Dict, Optional
+from ouroboros._usage_rows import REVIEW_ATTRIBUTION_KEYS
 from ouroboros.utils import append_jsonl, utc_now_iso
 from ouroboros.task_results import STATUS_SCHEDULED, write_task_result
 
@@ -78,11 +79,7 @@ def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
     cache_write_tokens = _tolerant_int(
         usage.get("cache_write_tokens"), evt.get("cache_write_tokens")
     )
-    prompt_cache_ttl = str(
-        usage.get("prompt_cache_ttl")
-        or evt.get("prompt_cache_ttl")
-        or ""
-    )
+    prompt_cache_ttl = str(usage.get("prompt_cache_ttl") or evt.get("prompt_cache_ttl") or "")
     ledger_attempt_ids = [
         str(value)
         for value in (usage.get("ledger_attempt_ids") or evt.get("ledger_attempt_ids") or [])
@@ -137,6 +134,7 @@ def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
         "provider": evt.get("provider", ""),
         "source": evt.get("source", ""),
         **{key: evt[key] for key in ("llm_call_id", "execution_id", "round_id", "round") if key in evt},
+        **{key: str(evt[key]) for key in REVIEW_ATTRIBUTION_KEYS if evt.get(key)},  # #807: the review wave/slot
         "cost_estimated": bool(evt.get("cost_estimated", False)),
         "cost": resolved_cost,
         "cost_known": cost_known,
