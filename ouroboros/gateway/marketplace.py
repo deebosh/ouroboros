@@ -188,8 +188,7 @@ async def api_marketplace_preview(request: Request) -> JSONResponse:
     except ClawHubClientError as exc:
         return _client_error_response(exc)
     except Exception as exc:
-        log.exception("marketplace preview failed")
-        return json_exception(exc)
+        return json_exception(exc, context="marketplace preview failed")
     return JSONResponse(payload)
 
 def _serialize_install_result(result: Any) -> Dict[str, Any]:
@@ -490,8 +489,7 @@ async def api_marketplace_install(request: Request) -> JSONResponse:
             ),
         )
     except Exception as exc:
-        log.exception("marketplace install failed")
-        return json_exception(exc)
+        return json_exception(exc, context="marketplace install failed")
     # Resync regardless of ok: a deps-failure can set ok=false after the payload
     # was already installed on disk, changing scheduled-task readiness.
     await asyncio.to_thread(_resync_skill_schedules_quiet, drive_root)
@@ -539,8 +537,7 @@ async def api_marketplace_update(request: Request) -> JSONResponse:
             ),
         )
     except Exception as exc:
-        log.exception("marketplace update failed")
-        return json_exception(exc)
+        return json_exception(exc, context="marketplace update failed")
     # Resync regardless of ok: an update can mutate the payload on disk even when
     # a follow-up deps step reports ok=false, changing scheduled-task readiness.
     await asyncio.to_thread(_resync_skill_schedules_quiet, drive_root)
@@ -632,8 +629,7 @@ async def api_marketplace_uninstall(request: Request) -> JSONResponse:
             options=_lifecycle_options("Uninstalled", "uninstall failed", object_result=True),
         )
     except Exception as exc:
-        log.exception("marketplace uninstall failed")
-        return json_exception(exc)
+        return json_exception(exc, context="marketplace uninstall failed")
     if result.ok:
         # The skill is gone; drop its scheduled tasks now so the scheduler does
         # not fire a deleted skill before the next periodic resync.
@@ -938,8 +934,7 @@ async def api_ouroboroshub_clear_publication(request: Request) -> JSONResponse:
     except ValueError as exc:
         return JSONResponse({"ok": False, "code": "publication_invalid", "error": str(exc)}, status_code=400)
     except Exception as exc:
-        log.warning("Clearing local publication failed", exc_info=True)
-        return json_exception(exc)
+        return json_exception(exc, context="Clearing local publication failed")
     return JSONResponse({"ok": True, "sanitized_name": name, "publication_cleared": cleared})
 
 
