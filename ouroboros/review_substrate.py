@@ -15,7 +15,8 @@ from dataclasses import asdict, replace
 import logging
 import pathlib
 import time
-from typing import Any, Dict, List, Optional
+import uuid
+from typing import Any, Dict, List, Mapping, Optional
 
 log = logging.getLogger("review_substrate")
 
@@ -199,6 +200,23 @@ def review_usage_category(surface: str) -> str:
     return f"{surface}_review"
 
 
+def new_review_wave_id() -> str:
+    """A fresh review round id, for a review that names no wave and has no paid-cycle key."""
+    return f"wave-{uuid.uuid4().hex[:16]}"
+
+
+def resolve_review_wave(request: Any, review_meta: Mapping[str, Any], inherited: str = "") -> str:
+    """The round every reviewer send of ``request`` is billed to: the caller's wave
+    (skill review), the inherited scope's, the review's paid-cycle identity
+    (``retry_key``: one per commit, scope or acceptance cycle, shared by all its
+    slots and by a resumed run of it), or a fresh id. Recorded on the request, so
+    the returned run and a replay of the stored request keep the same wave."""
+    wave = str(review_meta.get("review_wave_id") or inherited or getattr(request, "retry_key", "") or "")
+    wave = wave or new_review_wave_id()
+    request.usage_attribution = {**review_meta, "review_wave_id": wave}
+    return wave
+
+
 class ReviewCoordinator:
     def __init__(
         self,
@@ -311,7 +329,7 @@ class ReviewCoordinator:
                                         or (getattr(self.usage_ctx, "task_id", "")
                                             and getattr(self.usage_ctx, "task_lifecycle_bound", None) is not False)),
             review_skill=str(review_meta.get("review_skill") or base_scope.review_skill or ""),
-            review_wave_id=str(review_meta.get("review_wave_id") or base_scope.review_wave_id or ""),
+            review_wave_id=resolve_review_wave(request, review_meta, base_scope.review_wave_id),
             global_limit_usd=global_limit,
             global_limit_source=(base_scope.global_limit_source if base_scope.global_limit_usd is not None
                                  else "settings_budget_resolver"),

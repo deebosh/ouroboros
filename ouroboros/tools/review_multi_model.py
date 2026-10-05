@@ -336,6 +336,12 @@ async def _multi_model_review_async(content: str, prompt: str,
         messages = []
         bible_text = _rev().load_governance_doc(_rev()._REPO_ROOT, "BIBLE.md", on_missing="explicit")
 
+    if not retry_key and not (usage_attribution or {}).get("review_wave_id"):
+        # One round, one wave: each row sends its own request, so a fan-out without
+        # a paid-cycle key names its wave here (review_substrate.resolve_review_wave).
+        from ouroboros.review_substrate import new_review_wave_id
+
+        usage_attribution = {**(usage_attribution or {}), "review_wave_id": new_review_wave_id()}
     semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
     llm_client = _rev().LLMClient()
     tasks = [
