@@ -410,6 +410,8 @@ def _delivered_terminal_payload(ctx: ToolContext, run_id: str, detail: Dict[str,
     full = _terminal_payload(run_id, detail, authority)
     if entry is not None:
         _delegate().add_terminal_source_verification(full, entry)
+        if entry.superseded_by:  # its snapshot and work belong to that continuation's one capture now
+            full["superseded_by"] = entry.superseded_by
     # Requested-vs-applied model, the review lane's own lexicon and rule
     # (AgentSessionReviewExecutor): compared only when BOTH are non-empty —
     # the engine writes aliases ('sonnet' beside 'claude-opus-5'), so a

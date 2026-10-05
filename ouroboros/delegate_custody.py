@@ -1129,7 +1129,7 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
     failure_facts = {} if str(summary.get("state") or "") in SUCCEEDED_STATES else {
         "requested_model": custody.model, "failure_code": str(failure.get("code") or ""),
         "reported_cause": run_failure_cause(failure),
-        # Engine TYPED reason (``wall_clock_exceeded`` = maxSeconds expiry): the continuation gate's one fact.
+        # Engine TYPED reason (e.g. ``wall_clock_exceeded`` = maxSeconds expiry): a continuation's cause fact.
         "outcome_reason": str(outcome_facts.get("reason") or "")}
     # Claudexor reports CASH in `spendUsd`, EXACTNESS in `spendEstimated`. A run
     # is only free when the amount is really zero AND really settled: expired

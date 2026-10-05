@@ -1561,8 +1561,9 @@ def get_tools() -> List[ToolEntry]:
                 "result returns message_id, the delivery identity: pass it back ONLY to "
                 "retry the SAME text after delivery_unknown (the engine replays the "
                 "stored receipt instead of delivering twice); after any other outcome a "
-                "new message needs a NEW id (omit message_id). A message steers only the "
-                "current attempt — a later retry or continuation never re-injects it — and "
+                "new message needs a NEW id (omit message_id). A message steers only the current "
+                "attempt: the host never re-injects it (a continuation keeps it only as the engine's "
+                "session history or evidence), and it "
                 "is reconciled on the delegate_wait timeline (message.* rows)."
             ),
             "parameters": {"type": "object", "required": ["run_id", "text"], "properties": {

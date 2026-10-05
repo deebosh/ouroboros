@@ -410,7 +410,13 @@ def test_a_writing_continuation_runs_in_the_predecessors_snapshot_and_supersedes
     # Each capture keeps its own identity; ONE disposition lock serves the snapshot.
     assert custody.capture_key(pred) == pred.snapshot_id and custody.capture_key(succ) == succ.invocation_id
     assert custody.disposition_lock_path(tmp_path, pred) == custody.disposition_lock_path(tmp_path, succ)
-    # A superseded predecessor can neither be applied nor rejected.
+    # A superseded predecessor can neither be applied nor rejected, and its terminal says where the work went.
+    from ouroboros.subagents import DelegatedRunShape
+    from ouroboros.tools.delegate_terminal_evidence import _delivered_terminal_payload
+
+    shape = DelegatedRunShape(access="workspace_write", mode="agent", isolation="live", delegated=True)
+    assert _delivered_terminal_payload(ctx, "run-first", {"summary": {"state": "failed"}}, shape,
+                                       pred)["superseded_by"] == "run-next"
     refusal = _integrate_delegated_patch(ctx, run_id="run-first", decision="reject")
     assert "INTEGRATE_DELEGATED_SUPERSEDED" in refusal and "run-next" in refusal
     assert pathlib.Path(snapshot_root).exists()
@@ -469,6 +475,72 @@ def test_a_pending_hand_over_blocks_dispositions_and_a_second_claim(tmp_path):
         tmp_path, claim_target="", payload_busy=lambda *_a: "", task_id="t-a", invocation_id="inv-3",
         continuation_of="run-pred", capture_id="inv-3", snapshot_id="snap-1")
     assert claim is False and refusal["reason"] == continuation.REFUSAL_SNAPSHOT_RELEASED
+
+
+def test_a_configured_session_continues_with_its_note_never_the_canonical_work_order(tmp_path, monkeypatch):
+    """The old session (or the engine's evidence packet) already holds the work order."""
+    import ouroboros.tools.delegate as delegate
+
+    _start(tmp_path, monkeypatch, acting=False, run_id="run-prev")
+    _settle(tmp_path, "run-prev", "t-nanny-read")
+    bound = delegate.prepare_delegate_start_actor
+
+    def compiled(ctx, drive, **kwargs):
+        actor, refusal = bound(ctx, drive, **kwargs)
+        return ({**actor, "compiled_work_order": True} if actor else actor), refusal
+
+    monkeypatch.setattr(delegate, "prepare_delegate_start_actor", compiled)
+    request, payload, _ctx, _calls = _start(
+        tmp_path, monkeypatch, acting=False, run_id="run-next", prompt="THE CANONICAL WORK ORDER",
+        start_kwargs={"continue_from": "run-prev", "_coordination_context": "the coordination note"})
+    assert payload["status"] == "started"
+    assert request["prompt"].endswith("the coordination note") and "CANONICAL" not in request["prompt"]
+    assert "the coordination note" not in request["instructions"]
+
+
+def test_a_continuation_retried_after_an_unknown_outcome_replays_its_lineage(tmp_path, monkeypatch):
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+
+    _start(tmp_path, monkeypatch, acting=True, run_id="run-first")
+    _settle(tmp_path, "run-first", "t-nanny-write")
+    lost = ClaudexorUnavailable("daemon_unreachable", "connection reset", status_code=503)
+    _r, unknown, _ctx, _calls = _start(tmp_path, monkeypatch, acting=True, run_id="run-next", prompt="add tests",
+                                       start_error=lost, start_kwargs={"continue_from": "run-first"})
+    token = unknown["pending_invocation_id"]
+    assert token and custody.replay(tmp_path)["run-first"].patch_disposed == ""  # not bound yet: not superseded
+    pred = custody.replay(tmp_path)["run-first"]
+    assert "CONTINUATION_PENDING" in continuation.disposition_refusal(tmp_path, pred)
+    # A different text is not a retry of that invocation.
+    _r, other, _ctx, calls = _start(tmp_path, monkeypatch, acting=True, run_id="run-x", prompt="something else",
+                                    start_kwargs={"retry_of": token})
+    assert other["reason"] == "retry_prompt_mismatch" and calls == []
+    # The retry names the caller's own text; the recorded body (host facts included) is replayed.
+    request, payload, _ctx, _calls = _start(tmp_path, monkeypatch, acting=True, run_id="run-next", prompt="add tests",
+                                            start_kwargs={"retry_of": token})
+    assert payload["status"] == "started" and request["continueFrom"] == "run-first"
+    assert request["prompt"].startswith("HOST FACTS") and request["prompt"].endswith("add tests")
+    state = custody.replay(tmp_path)
+    assert state["run-next"].capture_id == token and state["run-next"].continuation_of == "run-first"
+    assert state["run-first"].superseded_by == "run-next"
+
+
+def test_an_unavailable_snapshot_lock_is_a_typed_claim_refusal(tmp_path, monkeypatch):
+    import ouroboros.platform_layer as platform_layer
+    from ouroboros.delegate_start_claims import claimed_start_request
+
+    _seed(tmp_path, "run-pred", access="workspace_write", mode="agent", isolation="live", snapshot_id="snap-1",
+          target_root="/t", execution_root="/snap")
+
+    def broken(*_a, **_k):
+        raise OSError("lock directory unwritable")
+
+    monkeypatch.setattr(platform_layer, "acquire_exclusive_file_lock", broken)
+    claim, refusal = claimed_start_request(
+        tmp_path, claim_target="", payload_busy=lambda *_a: "", task_id="t-a", invocation_id="inv-1",
+        continuation_of="run-pred", capture_id="inv-1", snapshot_id="snap-1")
+    assert claim is False and refusal["reason"] == "continuation_handover_busy"
+    assert "lock directory unwritable" in refusal["detail"]
+    assert continuation.ENGINE_CONTINUE_KEY == "continueFrom"
 
 
 def test_a_retried_continuation_replays_its_lineage(tmp_path):

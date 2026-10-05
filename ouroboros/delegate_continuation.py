@@ -320,6 +320,15 @@ def replayed_custody(record: Dict[str, Any]) -> ContinuationStart:
     return ContinuationStart(custody={key: str(record.get(key) or "") for key in CUSTODY_KEYS})
 
 
+def retry_matches_caller_text(record: Dict[str, Any], text: str) -> bool:
+    """A continuation's recorded prompt is host facts plus the caller's text, so its
+    retry names the caller's own text, whose digest the start recorded as its brief."""
+    from hashlib import sha256
+
+    return bool(record.get("continuation_of")) and str(record.get("work_order_fingerprint") or "") == sha256(
+        str(text).encode("utf-8")).hexdigest()
+
+
 def _handover_refusal(drive: Any, row: Dict[str, Any]) -> Dict[str, Any]:
     """Re-check the predecessor at the claim, under the snapshot's disposition lock."""
     rid, invocation = str(row.get("continuation_of") or ""), str(row.get("invocation_id") or "")
@@ -355,11 +364,16 @@ def snapshot_handover(drive: Any, row: Dict[str, Any]) -> Iterator[Dict[str, Any
         yield {"reason": REFUSAL_SOURCE_UNKNOWN, "detail": "The continued run has no custody record."}
         return
     lock_path = custody.disposition_lock_path(drive, prior)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = acquire_exclusive_file_lock(lock_path, timeout_sec=20.0, owner_aware_stale=True)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = acquire_exclusive_file_lock(lock_path, timeout_sec=20.0, owner_aware_stale=True)
+    except Exception as exc:
+        fd, busy = None, f" ({type(exc).__name__}: {exc})"
+    else:
+        busy = ""
     if fd is None:
         yield {"reason": "continuation_handover_busy",
-               "detail": "A disposition of the continued run holds its snapshot lock; retry after it completes."}
+               "detail": f"The continued run's snapshot lock is held or unavailable{busy}; retry after it completes."}
         return
     try:
         yield _handover_refusal(drive, row)
@@ -431,6 +445,7 @@ __all__ = [
     "disposition_refusal",
     "engine_continues",
     "replayed_custody",
+    "retry_matches_caller_text",
     "snapshot_handover",
     "start_binding",
     "terminal_continuity",

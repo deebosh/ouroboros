@@ -217,7 +217,8 @@ def _validated_invocation(drive: Any, retry_token: str, task_id: str,
                            "remains unknown; restore the recorded request or reconcile "
                            "the original invocation before starting a replacement.",
                            retry_of=retry_token)
-    if str(body.get("prompt") or "") != text:
+    from ouroboros.delegate_continuation import retry_matches_caller_text
+    if str(body.get("prompt") or "") != text and not retry_matches_caller_text(record, text):
         return None, _fail("delegate_start", "retry_prompt_mismatch",
                            "retry_of replays the RECORDED invocation, but the prompt "
                            "you passed differs from the one it sent. Pass the original "
