@@ -495,3 +495,42 @@ def test_a_caption_route_that_refused_an_image_is_not_asked_for_it_again(root, m
     second = json.dumps(vr.prepare_messages_for_send(_messages(IMAGE_A), routing=routing))
     assert asked == [CAPTIONER, MAIN], "the next candidate is asked, never the refusing route again"
     assert IMAGE_A not in second
+
+
+def test_a_nano_retry_sends_under_the_refused_attempts_reply_allowance(tmp_path, monkeypatch):
+    """The retry follows the overflow retry's allowance rule: its logical ceiling is the refused
+    attempt's sent allowance, and its predicate admits at most that allowance, without the image."""
+    from tests.test_loop_compaction import _candidate_request, _ctx, _failed_capture, _fit
+
+    monkeypatch.setenv("OUROBOROS_IMAGE_INPUT_MODE", "auto")
+    context = _ctx(tmp_path, preferred="nano", mode="nano")
+    vr.note_candidate_images("refused-with-image", {"messages": _messages(IMAGE_A)})
+    vr.note_candidate_images("retry-text-only", {"messages": _messages()})
+    vr.note_candidate_images("retry-with-image", {"messages": _messages(IMAGE_A)})
+    failed = replace(_failed_capture(profile="owner_nano", mode="nano", reserve=20_000),
+                     provider_status_code=400, candidate_raw_sha256="refused-with-image")
+    checked = []
+
+    def measure(ctx, **_kwargs):
+        disposition = _fit(profile="owner_nano", mode="nano")
+        loop._remember_main_fit(ctx, disposition)
+        return disposition
+
+    def dispatch(ctx, disposition, *, candidate_predicate=None, max_tokens=None, **_kwargs):
+        if candidate_predicate is None:
+            ctx.accumulated_usage["_last_llm_error_kind"] = "bad_request"
+            return None, 0.0
+        request = replace(_candidate_request(disposition, size=700, reserve=20_000), candidate_raw_sha256="retry-text-only")
+        checked.append((max_tokens, candidate_predicate(request),
+                        candidate_predicate(replace(request, max_completion_tokens=8_192)),
+                        candidate_predicate(replace(request, max_completion_tokens=20_001)),
+                        candidate_predicate(replace(request, candidate_raw_sha256="retry-with-image"))))
+        return {"role": "assistant", "content": "seen as text", "tool_calls": []}, 0.0
+
+    monkeypatch.setattr(loop, "_measure_round_main_fit", measure)
+    monkeypatch.setattr(loop, "_dispatch_round_model", dispatch)
+    monkeypatch.setattr(loop, "last_physical_attempt_capture", lambda: failed)
+    monkeypatch.setattr(loop, "_emit_checkpoint_event", lambda *_a, **_kw: None)
+    msg, _cost, mode = loop._call_round_model(context)
+    assert msg["content"] == "seen as text" and mode == "nano"
+    assert checked == [(20_000, True, True, False, False)]
