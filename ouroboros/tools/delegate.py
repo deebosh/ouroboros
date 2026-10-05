@@ -345,7 +345,7 @@ def _start_argument_refusal(ctx: ToolContext, text: str, selector_root: str, ret
     retry replays an old key byte-identically while a continuation is a NEW
     intention over a settled run, and a skill-payload selector run keeps its own
     target semantics."""
-    if not text.strip() and not str(continue_from or "").strip():
+    if not text.strip() and not str(continue_from or "").strip() and not str(retry_of or "").strip():
         return "", _fail("delegate_start", "empty_prompt", "prompt is required")
     if continue_carrier is not None and (not str(continue_from or "").strip()
                                          or continue_carrier not in ("auto", "packet")):

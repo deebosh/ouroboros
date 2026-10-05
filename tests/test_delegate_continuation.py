@@ -550,13 +550,14 @@ def test_a_configured_session_continues_with_its_note_never_the_canonical_work_o
     assert "the coordination note" not in request["instructions"]
 
 
-def test_a_continuation_retried_after_an_unknown_outcome_replays_its_lineage(tmp_path, monkeypatch):
+@pytest.mark.parametrize("prompt", ["add tests", ""])
+def test_a_continuation_retried_after_an_unknown_outcome_replays_its_lineage(tmp_path, monkeypatch, prompt):
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
 
     _start(tmp_path, monkeypatch, acting=True, run_id="run-first")
     _settle(tmp_path, "run-first", "t-nanny-write")
     lost = ClaudexorUnavailable("daemon_unreachable", "connection reset", status_code=503)
-    _r, unknown, _ctx, _calls = _start(tmp_path, monkeypatch, acting=True, run_id="run-next", prompt="add tests",
+    original, unknown, _ctx, _calls = _start(tmp_path, monkeypatch, acting=True, run_id="run-next", prompt=prompt,
                                        start_error=lost, start_kwargs={"continue_from": "run-first"})
     token = unknown["pending_invocation_id"]
     assert token and custody.replay(tmp_path)["run-first"].patch_disposed == ""  # not bound yet: not superseded
@@ -567,13 +568,28 @@ def test_a_continuation_retried_after_an_unknown_outcome_replays_its_lineage(tmp
                                     start_kwargs={"retry_of": token})
     assert other["reason"] == "retry_prompt_mismatch" and calls == []
     # The retry names the caller's own text; the recorded body (host facts included) is replayed.
-    request, payload, _ctx, _calls = _start(tmp_path, monkeypatch, acting=True, run_id="run-next", prompt="add tests",
+    request, payload, _ctx, _calls = _start(tmp_path, monkeypatch, acting=True, run_id="run-next", prompt=prompt,
                                             start_kwargs={"retry_of": token})
     assert payload["status"] == "started" and request["continueFrom"] == "run-first"
-    assert request["prompt"].startswith("HOST FACTS") and request["prompt"].endswith("add tests")
+    assert request == original
+    assert request["prompt"].startswith("HOST FACTS") and request["prompt"].endswith(prompt)
     state = custody.replay(tmp_path)
     assert state["run-next"].capture_id == token and state["run-next"].continuation_of == "run-first"
     assert state["run-first"].superseded_by == "run-next"
+
+
+def test_empty_retry_of_an_ordinary_start_still_requires_the_recorded_prompt(tmp_path, monkeypatch):
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+
+    lost = ClaudexorUnavailable("daemon_unreachable", "connection reset", status_code=503)
+    _r, unknown, _ctx, _calls = _start(
+        tmp_path, monkeypatch, acting=False, run_id="run-first", prompt="original work", start_error=lost)
+    invocation = unknown["pending_invocation_id"]
+    request, refusal, _ctx, calls = _start(
+        tmp_path, monkeypatch, acting=False, run_id="run-first", prompt="",
+        start_kwargs={"retry_of": invocation})
+    assert refusal["reason"] == "retry_prompt_mismatch" and request is None and calls == []
+    assert [row["invocation_id"] for row in custody.pending_invocations(tmp_path)] == [invocation]
 
 
 def test_an_unavailable_snapshot_lock_is_a_typed_claim_refusal(tmp_path, monkeypatch):
