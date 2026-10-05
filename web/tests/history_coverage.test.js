@@ -78,7 +78,7 @@ test('a same-rowcount re-read refreshes the span it certifies', async () => {
     pager.destroy();
 });
 
-test('narration rides on the recent read alone: its absence on older pages is no gap, its failure is', () => {
+test('narration never decides coverage: older-page narration spans are ignored, a failed recent span is a gap', () => {
     const recent = coverage(80, 100);
     const olderPage = { ...coverage(0, 80), spans: { chat: coverage(0, 80).spans.chat, progress: null } };
     assert.deepEqual(historyCoverage(recent, [olderPage]), { complete: true, gaps: false, horizonGap: false });

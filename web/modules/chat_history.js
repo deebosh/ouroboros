@@ -21,8 +21,9 @@ export function sameHistoryChain(head, span) {
 /** Coverage is byte delivery, never chronology, shared row identity or EOF.
  * The recent read supplies the horizon. A clean overlapping re-read can heal
  * a failed span; evicted bodies cannot certify bytes. Completeness and gaps are
- * the conversation's (the chat stream): narration (progress) rides only on the
- * recent read, where an unreadable or failed narration span is still a gap.
+ * the conversation's (the chat stream): narration (progress) pages alongside it
+ * but never decides coverage; an unreadable or failed narration span on the
+ * recent read is still a gap.
  */
 export function historyCoverage(recent, pages = []) {
     const horizon = recent?.upper?.chat, head = recent?.spans?.chat, narration = recent?.spans?.progress;

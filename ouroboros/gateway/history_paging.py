@@ -326,20 +326,19 @@ def history_page_coverage(page, stream_gaps):
 
 
 def history_page_tokens(page):
-    """Older pages carry the conversation alone: narration (progress) rides only on the
-    newest page, so ``has_more`` follows the conversation and no press can land only
-    narration. A narration-only read (no human quota) keeps paging narration."""
+    """The conversation decides whether older history remains: narration (progress)
+    keeps paging alongside it but never keeps a press alive on its own, so no press
+    lands narration alone. A narration-only read (no human quota) pages narration."""
     if any(selection[0] is None for selection in page["selections"].values()):
         return {"has_more": True, "next_cursor": None, "page_cursor": None,
                 "reason_code": "history_source_unavailable"}
     state = {key: page[key] for key in ("v", "chat_id", "view", "upper", "unfinished", "quotas")}
-    older = {**page["quotas"], "progress": 0} if page["quotas"]["human"] else page["quotas"]
-    before = {source: position if older["human" if source == "chat" else source] else 0
+    before = {source: position if page["quotas"]["human" if source == "chat" else source] else 0
               for source, position in page["before"].items()}
-    has_more = any(before.values())
+    has_more = bool(before["chat"]) if page["quotas"]["human"] else any(before.values())
     return {
         "has_more": has_more,
-        "next_cursor": encode_cursor({**state, "quotas": older, "kind": "older", "before": before,
+        "next_cursor": encode_cursor({**state, "kind": "older", "before": before,
                                       "quiet": page.get("quiet_below", False)}) if has_more else None,
         "page_cursor": encode_cursor({**state, "kind": "page", "before": page["page_ends"], "quiet": page["quiet"],
                                       "lower": {source: value[1] for source, value in page["selections"].items()},

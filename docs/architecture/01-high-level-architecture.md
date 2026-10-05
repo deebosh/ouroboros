@@ -458,7 +458,8 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       │   ├── history_contracts.py ← Descriptive paged Chat history response, re-exported by contracts.py
       │   ├── schedule_contracts.py ← Typed schedule list/upsert/lifecycle-action responses, re-exported by contracts.py
       │   ├── ui_i18n_contracts.py ← Typed interface-language envelopes (`/api/ui/i18n*`), their own twin pair beside contracts.py (which sits at its line cap); browser twin `web/modules/ui_i18n_types.js`
-      │   ├── history_paging.py ← Physical range selection over retained chat/progress JSONL chains, frozen room-bound page/continuation cursors, read gaps and a Project room's `latest_arrival`; no stored history copy
+      │   ├── history_paging.py ← A room's own pages over retained chat/progress JSONL chains (counted in its rows, no archive-count bound), frozen room-bound page/continuation cursors, read gaps and a Project room's `latest_arrival`; no stored history copy
+      │   ├── history_segments.py ← Process-local per-archive summaries (chat ids, task ids, owner-row identities) that let a Project read skip archives holding none of its rows
       │   ├── cost_breakdown.py ← Ledger-derived dashboard buckets and root-task detail breakdown over the same physical-attempt authority
       │   ├── projects.py      ← GET/POST /api/projects, /from-task, /update, /delete
       │   └── _helpers.py      ← Shared request-root/coercion/JSON error envelope and `run_sync_to_completion`, the settled worker wait for request-owned blocking work
