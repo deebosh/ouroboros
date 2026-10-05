@@ -325,3 +325,38 @@ test('typing in the ClawHub search re-reads the registry, not the installed list
     assert.deepEqual(counts, { search: 6, installed: 4 }, 'an unavailable installed state is read again with the search');
     assert.match(nodes['#mp-status'].textContent, /could not be read/);
 });
+
+test('a post-action installed read that a ClawHub keystroke supersedes is still made', async () => {
+    const nodes = Object.fromEntries(['#mp-query', '#mp-only-official', '[data-mp-search]', '#mp-results', '#mp-pagination', '#mp-status']
+        .map(selector => [selector, node()]));
+    const pane = { ...node(), querySelector: selector => nodes[selector] };
+    const counts = { search: 0, installed: 0 };
+    const timers = new Map();
+    let nextTimer = 0;
+    const flush = async () => { const due = [...timers.values()]; timers.clear(); await Promise.all(due.map(callback => callback())); };
+    const context = vm.createContext({
+        AbortController, URLSearchParams,
+        setTimeout: (callback) => { timers.set(++nextTimer, callback); return nextTimer; },
+        clearTimeout: (id) => { timers.delete(id); },
+        paneTemplate: () => '', getPendingBySlug: () => new Map(), getPending: () => undefined, setPending() {},
+        document: { getElementById: id => nodes[`#${id}`] },
+        startLifecyclePoller: () => () => {},
+        runSearch: async () => { counts.search += 1; return { results: [{ slug: 'demo' }] }; },
+        loadInstalled: async () => { counts.installed += 1; return { available: true, map: new Map(), enrichmentAvailable: true }; },
+        renderResults() {}, renderPagination() {}, isRateLimitError: () => false,
+    });
+    vm.runInContext(source('marketplace', 'function installErrorCopy(', '\nconst safeExternalUrl')
+        + source('marketplace', 'function showStatus(', '\nasync function loadInstalled')
+        + source('marketplace', 'export function initMarketplace('), context);
+    await context.initMarketplace(pane);
+    assert.deepEqual(counts, { search: 1, installed: 1 });
+    // Search (like a confirmed action) schedules a refresh that reads the installed list;
+    // a keystroke replaces that timer before it fires.
+    nodes['[data-mp-search]'].handlers.click();
+    nodes['#mp-query'].handlers.input({ target: { value: 'de' } });
+    await flush();
+    assert.deepEqual(counts, { search: 2, installed: 2 }, 'the owed installed read rides the keystroke refresh');
+    nodes['#mp-query'].handlers.input({ target: { value: 'demo' } });
+    await flush();
+    assert.deepEqual(counts, { search: 3, installed: 2 }, 'once read, keystrokes search only again');
+});
