@@ -276,13 +276,8 @@ def _image_input_verdict(model: str, **binding: Any) -> Optional[bool]:
 
 
 def _unique(models: Iterable[Any], seen: set) -> List[str]:
-    out: List[str] = []
-    for model in models:
-        text = str(model or "").strip()
-        if text and text not in seen:
-            seen.add(text)
-            out.append(text)
-    return out
+    texts = [str(model or "").strip() for model in models]
+    return [text for text in texts if text and not (text in seen or seen.add(text))]  # order kept, first wins
 
 
 def choose_image_model(explicit: Iterable[Any], automatic: Iterable[Any], *,
@@ -506,8 +501,12 @@ def image_route_key(model: str, role: str = "vision", pin: Optional[str] = None)
     try:
         from ouroboros.llm import LLMClient
         from ouroboros.model_slots import route_binding
+        from ouroboros.model_wait import current_model_wait
 
-        target = LLMClient()._resolve_remote_target(name)
+        target, waiter = LLMClient()._resolve_remote_target(name), current_model_wait()
+        chosen = (waiter.overrides.get(role) or {}) if waiter is not None and pin is None else {}
+        if chosen.get("model", name) == name and chosen.get("model_account_override") is not None:
+            pin = chosen["model_account_override"]  # the owner's live choice binds the role, as the send does
         account = route_binding(name, False, role, overrides=None if pin is None else {
             role: {"model_account_override": pin}})[2]
     except Exception:

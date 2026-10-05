@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 import json
 import socket
+import sys
 from dataclasses import replace
 
 import httpx
@@ -283,7 +284,13 @@ def test_refusal_then_text_retry_answers_on_the_same_model_and_remembers_only_th
     chain, cooled = [], []
     monkeypatch.setattr(loop, "_run_cross_model_fallback_chain", lambda **kw: chain.append(kw) or (None,) * 5)
     monkeypatch.setattr(fallback_cooldown, "mark_cooldown", lambda *a, **kw: cooled.append(a))
+    keyed, route_key = [], vr.image_route_key
 
+    def spy(model, role="vision", pin=None):
+        keyed.append((sys._getframe(1).f_code.co_name, model, role, pin))
+        return route_key(model, role, pin)
+
+    monkeypatch.setattr(vr, "image_route_key", spy)
     msg, _cost, _mode = loop._call_round_model(ctx)
 
     assert msg == {"role": "assistant", "content": "done"}
@@ -294,6 +301,8 @@ def test_refusal_then_text_retry_answers_on_the_same_model_and_remembers_only_th
                                               ["reserved", "dispatched", "unresolved"]]
     usage = ctx.accumulated_usage
     assert list(usage[vr.REFUSED_IMAGES_KEY][vr.image_route_key(MAIN)]) == [DIGEST_A]
+    # The retry records under the round's own role and account binding (``task_model_binding``), as it sent.
+    assert ("retry_refused_image_round", MAIN, "main", None) in keyed
     assert vr._PENDING_REFUSALS_KEY not in usage and "_last_llm_error_kind" not in usage
     [event] = _events(root, "image_refusal_retry")
     assert (event["outcome"], event["status_code"], event["replaced_by"]) == ("answered", 400, ["marker"])
@@ -464,6 +473,36 @@ def test_a_refusal_belongs_to_its_account_not_to_every_account_of_the_model(root
     assert "refused this image" in refused_by(SUBSCRIPTION)
     # An API route has no account: a pin or a role never splits its memory.
     assert vr.image_route_key(MAIN, "main", "any-pin") == vr.image_route_key(MAIN)
+
+
+def test_the_owners_live_account_choice_binds_the_refusal_memory(root, monkeypatch):
+    """A task-only switch of the vision route's account (a wait card) is that route, as the send applies it."""
+    from types import SimpleNamespace
+
+    from ouroboros import model_wait
+    from tests.test_llm_claudexor import MODEL as SUBSCRIPTION
+
+    monkeypatch.setenv("OUROBOROS_MODEL_ACCOUNTS", json.dumps({"vision": "vision-b"}))
+    usage: dict = {}
+    vr.record_image_refusal(usage, SUBSCRIPTION, [DIGEST_A], {"status": 400})  # the configured account refused it
+    assert "refused this image" in vr.refusal_check(usage, [DIGEST_A])(SUBSCRIPTION)
+    wait = SimpleNamespace(overrides={"vision": {"model": SUBSCRIPTION, "model_account_override": "vision-c"}})
+    monkeypatch.setattr(model_wait, "current_model_wait", lambda: wait)
+    assert vr.refusal_check(usage, [DIGEST_A])(SUBSCRIPTION) == "", "the newly chosen account may take the image"
+    vr.record_image_refusal(usage, SUBSCRIPTION, [DIGEST_B], {"status": 400})  # refused on the chosen account
+    assert "refused this image" in vr.refusal_check(usage, [DIGEST_B])(SUBSCRIPTION)
+    monkeypatch.setattr(model_wait, "current_model_wait", lambda: None)
+    assert vr.refusal_check(usage, [DIGEST_B])(SUBSCRIPTION) == "", "the configured account never refused it"
+
+
+def test_a_resent_candidate_stays_in_the_bounded_image_registry(monkeypatch):
+    monkeypatch.setattr(vr, "_CANDIDATE_IMAGES", {})
+    monkeypatch.setattr(vr, "_CANDIDATE_IMAGES_KEPT", 3)
+    payload = {"messages": _messages(IMAGE_A)}
+    for key in ("a", "b", "c", "a", "d"):  # "a" is sent again (a 5xx series) before "d" arrives
+        vr.note_candidate_images(key, payload)
+    assert vr.candidate_images("a") == {DIGEST_A} and vr.candidate_images("b") is None
+    assert list(vr._CANDIDATE_IMAGES) == ["c", "a", "d"]
 
 
 def test_a_fallback_route_never_inherits_another_routes_refusal(root):
