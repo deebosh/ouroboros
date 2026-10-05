@@ -432,6 +432,58 @@ def test_a_writing_continuation_runs_in_the_predecessors_snapshot_and_supersedes
     assert {"first.txt", "second.txt"} <= touched or ("first.txt" in patch and "second.txt" in patch)
 
 
+@pytest.mark.parametrize("decision", ["apply", "reject"])
+def test_pending_continuation_recovery_keeps_lineage_and_refuses_predecessor_disposition(
+        tmp_path, monkeypatch, decision):
+    from ouroboros.delegate_custody_reconcile import _recover_pending_invocation
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+    from ouroboros.tools.delegate_integration import capture_terminal_patch_for_drive
+    from ouroboros.tools.subagent_integration_delegated import _integrate_delegated_patch
+
+    first, _p, ctx, _calls = _start(tmp_path, monkeypatch, acting=True, run_id="run-first")
+    snapshot_root = pathlib.Path(first["execution"]["workspaceRoot"])
+    (snapshot_root / "first.txt").write_text("retained work\n", encoding="utf-8")
+    _settle(tmp_path, "run-first", ctx.task_id)
+    assert capture_terminal_patch_for_drive(tmp_path, custody.replay(tmp_path)["run-first"])[
+        "status"] == "ready_with_changes"
+    lost = ClaudexorUnavailable("daemon_unreachable", "connection reset", status_code=503)
+    request, unknown, _ctx, _calls = _start(
+        tmp_path, monkeypatch, acting=True, run_id="run-next", start_error=lost,
+        start_kwargs={"continue_from": "run-first"})
+    invocation = unknown["pending_invocation_id"]
+    pending, = custody.pending_invocations(tmp_path)
+    lineage = {"continuation_of": "run-first", "capture_id": invocation, "snapshot_task_id": ctx.task_id}
+    assert {key: pending[key] for key in lineage} == lineage
+
+    class RecoveryGateway:
+        def start_run(self, body, *, idempotency_key):
+            assert body == request and idempotency_key == invocation
+            return {"runId": "run-next"}
+
+        def get_run(self, run_id):
+            assert run_id == "run-next"
+            return {"summary": {"state": "running"}}
+
+    custody._CUSTODY.clear()  # Recovery has only the durable pending invocation.
+    recovered = _recover_pending_invocation(tmp_path, RecoveryGateway(), pending)
+    assert recovered["action"] == "left_live"
+    assert custody.pending_invocations(tmp_path) == []
+    refusal = _integrate_delegated_patch(ctx, run_id="run-first", decision=decision)
+    assert "INTEGRATE_DELEGATED_SUPERSEDED" in refusal and "run-next" in refusal
+    assert (snapshot_root / "first.txt").read_text(encoding="utf-8") == "retained work\n"
+    started, = [row for row in custody.custody_rows(tmp_path)
+                if row.get("type") == custody.STARTED and row.get("run_id") == "run-next"]
+    assert {key: started[key] for key in lineage} == lineage
+    custody._CUSTODY.clear()
+    state = custody.replay(tmp_path)
+    pred, succ = state["run-first"], state["run-next"]
+    assert pred.patch_disposed == custody.SUPERSEDED and pred.superseded_by == succ.run_id
+    assert not succ.settled and succ.execution_root == str(snapshot_root)
+    assert custody.capture_key(pred) != custody.capture_key(succ) == invocation
+    assert custody.disposition_lock_path(tmp_path, pred) == custody.disposition_lock_path(tmp_path, succ)
+    assert succ.snapshot_id in custody.open_snapshot_ids(tmp_path)
+
+
 def test_a_definite_engine_refusal_leaves_the_predecessor_and_its_snapshot_intact(tmp_path, monkeypatch):
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
 
