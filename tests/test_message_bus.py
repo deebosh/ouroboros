@@ -736,6 +736,9 @@ def test_budget_line_marks_quarantined_tail_nonfinal(monkeypatch, tmp_path):
     ledger = write_journal(tmp_path, [{**row, "state": "reserved"}, {**row, "state": "released"}])
     with ledger.open("ab") as handle:
         handle.write(b'{"seq":')
+    from ouroboros import usage_store
+
+    usage_store.migrate_from_journal(tmp_path)  # the lifecycle job the server runs before any display
 
     stale = {"spent_usd": 0, "current_branch": "ouroboros", "current_sha": "abc"}
     monkeypatch.setattr(

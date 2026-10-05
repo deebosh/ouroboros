@@ -483,6 +483,64 @@ def test_a_forget_of_a_pending_registration_does_not_resurrect_it(tmp_path):
     assert "gone" not in _by_id(data) and not list(pending_dir.glob("*.json"))
 
 
+def test_a_contended_registration_during_the_grace_is_retried_by_the_next_start(tmp_path, monkeypatch):
+    """A launch registers after the shutdown door opened, while the custody lock is held: its pending file
+    is born stamped, so the next start (a new process with no deadline) still stops it."""
+    from ouroboros import owned_shutdown
+    from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
+    from ouroboros.process_custody import ledger_path
+    from ouroboros.utils import jsonl_append_lock_path
+    from ouroboros import workspace_executor as executor
+
+    _budget(monkeypatch, 5.0)
+    monkeypatch.setattr(owned_shutdown, "_update", lambda root, change, *, timeout_sec=2.0, _real=owned_shutdown._update:
+                        _real(root, change, timeout_sec=min(timeout_sec, 0.2)))
+    data = tmp_path / "data"
+    proc = _sleeper()
+    lock_path = jsonl_append_lock_path(ledger_path(data))
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    owned_shutdown.begin_owned_stop(data)  # the door is open: this generation is shutting down
+    fd = acquire_exclusive_file_lock(lock_path, timeout_sec=1.0)
+    try:
+        assert fd is not None
+        path = executor._register_process(data, {"record_type": "foreground", "executor_type": "local",
+                                                  "executor_id": "host", "host_pid": proc.pid})
+        [pending] = (data / "state" / owned_shutdown.PENDING_DIRNAME).glob("*.json")
+        assert json.loads(pending.read_text(encoding="utf-8"))["stop_requested_at"]
+        release_exclusive_file_lock(lock_path, fd)
+        fd = None
+        monkeypatch.setattr(owned_shutdown, "_GENERATION_STOP", owned_shutdown._Stop())  # the launcher's kill
+        counts = owned_shutdown.finish_unconfirmed_stops(data)
+        assert counts["retried"] == counts["confirmed"] == 1
+        proc.wait(timeout=10)
+        assert path.stem not in _by_id(data)
+    finally:
+        if fd is not None:
+            release_exclusive_file_lock(lock_path, fd)
+        _reap(proc)
+
+
+def test_a_later_door_after_the_grace_takes_one_lock_attempt(tmp_path, monkeypatch):
+    from ouroboros import owned_shutdown
+    from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
+    from ouroboros.process_custody import ledger_path
+    from ouroboros.utils import jsonl_append_lock_path
+
+    _budget(monkeypatch, 0.2)
+    data = tmp_path / "data"
+    lock_path = jsonl_append_lock_path(ledger_path(data))
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    owned_shutdown.begin_owned_stop(data)  # the first door
+    time.sleep(0.3)  # the grace is over
+    fd = acquire_exclusive_file_lock(lock_path, timeout_sec=1.0)
+    try:
+        started = time.monotonic()
+        owned_shutdown.begin_owned_stop(data)  # a later door (owner Restart, then the teardown)
+        assert time.monotonic() - started < 0.5
+    finally:
+        release_exclusive_file_lock(lock_path, fd)
+
+
 def test_the_ledger_compaction_forgets_dropped_rows(tmp_path):
     from ouroboros import owned_shutdown
     from ouroboros.process_custody import _read_ledger_records, _rewrite_ledger, record_process

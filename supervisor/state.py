@@ -998,6 +998,7 @@ def update_budget_from_usage(usage: Dict[str, Any]) -> bool:
 
     from ouroboros.usage_accounting import (
         UsageLedgerCorrupt,
+        UsageLockUnavailable,
         usage_projection,
         usage_writer_snapshot,
     )
@@ -1030,6 +1031,11 @@ def update_budget_from_usage(usage: Dict[str, Any]) -> bool:
         # in place, report the refusal to the caller, and let the next event
         # retry: paid usage itself is already persisted in the ledger.
         log.warning("Skipping legacy budget projection: usage ledger is corrupt", exc_info=True)
+        return False
+    except UsageLockUnavailable:
+        # Contention, or a journal still awaiting the lifecycle import: unknown, never
+        # zero; the prior projection stays and the next event retries.
+        log.info("Skipping budget projection: the usage store is unavailable for a display read")
         return False
     ledger_high_water_marker = (
         None if breakdown.get("integrity_degraded") else _ledger_high_water_marker(breakdown)

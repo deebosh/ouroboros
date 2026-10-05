@@ -38,11 +38,12 @@ def _held(root):
 
 
 def _refuses_everywhere(root, held):
-    """Every money access re-runs the refused import and fails closed."""
+    """Every non-display money access re-runs the refused import and fails closed; a display
+    reports the store unavailable (never zero) without running the import."""
     sends = []
     with nonfinite_failure():
         ua.usage_projection(root)
-    with nonfinite_failure():
+    with pytest.raises(ledger.UsageLockUnavailable):
         ua.usage_projection(root, allow_stale=True)
     with nonfinite_failure():
         ua.mark_dispatched(held)

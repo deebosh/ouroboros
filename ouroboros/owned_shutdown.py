@@ -169,12 +169,17 @@ def _update(root: Any, change: Callable[[Dict[str, Any]], bool], *, timeout_sec:
         release_exclusive_file_lock(lock_path, lock_fd)
 
 
+def _born_stamped(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """A target recorded after this generation's shutdown began: the next start finishes it."""
+    if _GENERATION_STOP.deadline is not None and _is_stop_target(entry):
+        return {**entry, "stop_requested_at": entry.get("stop_requested_at") or utc_now_iso()}
+    return entry
+
+
 def _put(document: Dict[str, Any], entry: Dict[str, Any]) -> bool:
     records = document.setdefault("records", {})
     previous = records.get(entry["record_id"])
-    if _GENERATION_STOP.deadline is not None and _is_stop_target(entry):
-        # Born after this generation's stop began: the next start finishes it.
-        entry = {**entry, "stop_requested_at": entry.get("stop_requested_at") or utc_now_iso()}
+    entry = _born_stamped(entry)
     if isinstance(previous, dict) and previous.get("birth") == entry.get("birth"):
         # The same process recorded again keeps a stop already requested for it.
         entry = {**entry, "stop_requested_at": previous.get("stop_requested_at") or entry.get("stop_requested_at"),
@@ -228,7 +233,8 @@ def _publish(root: Any, entry: Dict[str, Any]) -> bool:
     try:
         pending_dir = pathlib.Path(root) / "state" / PENDING_DIRNAME
         pending_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(pending_dir / f"{entry['record_id']}.{uuid.uuid4().hex}.json", entry, trailing_newline=True)
+        atomic_write_json(pending_dir / f"{entry['record_id']}.{uuid.uuid4().hex}.json", _born_stamped(entry),
+                          trailing_newline=True)
         return True
     except Exception:
         log.warning("Owned process %s is not in the ownership set", entry["record_id"], exc_info=True)
@@ -475,12 +481,14 @@ def begin_owned_stop(drive_root: Any = None) -> None:
     with stop.lock:
         if stop.deadline is None:
             stop.deadline = time.monotonic() + _stop_budget_sec()
+        deadline = stop.deadline
     try:
         if drive_root is None:
             from ouroboros.config import resolve_data_dir
 
             drive_root = resolve_data_dir()
-        _stamp(installation_root(drive_root), "stop_requested_at", _is_stop_target)
+        _stamp(installation_root(drive_root), "stop_requested_at", _is_stop_target,
+               timeout_sec=max(0.0, min(2.0, deadline - time.monotonic())))
     except Exception:
         log.warning("Owned-work stop requests not stamped at shutdown entry; the stop stamps them",
                     exc_info=True)

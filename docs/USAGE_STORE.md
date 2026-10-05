@@ -117,9 +117,9 @@ cannot be read is `UsageLedgerCorrupt` for every caller and is never replaced.
 The server runs `migrate_from_journal(root)` at lifespan start on every door
 (a providerless install included), before any request, worker or supervisor;
 the supervisor's liveness phase `startup:usage_store` then finds it completed.
-A display read (`allow_stale=True`) never imports: while a journal awaits that
-job it reports the store unavailable, and with no journal it creates the empty
-store. A non-display reader that finds no store (a tool or a test without a
+A display read (`allow_stale=True`) never imports: while a journal or a
+pre-ledger event chain awaits that job it reports the store unavailable, and with
+neither it creates the empty store. A non-display reader that finds no store (a tool or a test without a
 server) runs the same import itself; a caller arriving while it runs waits
 only its own budget.
 

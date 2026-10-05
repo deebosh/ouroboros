@@ -342,6 +342,20 @@ def test_a_display_read_never_imports_a_waiting_journal(root):
     assert ua.usage_writer_snapshot(root, allow_stale=True)  # now a plain addressed read
 
 
+def test_a_display_read_never_runs_the_pre_ledger_import(root):
+    """No journal, but a pre-ledger event chain never imported: a display still reports the store
+    unavailable instead of reading that history; the lifecycle job imports it."""
+    (root / "logs").mkdir(parents=True, exist_ok=True)
+    (root / "logs" / "events.jsonl").write_text(json.dumps({
+        "type": "llm_usage", "task_id": "legacy", "root_task_id": "legacy", "cost": 0.125,
+        "provider": "openai", "prompt_tokens": 7}) + "\n", encoding="utf-8")
+    with pytest.raises(ledger.UsageLockUnavailable):
+        ua.usage_projection(root, allow_stale=True)
+    assert not (root / usage_store.STORE_REL).exists()
+    assert usage_store.migrate_from_journal(root)["status"] == "completed"
+    assert ua.usage_projection(root, allow_stale=True)["accounted_usd"] == 0.125
+
+
 def test_a_display_read_on_a_fresh_install_creates_the_empty_store(root):
     """No journal means nothing to import: the display read is served (zero spend), never unavailable."""
     assert not (root / ledger.LEDGER_REL).exists()
