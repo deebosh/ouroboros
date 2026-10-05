@@ -33,7 +33,7 @@ from ouroboros.pricing import emit_llm_usage_event, estimate_cost_optional, infe
 from ouroboros.send_clock import main_send_scope
 from ouroboros.task_pacing import main_loop_wire_options
 from ouroboros.transport_custody import attempt_custody_event_fields, is_pre_dispatch_transport_failure, is_retryable_transport_death
-from ouroboros._usage_response import provider_cost_value as _provider_cost_value
+from ouroboros._usage_response import OUTPUT_LIMIT_FINISH_REASONS, provider_cost_value as _provider_cost_value, response_finish_reason
 from ouroboros.usage_accounting import PhysicalAttemptContext, UsageAccountingError, bind_physical_attempt_context
 from ouroboros.utils import (
     append_jsonl,
@@ -204,13 +204,13 @@ def _empty_response_log_msg(usage: Dict[str, Any], is_provider_glitch: bool) -> 
 
 def _classify_empty_response(usage: Dict[str, Any], msg: Dict[str, Any]) -> Tuple[str, bool, bool]:
     """Classify an empty / no-tool-call response → (event_type, is_provider_glitch,
-    permanent_body_error). A TYPED non-transient body error (WA1 kind
-    ``provider_error``: auth / quota / bad_request) is PERMANENT — a same-model
-    reroute already failed in the transport, so retrying here only burns the
-    transient budget. Only rate_limit / provider_transient body errors and a bare
-    ``finish_reason=null`` glitch are retryable."""
-    finish_reason = msg.get("finish_reason") or msg.get("stop_reason")
-    if str(finish_reason or "").strip().lower() in _STRUCTURED_CONTEXT_OVERFLOW_CODES:
+    permanent_body_error), reading the finish once (``response_finish_reason``). A TYPED
+    non-transient body error (WA1 kind ``provider_error``: auth / quota / bad_request) is
+    PERMANENT — a same-model reroute already failed in the transport, so retrying here
+    only burns the transient budget. Only rate_limit / provider_transient body errors and
+    a missing or null finish (a glitch) are retryable."""
+    finish = str(response_finish_reason(usage, msg)[1] or "").strip().lower()
+    if finish in _STRUCTURED_CONTEXT_OVERFLOW_CODES:
         return "remote_context_overflow", False, True
     body_err = usage.get("provider_error") if isinstance(usage, dict) else None
     if isinstance(body_err, dict) and any(
@@ -218,7 +218,7 @@ def _classify_empty_response(usage: Dict[str, Any], msg: Dict[str, Any]) -> Tupl
         for key in ("code", "type")
     ):
         return "remote_context_overflow", False, True
-    is_provider_glitch = finish_reason is None
+    is_provider_glitch = not finish
     body_kind = str((body_err or {}).get("kind") or "") if isinstance(body_err, dict) else ""
     permanent_body_error = bool(body_err) and body_kind not in ("rate_limit", "provider_transient")
     if permanent_body_error:
@@ -249,7 +249,7 @@ def _record_and_emit_empty_response(
     accumulated_usage (last error / execution_status / reason_code / F1 cooldown kind).
     Returns ``(event_type, is_provider_glitch, permanent_body_error)`` for the caller's
     retry decision. Extracted from call_llm_with_retry to keep that loop readable."""
-    finish_reason = msg.get("finish_reason") or msg.get("stop_reason")
+    finish_reason = response_finish_reason(usage, msg)[1]
     body_error = usage.get("provider_error") if isinstance(usage, dict) and isinstance(usage.get("provider_error"), dict) else {}
     event_type, is_provider_glitch, permanent_body_error = _classify_empty_response(usage, msg)
     log_msg = _empty_response_log_msg(usage, is_provider_glitch)
@@ -457,9 +457,8 @@ from ouroboros.context_budget import (  # one overflow vocabulary for every seam
     context_overflow_message as _context_overflow_message,
     output_or_body_size_message as _output_or_body_size_message,
 )
-_FORCED_INCOMPLETE_FINISH_REASONS = _STRUCTURED_CONTEXT_OVERFLOW_CODES | frozenset({
-    "length", "max_tokens", "tool_calls", "function_call", "tool_use",
-})
+_FORCED_INCOMPLETE_FINISH_REASONS = (_STRUCTURED_CONTEXT_OVERFLOW_CODES | OUTPUT_LIMIT_FINISH_REASONS
+                                     | frozenset({"tool_calls", "function_call", "tool_use"}))
 
 
 def forced_response_is_incomplete(response_meta: Optional[Dict[str, Any]]) -> bool:
@@ -1251,17 +1250,9 @@ def _replace_response_meta(
     target.clear()
     if usage is None or msg is None:
         return
-    for source, key in ((usage, "response_finish_reason"), (msg, "finish_reason"), (msg, "stop_reason")):
-        if key in source:
-            finish_present, finish_reason = True, source.get(key)
-            break
-    else:
-        finish_present, finish_reason = False, None
-    target.update({
-        "finish_reason_present": finish_present,
-        "finish_reason": finish_reason,
-        "tool_call_count": len(msg.get("tool_calls") or []),
-    })
+    finish_present, finish_reason = response_finish_reason(usage, msg)
+    target.update(finish_reason_present=finish_present, finish_reason=finish_reason,
+                  tool_call_count=len(msg.get("tool_calls") or []))
 
 
 def forced_response_parts(

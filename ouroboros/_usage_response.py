@@ -43,6 +43,24 @@ def provider_cost_value(value: Any) -> Optional[float]:
 
 _number = provider_cost_value  # historical local name at this boundary
 
+# Finish reasons that mean a reply reached its output allowance: OpenAI-family ``length``
+# and Anthropic ``max_tokens``. The one vocabulary every finish-reason reader shares.
+OUTPUT_LIMIT_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+
+def response_finish_reason(usage: Any, msg: Any) -> Tuple[bool, Optional[str]]:
+    """The provider's finish fact for one response → ``(present, value)``.
+
+    Read by PRESENCE of the key, in this order: the usage fact ``response_finish_reason``
+    (written by the OpenAI-compatible, Claudexor, local and GigaChat lanes), then the
+    message's ``finish_reason``, then its ``stop_reason`` (the native Anthropic lane).
+    An explicit null stays ``(True, None)``; a lower field never replaces it.
+    """
+    for source, key in ((usage, "response_finish_reason"), (msg, "finish_reason"), (msg, "stop_reason")):
+        if isinstance(source, dict) and key in source:
+            return True, source[key]
+    return False, None
+
 
 def processing_receipt(provider: str, usage: Dict[str, Any], *, requested: str = "",
                        submitted_native: str = "", reason: Optional[str] = None) -> Optional[Dict[str, Any]]:

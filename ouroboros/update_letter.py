@@ -38,6 +38,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ouroboros._usage_response import OUTPUT_LIMIT_FINISH_REASONS, response_finish_reason
 from ouroboros.update_channels import normalize_update_channel
 from ouroboros.utils import atomic_write_json, read_json_dict, truncate_within_limit, utc_now_iso
 from ouroboros.config import runtime_setting
@@ -338,11 +339,6 @@ def _fit_plan(env: Any, memory: Any, task: Dict[str, Any]) -> Any:
     return build_context_fit_plan(env, memory, task)
 
 
-# Provider stop markers that mean "the output budget ran out mid-answer" (the same names
-# loop_llm_call recognises). A letter cut there is a partial cognitive artifact, never ready.
-_OUTPUT_LIMIT_STOPS = frozenset({"length", "max_tokens"})
-
-
 def _letter_timeout_sec() -> float:
     """Transport ceiling of the letter one-shot: the clamped getter lives in
     ``ouroboros/runtime_limits.py`` (re-exported by ``ouroboros.config``), its default in
@@ -556,13 +552,10 @@ def write_letter(
         if not text:
             record.update(error_kind="empty_response", error_text="the model returned no text")
             return record
-        # The stop marker travels in the message for some providers and in
-        # usage["response_finish_reason"] for OpenAI-compatible ones (llm.py stores it there).
-        stop = str(
-            (msg or {}).get("finish_reason") or (msg or {}).get("stop_reason")
-            or (usage or {}).get("response_finish_reason") or ""
-        ).strip().lower()
-        if stop in _OUTPUT_LIMIT_STOPS:
+        # The shared finish reader: usage["response_finish_reason"] (OpenAI-compatible
+        # lanes), then the message's own finish_reason / stop_reason (native Anthropic).
+        stop = str(response_finish_reason(usage, msg)[1] or "").strip().lower()
+        if stop in OUTPUT_LIMIT_FINISH_REASONS:
             # Cut mid-answer by the output budget: storing it as ready would present a
             # partial cognitive artifact as the letter (BIBLE P1). Typed, last good kept.
             record.update(error_kind="output_truncated",
