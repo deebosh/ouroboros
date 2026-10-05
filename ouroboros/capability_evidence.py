@@ -315,10 +315,11 @@ def _load(drive_root: Any) -> Dict[str, Any]:
         data.setdefault("effort_floors", {})
         data.setdefault("rejected_params", {})
         data.setdefault("token_density", {})
+        data.setdefault("image_input", {})  # route-scoped catalog statements (vision_routing)
         return data
     return {
         "probes": {}, "owner_acks": {}, "effort_ceilings": {},
-        "effort_floors": {}, "rejected_params": {}, "token_density": {},
+        "effort_floors": {}, "rejected_params": {}, "token_density": {}, "image_input": {},
     }
 
 
@@ -1062,7 +1063,7 @@ def _claudexor_metadata_evidence(model: str, base_url: str, headers: Any,
 
 
 def _openai_compatible_metadata_window(
-    model: str, base_url: str, allow_fetch: bool, api_key: Optional[str] = None
+    model: str, base_url: str, allow_fetch: bool, api_key: Optional[str] = None, *, provider: str = "",
 ) -> int:
     """CW6 (v6.34.0): an OpenAI-compatible server (vLLM, Ollama, LM Studio, TGI, ...)
     commonly publishes the per-model window in GET {base_url}/models — under
@@ -1086,6 +1087,9 @@ def _openai_compatible_metadata_window(
         resp.raise_for_status()
         payload = resp.json()
         items = payload.get("data") if isinstance(payload, dict) else payload
+        if provider == "openai-compatible":  # MiniMax /models carries no modality field
+            from ouroboros.vision_routing import record_catalog_image_input
+            record_catalog_image_input(provider, base_url, items, source="the OpenAI-compatible gateway's /models")
         # The saved model is normally provider-prefixed (e.g. ``openai-compatible::llama-3``)
         # while /models lists the BARE id — match either spelling.
         wanted = {str(model), str(model).split("::", 1)[-1]}
@@ -1123,7 +1127,7 @@ def _provider_metadata_window(
                 api_key = str((runtime_settings() or {}).get("MINIMAX_API_KEY") or "")
             except Exception:
                 api_key = ""
-        return _openai_compatible_metadata_window(model, base_url, allow_fetch, api_key=api_key)
+        return _openai_compatible_metadata_window(model, base_url, allow_fetch, api_key=api_key, provider=p)
     # GigaChat's /models (aget_models) lists model ids but does NOT publish a per-model
     # context window, so a gigachat route stays unprobeable (owner-ack path) — no probe.
     return 0

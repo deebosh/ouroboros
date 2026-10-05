@@ -1236,8 +1236,8 @@
       }
     },
     {
-      "id": "openrouter.payload.blind_model_image_placeholder",
-      "route": "a model without native vision receives an explicit image placeholder",
+      "id": "openrouter.payload.image_block_reaches_the_wire",
+      "route": "an image block reaches the OpenRouter payload as the send policy gave it, whatever the model name",
       "spec": {
         "env": {
           "OPENROUTER_API_KEY": "or-fixture-key"
@@ -1280,8 +1280,10 @@
                     "text": "look"
                   },
                   {
-                    "type": "text",
-                    "text": "[image omitted: model has no vision — screenshot]"
+                    "type": "image_url",
+                    "image_url": {
+                      "url": "data:image/png;base64,AAA"
+                    }
                   }
                 ]
               }
@@ -1294,7 +1296,7 @@
               }
             }
           },
-          "value_sha256": "aed846a3a10e3f842a555bf8d372ad82b2478d80d0c90fa744b0dec3c63b9977"
+          "value_sha256": "1cd3226d3cfd6e135f357111501b366f5883a2b1b70dc4d749bb8117088f0bfa"
         },
         "sends": [],
         "unused_script_steps": 0

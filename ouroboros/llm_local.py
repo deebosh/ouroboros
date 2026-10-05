@@ -1,6 +1,6 @@
 """The local llama.cpp lane and its context budget.
 
-A local model has no vision, a small window, and no cost. Fitting a transcript
+Our local lane carries no images, has a small window, and costs nothing. Fitting a transcript
 into that window is a policy decision — compact the sections a local run can
 lose, keep the ones it cannot, and refuse rather than silently truncate — so the
 compaction rules live beside the send that depends on them.
@@ -205,14 +205,9 @@ class _LocalLaneMixin:
                 messages, allow_message_cache_control=False, flatten_tool_content_blocks=True,
             )
         )
-        # Local llama.cpp has no vision; avoid flattening base64 into the prompt.
-        for msg in clean_messages:
-            content = msg.get("content")
-            if not isinstance(content, list):
-                continue
-            for idx, block in enumerate(content):
-                if isinstance(block, dict) and str(block.get("type") or "") in ("image_url", "image"):
-                    content[idx] = {"type": "text", "text": "[image omitted: model has no vision]"}
+        # Our llama.cpp lane is launched without a vision handler: keep base64 out
+        # of the text prompt and name the lane, never the model.
+        clean_messages = self._replace_image_blocks_with_placeholder(clean_messages, "local llama.cpp")
         ctx_len, local_max = local_context_limits(max_tokens)
         if ctx_len > 0 and compact:
             clean_messages = self._prepare_messages_for_local_context(clean_messages, ctx_len, local_max)
