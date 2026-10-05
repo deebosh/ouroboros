@@ -166,6 +166,9 @@ _TRANSPORT_DEATH_BACKOFF_SEC = (4.0, 8.0)
 # the wait episode's free redial re-enters call_llm_with_retry with the SAME
 # round id, so the budget must not re-arm per invocation.
 TRANSPORT_DEATHS_KEY = "_transport_deaths"
+# A local pre-dispatch refusal's own candidate facts (``LocalContextTooLargeError.refused_candidate``), for the
+# round's one strict-shrink retry; a wait's reprepare rebinds the physical context of the remaining attempts.
+REFUSED_CANDIDATE_KEY, REBOUND_PHYSICAL_CONTEXT_KEY = "_refused_candidate", "_physical_context_rebound"
 
 
 def transient_retry_max(default_retries: int) -> int:
@@ -987,6 +990,8 @@ def _record_llm_call_error(
     stamp_substitutions(ctx.accumulated_usage, error)
     ctx.accumulated_usage.update(execution_status="infra_failed", reason_code="llm_api_error")
     if classification.kind == "context_overflow":
+        if getattr(error, "refused_candidate", None):  # the local lane's pre-dispatch refusal: its own comparison facts
+            ctx.accumulated_usage[REFUSED_CANDIDATE_KEY] = dict(error.refused_candidate)
         overflow_event_type = "local_context_overflow" if isinstance(error, LocalContextTooLargeError) else "remote_context_overflow"
         append_jsonl(ctx.drive_logs / "events.jsonl", {
             "ts": utc_now_iso(), "type": overflow_event_type, **identity, "error": safe_error,
@@ -1314,15 +1319,19 @@ def call_llm_with_retry(
     stop_retry_check: Optional[Callable[[], bool]] = None,
     model_role: str = "main", model_turn_state: Any = None,
     model_account_override: Optional[str] = None, processing_preference: Optional[str] = None,
-    model_context_observer: Any = None, send_clock_policy: Any = None,
+    model_context_observer: Any = None, send_clock_policy: Any = None, max_tokens: int = MAIN_LOOP_MAX_TOKENS,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[float]]:
-    """Call one model with bounded retries and deadline-aware transport."""
+    """Call one model with bounded retries and deadline-aware transport.
+
+    ``max_tokens`` is the LOGICAL caller ceiling (the strict-shrink retry passes the failed
+    attempt's sent allowance); the sent value lives on the physical candidate."""
     from ouroboros.model_slots import resolve_processing_preference
 
     processing_preference = resolve_processing_preference(model_role, override=processing_preference)
     _replace_response_meta(response_meta_out)
     drive_root = pathlib.Path(drive_logs).parent
-    accumulated_usage.pop(RETRY_WALL_EXHAUSTED_KEY, None)  # last-invocation marker (see key)
+    for key in (RETRY_WALL_EXHAUSTED_KEY, REFUSED_CANDIDATE_KEY, REBOUND_PHYSICAL_CONTEXT_KEY):
+        accumulated_usage.pop(key, None)  # last-invocation markers (see the keys)
     execution_id = str(accumulated_usage.setdefault("execution_id", new_execution_id()))
     round_id = f"{execution_id}:round:{round_idx}"
     _transport_death_repeats(accumulated_usage, round_id)  # drops another round's record before anything reads it
@@ -1349,28 +1358,17 @@ def call_llm_with_retry(
                 event_queue=event_queue, use_local=use_local, task_attempt=task_attempt, deadline_ts=deadline_ts,
             )
             _emit_live_log(event_queue, {
-                "type": "llm_round_started",
-                "task_id": task_id,
-                "task_type": task_type,
-                "execution_id": execution_id,
-                "round_id": round_id,
-                "llm_call_id": llm_call_id,
-                "round": round_idx,
-                "task_attempt": task_attempt,
-                "attempt": attempt + 1,
-                "model": model,
-                "reasoning_effort": effort,
-                "use_local": bool(use_local),
+                "type": "llm_round_started", "task_id": task_id, "task_type": task_type, "execution_id": execution_id,
+                "round_id": round_id, "llm_call_id": llm_call_id, "round": round_idx, "task_attempt": task_attempt,
+                "attempt": attempt + 1, "model": model, "reasoning_effort": effort, "use_local": bool(use_local),
             })
             kwargs = {
-                "messages": send_messages,
-                "tools": tools,
-                "model": model,
+                "messages": send_messages, "tools": tools, "model": model,
                 "model_role": model_role, "model_turn_state": model_turn_state,
                 "model_account_override": model_account_override,
                 "processing_preference": processing_preference,
                 "reasoning_effort": effort,
-                "max_tokens": MAIN_LOOP_MAX_TOKENS,
+                "max_tokens": max_tokens,
                 **main_loop_wire_options(model, allow_server_web_search=allow_server_web_search,
                                          bypass_response_cache=response_cache_bypass_requested),
                 "caller_deadline_ts": (None if deadline_ts is None
@@ -1389,7 +1387,7 @@ def call_llm_with_retry(
                     "tools": tools or [],
                     "model": model,
                     "reasoning_effort": effort,
-                    "max_tokens": MAIN_LOOP_MAX_TOKENS,
+                    "max_tokens": max_tokens,  # the logical caller ceiling; the sent allowance is the physical candidate's
                     "use_local": bool(use_local),
                     "allow_server_web_search": bool(allow_server_web_search),
                     "response_cache_bypass_requested": response_cache_bypass_requested,
@@ -1423,6 +1421,7 @@ def call_llm_with_retry(
             )
             host_route = usage.get("model_role_route") or {}
             model, use_local = host_route.get("model", model), host_route.get("use_local", use_local)
+            physical_context = accumulated_usage.pop(REBOUND_PHYSICAL_CONTEXT_KEY, physical_context)
             model_facts = usage.get("claudexor") or {}
             accumulated_usage["_model_route"] = dict(model_facts.get("route") or {})
             accumulated_usage["_model_substitutions"] = model_facts.get("substituted") or []
@@ -1541,16 +1540,9 @@ def call_llm_with_retry(
                 "response_ref": response_ref.get("manifest_ref") if response_ref else None,
             }
             _emit_live_log(event_queue, {
-                "type": "llm_round_finished",
-                "task_id": task_id,
-                "task_type": task_type,
-                "execution_id": execution_id,
-                "round_id": round_id,
-                "llm_call_id": llm_call_id,
-                "round": round_idx,
-                "task_attempt": task_attempt,
-                "attempt": attempt + 1,
-                "model": display_model,
+                "type": "llm_round_finished", "task_id": task_id, "task_type": task_type, "execution_id": execution_id,
+                "round_id": round_id, "llm_call_id": llm_call_id, "round": round_idx, "task_attempt": task_attempt,
+                "attempt": attempt + 1, "model": display_model,
                 **{key: _round_event[key] for key in (
                     "reasoning_effort", "cost_usd", "prompt_tokens", "completion_tokens", "cached_tokens",
                     "cache_write_tokens", "prompt_cache_ttl", "effort", "effort_resolution", "request_wire", "claudexor") if key in _round_event},
@@ -1569,6 +1561,9 @@ def call_llm_with_retry(
                 accumulated_usage["_model_route"] = dict(e.route)
             host_route = getattr(e, "model_role_route", {}) or {}
             model, use_local = host_route.get("model", model), host_route.get("use_local", use_local)
+            if REBOUND_PHYSICAL_CONTEXT_KEY in accumulated_usage:  # a wait's reprepare bound a new route inside this attempt
+                physical_context = accumulated_usage.pop(REBOUND_PHYSICAL_CONTEXT_KEY)
+                context_fit_event_fields = _context_fit_event_fields(accumulated_usage)
             if _handle_main_llm_call_exception(
                 e,
                 _LlmErrorContext(
