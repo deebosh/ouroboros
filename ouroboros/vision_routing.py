@@ -347,20 +347,24 @@ def resolve_vision_caption_model(ctx: Any, llm: Any, *, use_local: bool = False,
     explicit = str(runtime_setting("OUROBOROS_MODEL_VISION", "") or "").strip()
     if use_local and not explicit:
         return ""
+    from ouroboros.model_slots import local_lane_label, slot_lane_label
+
+    # Each candidate as it routes: a slot on our local lane is passed over by name.
     automatic = [
-        get_vision_model(),
-        getattr(ctx, "model", ""),
-        getattr(ctx, "active_model", "") or getattr(ctx, "task_model_override", ""),
+        slot_lane_label("vision", get_vision_model()),
+        local_lane_label(getattr(ctx, "model", ""), bool(getattr(ctx, "use_local", False))),
+        local_lane_label(getattr(ctx, "active_model", "") or getattr(ctx, "task_model_override", ""),
+                         bool(getattr(ctx, "active_use_local", False))),
     ]
     try:
         from ouroboros.config import get_light_model, parse_fallback_chain
 
-        automatic.append(get_light_model())
-        automatic.extend(parse_fallback_chain())
+        automatic.append(slot_lane_label("light", get_light_model()))
+        automatic.extend(slot_lane_label("fallback", model) for model in parse_fallback_chain())
     except Exception:
         pass
     try:
-        automatic.append(llm.default_model())
+        automatic.append(slot_lane_label("main", llm.default_model()))
     except Exception:
         pass
     return choose_image_model([explicit], automatic, refused=refused)[0]

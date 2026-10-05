@@ -500,7 +500,7 @@ export function renderSettingsPage() {
 
                     <div class="form-section">
                         <h3>Image Input</h3>
-                        <div class="settings-section-copy">Auto sends images unless the model's own metadata says it cannot see them; then a model that can see writes a caption, or a short note takes the image's place. Inline always sends images, even when metadata says no; if the provider refuses one, you see the refusal and that image becomes a note. Caption always replaces images with text captions. Off replaces images with a note and starts no caption work.</div>
+                        <div class="settings-section-copy">Auto sends images unless the model's own metadata says it cannot see them; then a model that can see writes a caption, or a short note takes the image's place. Inline always sends images, even when metadata says no; if the provider refuses one, you see the refusal and that image becomes a note. Caption always replaces images with text captions. Off replaces images with a note and starts no caption work. The local model and GigaChat cannot carry images in any mode: they get a caption or a note that says so.</div>
                         <div class="settings-effort-card">
                             <label>Image Input Mode</label>
                             <input id="s-image-input-mode" type="hidden" value="auto">

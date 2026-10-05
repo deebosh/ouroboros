@@ -801,6 +801,40 @@ def test_explicit_vision_slot_is_used_even_when_its_metadata_says_no(cold, monke
     assert resolve_vision_caption_model(SimpleNamespace(model=UNKNOWN), _CaptionModel()) == TEXT_ONLY
 
 
+LOCAL_ID = "qwen2.5-local-gguf"  # a bare id: only its slot's local flag says which lane carries it
+
+
+def test_a_model_on_our_local_lane_is_never_a_remote_image_candidate(cold, monkeypatch):
+    """The lane is a separate flag, so a bare local id would otherwise look like an unknown remote route."""
+    from ouroboros.tools import vision
+    from ouroboros.vision_routing import resolve_vision_caption_model
+
+    calls = _record_vlm_calls(monkeypatch)
+    monkeypatch.setenv("OUROBOROS_MODEL", LOCAL_ID)
+    monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", UNKNOWN)
+    # Guard quiet: the same bare id on a remote route is an unknown route and receives the image.
+    vision._vlm_query(_vlm_ctx(active_model=LOCAL_ID), "Describe.", image_url="https://example.invalid/x.png")
+    assert calls == [LOCAL_ID]
+    # Main on our local lane (the task's active route and the slot flag): the remote light slot answers.
+    monkeypatch.setenv("USE_LOCAL_MAIN", "true")
+    vision._vlm_query(_vlm_ctx(active_model=LOCAL_ID, active_use_local=True), "Describe.",
+                      image_url="https://example.invalid/x.png")
+    assert calls == [LOCAL_ID, UNKNOWN]
+    # Light on our local lane too: no remote candidate is left, and the refusal names the lane.
+    monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", "llama-3.2-local")
+    monkeypatch.setenv("USE_LOCAL_LIGHT", "true")
+    result = vision._vlm_query(_vlm_ctx(active_model=LOCAL_ID, active_use_local=True), "Describe.",
+                               image_url="https://example.invalid/x.png")
+    assert calls == [LOCAL_ID, UNKNOWN]
+    assert "VLM_NO_VISION_MODEL" in result and "local llama.cpp" in result, result
+    # Captions for a remote route that cannot see pass over the local light and Main the same way.
+    _receive_openrouter_catalog(monkeypatch, RECORDED_ROWS)
+    assert resolve_vision_caption_model(SimpleNamespace(model=TEXT_ONLY), _CaptionModel(default=LOCAL_ID)) == ""
+    monkeypatch.setenv("USE_LOCAL_LIGHT", "false")
+    assert resolve_vision_caption_model(SimpleNamespace(model=TEXT_ONLY),
+                                        _CaptionModel(default=LOCAL_ID)) == "llama-3.2-local"
+
+
 # ---------------------------------------------------------------------------
 # Browser screenshots are canonical input
 # ---------------------------------------------------------------------------

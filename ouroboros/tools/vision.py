@@ -371,26 +371,30 @@ def _vision_capable_slot_candidates(client: Any, ctx: Any = None) -> List[str]:
     """Configured models that may serve a VLM sub-call, most-local/cheapest first
     (active task model -> vision -> light -> main -> fallback chain). Reviewer/scope slots
     are deliberately NOT poached. De-duplicated, order-preserving, empties dropped."""
-    out: List[str] = [
-        str(getattr(ctx, "active_model", "") or getattr(ctx, "task_model_override", "") or "").strip(),
-    ]
+    from ouroboros.model_slots import local_lane_label, slot_lane_label
+
+    # Each candidate as it routes: a slot on our local lane (its USE_LOCAL_* flag, or the
+    # task's active local route) is named so, and the image policy passes it over.
+    out: List[str] = [local_lane_label(
+        getattr(ctx, "active_model", "") or getattr(ctx, "task_model_override", ""),
+        bool(getattr(ctx, "active_use_local", False)))]
     try:
         from ouroboros.config import get_light_model, get_vision_model
-        out.append(str(get_vision_model() or "").strip())
-        out.append(str(get_light_model() or "").strip())
+        out.append(slot_lane_label("vision", get_vision_model()))
+        out.append(slot_lane_label("light", get_light_model()))
     except Exception:
         pass
     try:
-        out.append(str(client.default_model() or "").strip())
+        out.append(slot_lane_label("main", client.default_model()))
     except Exception:
         pass
-    out.append(str(runtime_setting("OUROBOROS_MODEL", "") or "").strip())
+    out.append(slot_lane_label("main", runtime_setting("OUROBOROS_MODEL", "")))
     # Fallbacks is a comma chain -> add each link as its own candidate (via the shared
     # SSOT parser, which also honors the legacy singular env), not the raw comma-string
     # (which would never match a vision-capable model id).
     try:
         from ouroboros.config import parse_fallback_chain
-        out.extend(parse_fallback_chain())
+        out.extend(slot_lane_label("fallback", model) for model in parse_fallback_chain())
     except Exception:
         pass
     seen: set = set()
