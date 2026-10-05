@@ -143,7 +143,13 @@ def _step(page, feed, direction="older", *, automatic=False):
 def _to_beginning(page, feed):
     for _ in range(80):
         _idle(page, feed)
-        latest = page.evaluate("() => window.__historyReads.filter(read => read.done && read.body).at(-1)?.body")
+        # The walk's own reads carry a cursor. A refresh's recent read (a card finished,
+        # the room's revision moved) can land after the last of them and says nothing
+        # about the walk, so the beginning is the last cursor read that has no more.
+        latest = page.evaluate("""() => {
+            const reads = window.__historyReads.filter(read => read.done && read.body);
+            return (reads.filter(read => read.cursor).at(-1) || reads.at(-1))?.body;
+        }""")
         if latest and latest.get("has_more") is False:
             note = page.locator(feed).locator('..').locator('.chat-load-older-note').inner_text()
             assert note in {"Beginning of saved history", "Some saved history is not loaded. Shown messages may have gaps."}
