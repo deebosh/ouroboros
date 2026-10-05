@@ -285,7 +285,10 @@ async def _apply_hub_review_and_deps(
 def _resync_skill_schedules_quiet(drive_root: pathlib.Path) -> None:
     """Mirror skill manifest schedules after a marketplace lifecycle change so a
     removed/renamed/updated scheduled skill does not fire stale before the
-    periodic scheduler tick."""
+    periodic scheduler tick. Handlers call it through ``asyncio.to_thread``:
+    the mirror waits for the supervisor queue lock, and that wait must stay off
+    the HTTP event loop (the scheduler tick already runs the same idempotent
+    resync beside lifecycle operations, so nothing new interleaves)."""
     try:
         from supervisor.queue import resync_skill_schedules
 
@@ -491,7 +494,7 @@ async def api_marketplace_install(request: Request) -> JSONResponse:
         return json_exception(exc)
     # Resync regardless of ok: a deps-failure can set ok=false after the payload
     # was already installed on disk, changing scheduled-task readiness.
-    _resync_skill_schedules_quiet(drive_root)
+    await asyncio.to_thread(_resync_skill_schedules_quiet, drive_root)
     payload = _serialize_install_result(result)
     _maybe_enqueue_repair_for_payload(drive_root, payload, source="clawhub")
     status = 200 if result.ok else (getattr(result, "error_status", 0) or 400)
@@ -540,7 +543,7 @@ async def api_marketplace_update(request: Request) -> JSONResponse:
         return json_exception(exc)
     # Resync regardless of ok: an update can mutate the payload on disk even when
     # a follow-up deps step reports ok=false, changing scheduled-task readiness.
-    _resync_skill_schedules_quiet(drive_root)
+    await asyncio.to_thread(_resync_skill_schedules_quiet, drive_root)
     payload = _serialize_install_result(result)
     _maybe_enqueue_repair_for_payload(drive_root, payload, source="clawhub")
     status = 200 if result.ok else (getattr(result, "error_status", 0) or 400)
@@ -634,7 +637,7 @@ async def api_marketplace_uninstall(request: Request) -> JSONResponse:
     if result.ok:
         # The skill is gone; drop its scheduled tasks now so the scheduler does
         # not fire a deleted skill before the next periodic resync.
-        _resync_skill_schedules_quiet(drive_root)
+        await asyncio.to_thread(_resync_skill_schedules_quiet, drive_root)
     return JSONResponse(
         {
             "ok": result.ok,
@@ -749,7 +752,7 @@ async def _api_ouroboroshub_adopt(request: Request, body: Dict[str, Any], slug: 
     )
     # Resync regardless of ok: a rolled-back adopt still restored payloads on
     # disk and a successful one changed the scheduled-task inventory.
-    _resync_skill_schedules_quiet(drive_root)
+    await asyncio.to_thread(_resync_skill_schedules_quiet, drive_root)
     _maybe_enqueue_repair_for_payload(drive_root, payload, source="ouroboroshub")
     return JSONResponse(payload, status_code=_hub_payload_status(payload))
 
@@ -824,7 +827,7 @@ async def api_ouroboroshub_install(request: Request) -> JSONResponse:
     )
     # Resync regardless of ok: install + deps can leave the payload on disk with
     # ok=false, changing scheduled-task readiness.
-    _resync_skill_schedules_quiet(drive_root)
+    await asyncio.to_thread(_resync_skill_schedules_quiet, drive_root)
     _maybe_enqueue_repair_for_payload(drive_root, payload, source="ouroboroshub")
     return JSONResponse(payload, status_code=_hub_payload_status(payload))
 
@@ -879,7 +882,7 @@ async def api_ouroboroshub_update(request: Request) -> JSONResponse:
     )
     # Resync regardless of ok: an update can mutate the payload on disk even when
     # a follow-up deps step reports ok=false, changing scheduled-task readiness.
-    _resync_skill_schedules_quiet(drive_root)
+    await asyncio.to_thread(_resync_skill_schedules_quiet, drive_root)
     _maybe_enqueue_repair_for_payload(drive_root, payload, source="ouroboroshub")
     return JSONResponse(payload, status_code=_hub_payload_status(payload))
 
@@ -913,7 +916,7 @@ async def api_ouroboroshub_uninstall(request: Request) -> JSONResponse:
         options=_lifecycle_options("Uninstalled", "uninstall failed"),
     )
     if payload.get("ok"):
-        _resync_skill_schedules_quiet(drive_root)
+        await asyncio.to_thread(_resync_skill_schedules_quiet, drive_root)
     return JSONResponse(payload, status_code=200 if payload.get("ok") else 400)
 
 

@@ -809,8 +809,8 @@ def _run_drive_custody_pass(stop_event: Any = None) -> None:
 def _periodic_zombie_reconcile(*, on_orphans_healed: Any = None, stop_event: Any = None) -> None:
     """Heal zombie 'running' records on a supervisor cadence. A worker that died
     mid-review (crash / SIGKILL / manual stop) leaves ``review_job.json`` at running
-    forever in headless/no-UI runs, where the boot and ``GET /api/extensions``
-    reconciles never fire; the same death leaves ``task_results/<id>.json`` at
+    until the next boot reconcile (``GET /api/extensions`` is a passive read and
+    heals nothing); the same death leaves ``task_results/<id>.json`` at
     running. Both reconciles are liveness-gated (pid-dead / queue-empty + worker-boot
     evidence), so a live review or task is never touched. Off the loop thread, so
     ``stop_event`` (the generation token) is re-read before every step."""
