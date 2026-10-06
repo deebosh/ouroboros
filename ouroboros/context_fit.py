@@ -125,17 +125,15 @@ class ContextFitProjection:
     def system_message(self) -> Dict[str, Any]:
         from ouroboros.llm_messages import STABLE_PREFIX_BLOCKS_KEY
 
-        # Declared for the OpenAI-family and Claudexor send projection (llm_messages.split_leading_system_prefix).
-        # The Codex backend reads another conversation's cache only inside the leading
-        # system group, by prefix up to the first change; a notice after it is never read
-        # (measured 2026-10-03, 26 calls: system(A)+system(B)+notice(C) kept A and B both
-        # on a knowledge edit and on a page appended to B; B as a notice kept A alone).
-        # So block 0 (SYSTEM.md, BIBLE, books) and block 1 (identity and my sealed story)
-        # both stay system items, and block 2 (knowledge, rooms, runtime facts), new with
-        # every task, travels as the one notice. An empty block 1 is never an item of its own.
+        # Keep every nonempty stable block before the changing tail in the leading
+        # system group: common governance A', optional handbook D, identity/story B.
+        # Codex reuses another conversation's prefix at whole-item boundaries; B in
+        # a notice loses that reuse. Count independently of cache markers, which
+        # Codex strips. Only C (knowledge, rooms, runtime facts) becomes the notice.
         content = json.loads(self.system_content_json)
-        second = content[1] if isinstance(content, list) and len(content) > 2 else None
-        stable = 2 if isinstance(second, dict) and str(second.get("text") or "").strip() else 1
+        if isinstance(content, list):
+            content = [block for block in content[:-1] if str(block.get("text") or "").strip()] + content[-1:]
+        stable = max(1, len(content) - 1) if isinstance(content, list) else 1
         return {"role": "system", "content": content, STABLE_PREFIX_BLOCKS_KEY: stable}
 
 
@@ -216,7 +214,7 @@ class ContextFitPlan:
         contents, start, books = {}, start_mode or self.preferred_mode, ("max", "low")
         if self.core is not None:
             contents, start = _view_projections(
-                self.core, {form: json.loads(self.projection(form).system_content_json)[0]["text"] for form in books},
+                self.core, {form: _governance_blocks(None, self.core, mode=form) for form in books},
                 self.user_content_json, preferred=self.preferred_mode, start=start_mode, tool_schemas=tool_schemas,
                 window_tokens=window_tokens, known_window=known_window, output_reserve=output_reserve, ratio=ratio,
                 resident=True)  # a running task's list, enable_tools additions included
@@ -320,52 +318,40 @@ def _render_context_system_content(
     story: str = "",
     room: str = "",
 ) -> List[Dict[str, Any]]:
-    """``[A▸, B▸, C]``: governance and books; identity with my story; knowledge, my rooms and runtime facts.
+    """``[A'▸, D?▸, B▸, C]``: common governance, optional handbook, identity/story, changing facts.
 
     ``story`` and ``room`` are the memory view rendered for this projection's mode and
     window (``memory_floor.mode_views``); empty without a view.
     """
-    return _system_blocks(core, _governance_text(env, core, mode=mode), story, room)
+    return _system_blocks(core, _governance_blocks(env, core, mode=mode), story, room)
 
 
-def _governance_text(env: Any, core: ContextCore, *, mode: str) -> str:  # block A, books in ``mode``'s form
+def _governance_blocks(env: Any, core: ContextCore, *, mode: str) -> Tuple[str, ...]:
     # D-ARCH (owner, 2026-08-08): the reference-doc form follows the RENDERED
     # mode directly — ARCHITECTURE is full in max for every task class and the
     # nav map in low; DEVELOPMENT inclusion is the caller's mode-independent
     # decision carried on the core (the former per-task force_low_docs lever is
     # gone: workspace binding no longer shapes the docs).
     static_parts = [core.base_prompt, "## BIBLE.md\n\n" + core.bible_md]
-    static_parts.extend(
-        reference_doc_sections(
-            env,
-            context_mode="low" if core.compact_reference_docs else mode,
-            include_development=core.docs_need_development,
-            architecture_text=core.architecture_md,
-            development_text=core.development_md,
-            books=core.reference_books,
-        )
+    sections, development = reference_doc_sections(
+        env,
+        context_mode="low" if core.compact_reference_docs else mode,
+        include_development=core.docs_need_development,
+        architecture_text=core.architecture_md,
+        development_text=core.development_md,
+        books=core.reference_books,
     )
+    static_parts.extend(sections)
     static_parts.extend(core.reference_book_errors)
-    return "\n\n".join(static_parts)
+    return ("\n\n".join(static_parts), development)
 
 
-def _system_blocks(core: ContextCore, governance: str, story: str = "", room: str = "") -> List[Dict[str, Any]]:
-    # Stable governance/policy is first; mutable task evidence is last: the
-    # cache-friendly ordering for Anthropic-style breakpoints. OpenAI's public API
-    # and the Codex backend read a cache only inside the leading system group, so
-    # their send copies keep blocks 0 and 1 there and the rest as one notice
-    # (declared in ``system_message``); OpenRouter's explicit breakpoints mark both.
-    return [
-        {
-            "type": "text",
-            "text": governance,
-            "cache_control": {"type": "ephemeral"},
-        },
-        {
-            "type": "text",
-            "text": "\n\n".join(part for part in (core.semi_stable_text, story) if part),
-            "cache_control": {"type": "ephemeral"},
-        },
+def _system_blocks(core: ContextCore, governance: Tuple[str, ...], story: str = "", room: str = "") -> List[Dict[str, Any]]:
+    # All stable items precede C, including D only when the captured core calls
+    # for the full handbook. Never create an empty cache boundary.
+    stable = (*governance, "\n\n".join(part for part in (core.semi_stable_text, story) if part))
+    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}
+            for text in stable if text.strip()] + [
         {"type": "text", "text": "\n\n".join(part for part in (core.dynamic_head_text, room, core.dynamic_text) if part)},
     ]
 
@@ -378,13 +364,13 @@ def seal_task_transcript(
     """Mark ONE stable message-side boundary for provider prompt caching.
 
     Until enough tool results exist to seal a rolling boundary among them, the
-    boundary is the task message itself: without it everything after the two
+    boundary is the task message itself: without it everything after the
     SYSTEM markers -- the mutable context block and the task contract -- is
     re-sent uncached every round, which is exactly the short-lived nanny and
     leaf shape. The marker MIGRATES to the rolling tool seal in the same call
-    that first qualifies, because a request may declare at most four
-    breakpoints (tools, two system blocks and this one): leaving both would
-    make the rolling seal a fifth marker and silently drop it.
+    that first qualifies. Anthropic permits four breakpoints: A', optional D,
+    B and this one. The finalizer marks schemas only if a slot remains; keeping
+    both message boundaries could exceed the cap and lose the rolling seal.
     """
     for msg in messages:
         if msg.get("role") != "tool":
@@ -777,13 +763,13 @@ def _request_tokens(system_content: List[Dict[str, Any]], user_content_json: str
                                            {"role": "user", "content": json.loads(user_content_json)}])
 
 
-def _view_projections(core: ContextCore, governance: Mapping[str, str], user_content_json: str, *, preferred: str,
+def _view_projections(core: ContextCore, governance: Mapping[str, Tuple[str, ...]], user_content_json: str, *, preferred: str,
                       tool_schemas: Optional[List[Dict[str, Any]]], window_tokens: int, known_window: bool, output_reserve: int,
                       ratio: float, start: Optional[str] = None, resident: bool = False,
                       ) -> Tuple[Dict[str, Tuple[List[Dict[str, Any]], Dict]], str]:
     """Each mode's ``(system content, view receipt)`` and the mode the task starts in.
 
-    ``governance`` is block A by book form. A mode's fixed part is its request without my memory
+    ``governance`` is A' and optional D by book form. A mode's fixed part is its request without my memory
     plus the schemas it sends: the owner-mode selection of ``tool_schemas`` on the first request,
     or, ``resident``, the list a running task already sends (an ``enable_tools`` addition counts,
     whatever the mode). View and starting mode are ``memory_floor.mode_views`` of the core's
@@ -853,7 +839,7 @@ def build_context_fit_plan(
     known_window = is_known(evidence, require_fresh=True)
     input_source = None
     contents, initial_mode = _view_projections(
-        core, {form: _governance_text(env, core, mode=form) for form in ("max", "low")}, core.user_content_json,
+        core, {form: _governance_blocks(env, core, mode=form) for form in ("max", "low")}, core.user_content_json,
         preferred=preferred, tool_schemas=tool_schemas, window_tokens=int(evidence.window_tokens or 0),
         known_window=known_window, output_reserve=output_reserve, ratio=ratio)
 

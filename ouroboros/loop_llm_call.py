@@ -1432,6 +1432,8 @@ def call_llm_with_retry(
                 physical_context=physical_context, candidate_predicate=candidate_predicate if attempt == 0 else None, model_context_observer=model_context_observer,
                 send_clock_policy=send_clock_policy, canonical_messages=messages,
             )
+            from ouroboros.observability import mark_last_answer
+            mark_last_answer(accumulated_usage)
             host_route = usage.get("model_role_route") or {}
             model, use_local = host_route.get("model", model), host_route.get("use_local", use_local)
             physical_context = accumulated_usage.pop(REBOUND_PHYSICAL_CONTEXT_KEY, physical_context)

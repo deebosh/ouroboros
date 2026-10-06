@@ -91,7 +91,7 @@ def test_where_even_f1_to_f5_leave_too_much_peoples_words_go_last_other_rooms_fi
     assert "F2" in mine and "F6" not in mine and "F7" not in mine
     tight = steps(fixed + 65_536 + 9_000)  # after F1-F5 and F2 the words still do not fit
     assert list(tight) == ["F1", "F3", "F4", "F2", "F6", "F7"]  # every live room shows words: no F1b
-    some = steps(fixed + 65_536 + 13_000)  # other rooms' words make room before this room's
+    some = steps(fixed + 65_536 + 14_000)  # other rooms' words make room before this room's
     assert "F6" in some and "F7" not in some
 
 
@@ -272,7 +272,7 @@ def test_the_lowered_mode_is_a_line_of_the_rooms_physical_floor_never_of_the_run
     need = _needs(core, plan)
     for window, mode in ((need["max"] - 50, "low"), (need["max"] + 50, "max")):
         built = plan(window)
-        block_c = built.messages_for(built.initial_mode)[0]["content"][2]["text"]
+        block_c = built.messages_for(built.initial_mode)[0]["content"][-1]["text"]
         line = (f"This window ({window} tokens) cannot hold Max with even the shortest view of my memory; "
                 f"this task started in {mode.capitalize()}.")
         assert (line in section(block_c, "## This room (Main)")) == (mode == "low"), mode

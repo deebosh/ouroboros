@@ -20,6 +20,7 @@ from dataclasses import replace
 from typing import Any, Callable, Dict
 from ouroboros.dialogue_provenance import presence_provenance_fields
 from ouroboros.llm_claudexor import propagate_model_error
+from ouroboros.observability import without_finalization_timing
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.subagent_messages import initiator_meta
 from ouroboros.synthesis_cost_text import _summary_row_cost_fields, _synthesis_cost_usd, _synthesis_usage_snapshot_text
@@ -444,7 +445,7 @@ def _pre_synthesis_usage_snapshot(
     terminal checkpoint remains the sole final authority after their own model
     calls settle.
     """
-    snapshot = json.loads(json.dumps(usage, ensure_ascii=False, default=str))
+    snapshot = json.loads(json.dumps(without_finalization_timing(usage), ensure_ascii=False, default=str))
     if not _atp()._is_root_post_task(task):
         return snapshot
 
@@ -795,6 +796,7 @@ def park_late_phase(env: Any, task: Dict[str, Any], stage: str, remaining: list,
     callback); ``late`` is what the phase already holds (completed steps, a
     stopped correction's draft); the original money scope rides along. One
     actor-source payload carries them; the checkpoint stays open ``paused``.
+    Durable copies omit boot-relative timing; live delivery keeps its clocks.
     False means nothing was saved: the caller keeps its honest ``degraded``.
     """
     import dataclasses
@@ -822,7 +824,8 @@ def park_late_phase(env: Any, task: Dict[str, Any], stage: str, remaining: list,
                    "marks": sorted(late.marks), "drafts": dict(late.drafts), "task": task,
                    "env": {"drive_root": str(env.drive_root), "repo_dir": str(getattr(env, "repo_dir", "") or "")},
                    "money_scope": dataclasses.asdict(scope) if scope is not None else None,
-                   "usage": usage, "usage_snapshot": usage_snapshot, "trace": trace,
+                   "usage": without_finalization_timing(usage),
+                   "usage_snapshot": without_finalization_timing(usage_snapshot), "trace": trace,
                    "review_evidence": review_evidence, "sealed_final": sealed_final, "drive_logs": str(drive_logs),
                    "reflection_callback": reflection_callback_spec(callback), **state}
         ref = store_actor_source_bytes(roots[0], task_id, category="context_checkpoints",

@@ -88,7 +88,7 @@ def test_promote_tool_emits_event_with_chat_and_project(tmp_path, monkeypatch):
     assert ctx._typed_routing_action_emitted == "promote_chat_to_task"
 
 
-def test_cat_router_preview_promote_first_request_and_direct_harness_keep_full_authority(
+def test_cat_root_keeps_full_authority_and_helpers_keep_a_predecessor_brief(
     tmp_path, monkeypatch,
 ):
     import json
@@ -248,6 +248,7 @@ def test_cat_router_preview_promote_first_request_and_direct_harness_keep_full_a
     assert validate_task_authority_sources(env, task) == {}
     attach_task_contract(task)
     assert task["task_contract"]["predecessor_authority"] == task["predecessor_authority"]
+    root_before = json.dumps(task, ensure_ascii=False, sort_keys=True)
     messages, _ = build_llm_messages(env=env, memory=Memory(tmp_path, repo_dir=repo), task=task)
     rendered = json.dumps(messages, ensure_ascii=False)
     tool_ctx = ToolContext(
@@ -268,24 +269,30 @@ def test_cat_router_preview_promote_first_request_and_direct_harness_keep_full_a
         "task_contract": child_contract,
     })
     assert len(nested_work_order) < 250_000
-    assert child_contract["predecessor_authority"] == task["predecessor_authority"]
+    brief = child_contract["predecessor_authority"]
+    assert brief["source"] == task["predecessor_authority"]["source"]
+    assert brief["authority_sha256"] == task["predecessor_authority"]["authority_sha256"]
+    assert brief["task_contract"] == task["predecessor_authority"]["task_contract"]
+    assert "verification_receipts" not in brief
+    assert brief["omitted_fields"]["verification_receipts"] > 0
+    assert json.dumps(task, ensure_ascii=False, sort_keys=True) == root_before
 
     surfaces = (rendered, retrieved, direct_harness, nested_work_order)
     for surface in surfaces:
-        for marker in (
-            tail, result_tail, artifact_error, artifact_finalized_at, capability_delta,
-            delegated_custody, verification_ledger, verification_receipt,
-            future_terminal_fact, final_answer, non_final_rows,
-            mutation_evidence, plan_review_state,
-        ):
+        for marker in (tail, result_tail, "never use native/API fallback", "L1 asks L2 to spawn L3"):
             assert marker in surface
         for marker in process_evidence:
             assert marker not in surface
         for field in excluded_process_fields:
             assert field not in surface
-    assert "never use native/API fallback" in rendered
-    assert "L1 asks L2 to spawn L3" in direct_harness
-    assert "never use native/API fallback" in nested_work_order
+    for surface in surfaces:
+        for marker in (
+            artifact_error, artifact_finalized_at, capability_delta,
+            delegated_custody, verification_ledger, verification_receipt,
+            future_terminal_fact, final_answer, non_final_rows,
+            mutation_evidence, plan_review_state,
+        ):
+            assert (marker in surface) == (surface in (rendered, retrieved))
 
 
 def test_main_promotion_selects_only_manifested_canonical_predecessor(tmp_path, monkeypatch):
@@ -410,10 +417,9 @@ def test_presence_promotion_preserves_ceiling_and_cannot_choose_new_scope(tmp_pa
     })
     for key in ("capability_ceiling", "context", "attachment_manifest"):
         assert child[key] == contract[key]
-    # Envelope contract (2026-08-30): a bounded legacy body - no nested
-    # recursion carrier, no oversized string - passes through byte-identical
-    # (exact strings are authority); only the growth carriers get collapsed.
-    assert child["predecessor_authority"] == contract["predecessor_authority"]
+    assert child["predecessor_authority"] == {
+        **contract["predecessor_authority"], "omitted_fields": {},
+    }
 
 
 def test_real_presence_promotion_rebases_root_and_materializes_all_attachments(

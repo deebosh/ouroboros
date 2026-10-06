@@ -232,7 +232,7 @@ def test_a_declared_child_starts_from_its_parents_selection_and_the_carried_word
     assert "Shelf one holds forty boxes" in text and "Input source selection" in text
     assert "memory_view" not in cap and "## My story" not in text and "Words of my human" not in text
     assert "alpha inventory" not in text  # the parent did not select the owner's words
-    receipt = json.loads(section(messages[0]["content"][2]["text"], "## Input source selection").split("\n\n", 1)[1])
+    receipt = json.loads(section(messages[0]["content"][-1]["text"], "## Input source selection").split("\n\n", 1)[1])
     assert any(item.startswith("the owner's words that caused this work") for item in receipt["omitted_automatic"])
     assert not (memory.drive_root / "memory" / "chronicle").exists()  # no capture, no activation
     bare = copy.deepcopy(declared)

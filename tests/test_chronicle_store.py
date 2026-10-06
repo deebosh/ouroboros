@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from ouroboros.chronicle_store import ChronicleStore, PublishResult
+from ouroboros.chronicle_store import ChronicleStore, PublishResult, correction_line
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 MIND = {"kind": "mind", "task_id": "t1", "focus": {"role": "root", "task_id": "t1"}}
@@ -243,7 +243,8 @@ def test_room_records_are_story_records_paged_by_sequence(tmp_path):
     assert store.decide(draft["id"], False, MIND, "Not what happened").ok
     first = store.room_records("1")
     assert [r["id"] for r in first] == [r["id"] for r in notes]
-    assert first[0]["text"] == "Meaning 0" and first[0]["current_text"] == "Meaning 0, corrected"
+    assert first[0]["text"] == "Meaning 0" and first[0]["current_text"].startswith("Meaning 0\n\n[correction ")
+    assert first[0]["current_text"].endswith("]\nMeaning 0, corrected")
     second = store.room_records("1", after_seq=first[1]["sequence"])
     assert [r["id"] for r in second] == [notes[2]["id"]]
 
@@ -261,14 +262,22 @@ def test_correction_is_the_minds_and_keeps_the_original(tmp_path):
     fixed = store.correct(original["id"], "The mind chose Y", MIND)
     assert fixed.ok and fixed.current_revision == fixed.record["id"]
     row = store.room_records("r")[0]
-    assert (row["text"], row["current_text"], row["current_author"]) == ("I chose X", "The mind chose Y", MIND)
-    assert row["revision"] == fixed.record["id"]
+    # The acting text is the original with the signed correction under it; the author stays the record's.
+    line = correction_line(fixed.record)
+    assert line == f"[correction {fixed.record['id']} by mind (root, task t1), {fixed.record['ts'][:10]}]"
+    assert (row["text"], row["current_text"], row["author"]) == ("I chose X", f"I chose X\n\n{line}\nThe mind chose Y", MIND)
+    assert row["revision"] == fixed.record["id"] and "current_author" not in row
+    assert row["corrections"] == [{"id": fixed.record["id"], "author": MIND, "ts": fixed.record["ts"]}]
     assert store.get(original["id"])["text"] == "I chose X"
     # A helper is refused as such, not asked for a revision; the raw publish path keeps the same rule.
     assert store.correct(original["id"], "Light's view", LIGHT).reason == "invalid"
     raw = store.publish([{"kind": "correction", "room_id": "r", "target_id": original["id"], "text": "Light's view",
                           "author": LIGHT}])
-    assert raw.reason == "invalid" and store.room_records("r")[0]["current_text"] == "The mind chose Y"
+    assert raw.reason == "invalid" and store.room_records("r")[0]["current_text"] == row["current_text"]
+    # A record nobody corrected acts as its own words alone, nothing added.
+    plain = note(store, "untouched")
+    acting = next(r for r in store.room_records("r") if r["id"] == plain["id"])
+    assert acting["current_text"] == "untouched" and acting["revision"] == plain["id"] and acting["corrections"] == []
 
 
 def test_rejected_light_draft_stops_acting_and_reopens_its_rows(tmp_path):
@@ -307,8 +316,14 @@ def test_corrections_need_the_current_revision_and_refusals_carry_no_text(tmp_pa
     stale = store.correct(base["id"], "correction 2", MIND, expected_revision=base["id"])
     assert (stale.reason, stale.current_revision) == ("revision_conflict", first.record["id"])
     assert "correction 1" not in repr(stale)
-    assert store.correct(base["id"], "correction 2", MIND, expected_revision=first.record["id"]).ok
-    assert store.room_records("r")[0]["current_text"] == "correction 2"
+    second = store.correct(base["id"], "correction 2", MIND, expected_revision=first.record["id"])
+    assert second.ok
+    acting = store.room_records("r")[0]
+    # The second correction does not hide the first: both stand under the original, in order, each signed.
+    assert acting["current_text"] == (f"original\n\n{correction_line(first.record)}\ncorrection 1\n\n"
+                                      f"{correction_line(second.record)}\ncorrection 2")
+    assert acting["revision"] == second.record["id"]
+    assert [fix["id"] for fix in acting["corrections"]] == [first.record["id"], second.record["id"]]
     assert store.correct("no-such-record", "x", MIND).reason == "target_missing"
 
 

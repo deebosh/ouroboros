@@ -746,11 +746,11 @@ class _PayloadCachePolicyMixin:
         must precede a shorter one — 5m tools before 1h system is a hard 400) and never
         creates a marker on an earlier segment; a bare marker is the provider default and
         ranks as 5m; the ONLY marker it ever adds is on the last tool schema, and only when
-        the tools segment carries none (unconditional on this family in both deleted sites —
-        a tool-free payload therefore stays uncached HERE, and system/messages never gain a
+        the tools segment carries none and fewer than four markers are already declared.
+        A tool-free payload therefore stays uncached HERE, and system/messages never gain a
         marker they did not declare; a tool-free lane is cached only by DECLARING its stable
         prefix at the caller, as the review surfaces and the safety supervisor do via
-        ``review_helpers.cached_prompt_blocks``); above the four-breakpoint cap the four EARLIEST
+        ``review_helpers.cached_prompt_blocks``; above the four-breakpoint cap the four EARLIEST
         (governance-prefix) markers are kept, the tail MARKERS — never content — are dropped
         and the reduction is disclosed in usage (rationale and the builder-side loud layer:
         ``docs/ARCHITECTURE.md``). Only this freshly assembled payload is normalized —
@@ -779,7 +779,9 @@ class _PayloadCachePolicyMixin:
         note: Optional[Dict[str, Any]] = None
         if _route_normalizes_cache_breakpoints(target):
             tools = payload.get("tools") if isinstance(payload.get("tools"), list) else []
-            if not any(isinstance(t, dict) and isinstance(t.get("cache_control"), dict) for t in tools):
+            if len(breakpoints) < self._MAX_CACHE_BREAKPOINTS and not any(
+                isinstance(t, dict) and isinstance(t.get("cache_control"), dict) for t in tools
+            ):
                 for tool in reversed(tools):
                     # Schema entries only — skips an appended openrouter:web_search tool.
                     if isinstance(tool, dict) and (
