@@ -7,6 +7,7 @@ import { apiFetch, taskArtifactDownloadUrl } from './api_client.js';
 import { bindMenu } from './ui_interactions.js';
 import { stampHistoryNode } from './chat_history_replay.js';
 import { isFileDrag } from './chat_activity.js';
+import { buildAttachmentBlock } from './chat_attachments.js';
 
 const MIME_RE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
 const BASE64_RE = /^[A-Za-z0-9+/=\s]+$/;
@@ -181,6 +182,7 @@ export function createChatMedia({
     insertMessageNode,
     senderLabel,
     stampNodeTimestamp,
+    onDomWrite = (mutate) => mutate(),
 }) {
     const disposers = new Set();
     const resourceOwners = new Map();
@@ -193,6 +195,7 @@ export function createChatMedia({
     const fileGroups = new Map();
     let fileDialog = null;
     let dialogFile = null;
+    let dialogOwner = null;  // the card's node: releasing it closes the dialog it opened
     let destroyed = false;
 
     function listen(target, type, handler, options, owner = target) {
@@ -350,11 +353,7 @@ export function createChatMedia({
                 </div>
             </form>`;
         document.body.appendChild(fileDialog);
-        const close = () => {
-            dialogFile = null;
-            if (typeof fileDialog.close === 'function') fileDialog.close();
-            else fileDialog.removeAttribute('open');
-        };
+        const close = closeFileDialog;
         listen(fileDialog.querySelector('[data-file-action="close"]'), 'click', close);
         listen(fileDialog, 'cancel', close);
         listen(fileDialog.querySelector('[data-file-action="open"]'), 'click', async () => {
@@ -382,9 +381,18 @@ export function createChatMedia({
         return fileDialog;
     }
 
-    function openFileDialog(file) {
+    function closeFileDialog() {
+        dialogFile = null;
+        dialogOwner = null;
+        if (!fileDialog) return;
+        if (typeof fileDialog.close === 'function') fileDialog.close();
+        else fileDialog.removeAttribute('open');
+    }
+
+    function openFileDialog(file, owner = null) {
         const dialog = ensureFileDialog();
         dialogFile = file;
+        dialogOwner = owner;
         dialog.querySelector('.chat-file-dialog-title').textContent = file.filename;
         const open = dialog.querySelector('[data-file-action="open"]');
         open.hidden = !file.source.durable;
@@ -650,7 +658,7 @@ export function createChatMedia({
             });
         } else {
             const card = bubble.querySelector('.chat-file-card');
-            if (card && source.src) listen(card, 'click', () => openFileDialog({ source, filename, mime }));
+            if (card && source.src) listen(card, 'click', () => openFileDialog({ source, filename, mime }, bubble));
         }
         return bubble;
     }
@@ -741,6 +749,26 @@ export function createChatMedia({
         return true;
     }
 
+    // The owner's attachments sit above the caption inside the bubble addMessage is
+    // building (DESIGN "Chat attachments"), from these same atoms and disposers; an
+    // empty caption leaves no empty text row (the node stays, hidden, as the anchor
+    // other bubble decorations are placed against).
+    function mountAttachments(bubble, views, caption) {
+        const block = destroyed ? null : buildAttachmentBlock({
+            listen, photoActionsHtml, wirePhotoActions, playerHtml, wirePlayer, openFileDialog,
+            humanSize, fileExtension, release, onDomWrite,
+        }, views);
+        const message = block && bubble?.querySelector('.message');
+        if (!message) return false;
+        message.before(block);
+        message.hidden = !caption;
+        bubble.classList.add('has-attachments');
+        // Several photos or a player take the media width; one photo or a card shrinks to fit.
+        bubble.classList.toggle('has-wide-media', Boolean(block.querySelector('.is-multiple')
+            || block.querySelector('.chat-attachment-player')));
+        return true;
+    }
+
     // D12: the standard "two squares" copy icon, always visible on the bubble.
     // Explicit closing tags (no self-closing) keep lightweight DOM stubs happy.
     const COPY_ICON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none"'
@@ -825,6 +853,7 @@ export function createChatMedia({
         photoGroups.clear();
         fileGroups.clear();
         dialogFile = null;
+        dialogOwner = null;
         if (fileDialog) {
             try { fileDialog.remove(); } catch {}
             fileDialog = null;
@@ -835,6 +864,7 @@ export function createChatMedia({
     // keep their listeners, playback, focus and outstanding user actions.
     function release(root) {
         const owns = (node) => node === root || root?.contains?.(node);
+        if (dialogOwner && owns(dialogOwner)) closeFileDialog();  // no actions on a released message's file
         for (const [dispose, owner] of resourceOwners) if (owns(owner)) {
             try { dispose(); } catch {}
             resourceOwners.delete(dispose);
@@ -961,6 +991,7 @@ export function createChatMedia({
         buildGallery,
         bubbleFrameNode,
         attachCopyControl,
+        mountAttachments,
         wireDeliveries,
         reset,
         release,

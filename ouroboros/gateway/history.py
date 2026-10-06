@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, Optional
 from starlette.requests import Request
 from starlette.responses import Response
 
+from ouroboros.chat_uploads import attachment_views
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.gateway._helpers import coerce_int, read_rotated_jsonl_entries
 from ouroboros.gateway.cost_breakdown import make_cost_breakdown_endpoint  # noqa: F401 — historical import path (router)
@@ -694,6 +695,8 @@ def _collect_chat_rows(
     replay_evidence: Optional[list] = None,
 ) -> tuple[list, int] | tuple[list, int, set[str]]:
     """Project selected chat entries (or the legacy recent read), with quota/gaps."""
+    from supervisor.message_ingress import dispatch_entered, acceptance_undispatched
+
     # Quiz lifecycle merge (#Q-2b): the chat row froze the card at ask time
     # ("open"); the durable truth lives in the owner_quiz task-result
     # projection. One projection read per distinct asking task, cached for
@@ -807,6 +810,14 @@ def _collect_chat_rows(
             }
             if role == "user" and entry.get("ingress_accepted") is True:
                 rec["ingress_accepted"] = True
+                if acceptance_undispatched(entry_chat, rec["client_message_id"]):  # saved, proven never dispatched
+                    rec["ingress_undispatched"] = True
+                elif dispatch_entered(entry):  # positive entry evidence; acceptance alone proves none
+                    rec["ingress_dispatched"] = True
+            if role == "user" and entry.get("attachments"):  # the same views the live echo carried
+                rec["attachments"] = attachment_views(entry["attachments"], chat_path.parent.parent)
+            if role == "user" and entry.get("text_placeholder") is True:  # host-written text, not the owner's
+                rec["text_placeholder"] = True
             if rec["system_type"] in {"project_started", "project_handoff", "project_completion_summary"}:
                 # Read-side plain normalization for lifecycle rows persisted
                 # before the producer stripped markdown; a no-op on new rows.

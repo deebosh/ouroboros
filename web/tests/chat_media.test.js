@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { bindComposerFileTargets, createChatMedia, safeHttpUrl } from '../modules/chat_media.js';
+import { createComposerAttachments } from '../modules/chat_attachments.js';
+import { uploadView } from './helpers/attachment_views.js';
 import { stampNodeTimestamp } from '../modules/chat_activity.js';
 
 const styleCss = await readFile(new URL('../style.css', import.meta.url), 'utf8');
@@ -864,4 +866,126 @@ test('bindComposerFileTargets stages pasted images and dropped files', () => {
         dataTransfer: { types: ['text/plain'] },
     });
     assert.ok(!inputArea.classes.has('drag-active'));
+});
+
+// --- Owner attachments (DESIGN "Chat attachments") ---------------------------------
+
+test('owner attachments mount above the caption from the shared atoms and release with the instance', () => {
+    const fx = fixture();
+    try {
+        const bubble = new NodeStub('div', fx.tracker);
+        bubble.innerHTML = '<div class="sender">You</div><div class="message">Caption</div><div class="msg-time">now</div>';
+        const views = [uploadView('one.png', 'image'), uploadView('two.png', 'image'), uploadView('note.wav', 'audio'),
+            uploadView('plan.pdf', 'file'), { name: 'gone.zip', kind: 'file', mime: '', available: false }];
+        const adds = fx.tracker.adds;
+        assert.equal(fx.controller.mountAttachments(bubble, views, 'Caption'), true);
+        const [block, message] = [bubble.children[1], bubble.children[2]];
+        assert.equal(block.classList.contains('chat-attachments') && message.classList.contains('message'), true);
+        assert.equal(bubble.classList.contains('has-attachments') && bubble.classList.contains('has-wide-media'), true);
+        assert.equal(block.querySelector('.chat-gallery-grid').classList.contains('is-multiple'), true);
+        assert.deepEqual(['.chat-photo', 'summary', 'audio', '.chat-file-card'].map((sel) => block.querySelectorAll(sel).length),
+            [2, 2, 1, 2], 'two photos with always-present actions (no hover), one player, two cards');
+        assert.ok(block.querySelectorAll('.chat-file-item')[1].classList.contains('is-unavailable'));
+        assert.ok(block.innerHTML.includes('ZIP · Unavailable'),
+            'an unavailable card says so in words, not only by its dimmed style');
+        assert.ok(fx.tracker.adds > adds, 'listeners belong to the media controller');
+        const single = new NodeStub('div', fx.tracker);
+        single.innerHTML = '<div class="sender">You</div><div class="message"></div>';
+        fx.controller.mountAttachments(single, [uploadView('only.png', 'image')], '');
+        assert.equal(single.querySelector('.message').hidden, true, 'an empty caption leaves no empty text row');
+        assert.equal(single.classList.contains('has-wide-media'), false, 'one photo shrinks to fit');
+        const removes = fx.tracker.removes;
+        fx.controller.release(bubble);
+        assert.ok(fx.tracker.removes > removes, 'evicting the bubble disposes its attachment listeners');
+    } finally {
+        fx.controller.destroy();
+        fx.restore();
+    }
+});
+
+test('an undecodable preview becomes an honest card; a missing file becomes inert', async () => {
+    const fx = fixture();
+    const priorFetch = globalThis.fetch;
+    try {
+        for (const [status, inert, note] of [[200, false, 'Preview unavailable'], [404, true, 'Unavailable']]) {
+            globalThis.fetch = async (_url, init) => ({ ok: status < 400, status, method: init?.method });
+            const bubble = new NodeStub('div', fx.tracker);
+            bubble.innerHTML = '<div class="message">x</div>';
+            fx.controller.mountAttachments(bubble, [uploadView('clip.heic', 'image')], 'x');
+            const block = bubble.children[0];
+            for (const listener of block.querySelector('.chat-photo').listeners.get('error')) await listener({});
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            assert.equal(block.querySelectorAll('.chat-photo').length, 0);
+            assert.ok(block.querySelector('.chat-file-card'), 'the image became a card');
+            assert.ok(fx.tracker.created.some((made) => made.innerHTML.includes(`· ${note}`)), note);
+            assert.equal(block.querySelector('.chat-file-item').classList.contains('is-unavailable'), inert);
+        }
+    } finally {
+        globalThis.fetch = priorFetch;
+        fx.controller.destroy();
+        fx.restore();
+    }
+});
+
+test('the composer owns thumbnail URLs: once per image, revoked on remove/send/destroy, kept on failure', async () => {
+    const fx = fixture();
+    const prior = { create: URL.createObjectURL, revoke: URL.revokeObjectURL, fetch: globalThis.fetch };
+    const created = [];
+    const revoked = [];
+    URL.createObjectURL = (file) => { created.push(file.name); return `blob:${file.name}`; };
+    URL.revokeObjectURL = (url) => revoked.push(url);
+    try {
+        const parts = Object.fromEntries(['preview', 'attachBtn', 'fileInput', 'input'].map((key) => [key, new NodeStub('div', fx.tracker)]));
+        const composer = createComposerAttachments({ ...parts, onLayout() {}, showToast() {} });
+        const file = (name, type) => new File(['x'], name, { type });
+        composer.stage([file('a.png', 'image/png'), file('b.pdf', 'application/pdf'), file('c.jpg', 'image/jpeg')]);
+        assert.deepEqual(created, ['a.png', 'c.jpg'], 'one object URL per staged image, none for a PDF');
+        assert.equal(parts.preview.querySelectorAll('.attach-thumb').length, 2);
+        await parts.preview.querySelectorAll('[data-attachment-remove]')[2].click();
+        assert.deepEqual(revoked, ['blob:c.jpg'], 'removing a staged image revokes its URL');
+        let calls = 0;
+        globalThis.fetch = async () => {
+            calls += 1;
+            if (calls === 2) return { ok: false, status: 500, json: async () => ({ ok: false, error: 'disk full' }) };
+            return { ok: true, status: 200, json: async () => ({ ok: true, filename: `${'c'.repeat(32)}_a.png`,
+                display_name: 'a.png', mime: 'image/png', view: uploadView('a.png', 'image') }) };
+        };
+        const readOnly = [];
+        const upload = composer.upload(() => { readOnly.push(parts.input.readOnly); return true; });
+        await assert.rejects(upload, (error) => error.message === 'disk full' && error.uploaded.length === 1);
+        assert.deepEqual([...readOnly, parts.input.readOnly], [true, true, false], 'read-only, not disabled, while uploading');
+        assert.deepEqual([composer.count, revoked], [2, ['blob:c.jpg']], 'a failed send keeps files and thumbnails');
+        globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true, filename: 'f',
+            display_name: 'x', mime: '', view: null }) });
+        assert.equal((await composer.upload(() => true)).length, 2);
+        composer.clear();
+        assert.deepEqual(revoked, ['blob:c.jpg', 'blob:a.png'], 'a sent message releases its thumbnails');
+        composer.stage([file('d.png', 'image/png')]);
+        composer.destroy();
+        assert.deepEqual(revoked.at(-1), 'blob:d.png', 'destroying the composer releases what is still staged');
+    } finally {
+        Object.assign(URL, { createObjectURL: prior.create, revokeObjectURL: prior.revoke });
+        globalThis.fetch = prior.fetch;
+        fx.controller.destroy();
+        fx.restore();
+    }
+});
+
+test('releasing a message closes the file dialog its own card opened', async () => {
+    const fx = fixture();
+    try {
+        const bubble = new NodeStub('div', fx.tracker);
+        bubble.innerHTML = '<div class="message">x</div>';
+        fx.controller.mountAttachments(bubble, [uploadView('plan.pdf', 'file')], 'x');
+        await bubble.querySelector('.chat-file-card').click();
+        const dialog = globalThis.document.body.querySelector('.chat-file-dialog');
+        assert.equal(dialog.attributes.has('open'), true, 'the card opened the dialog');
+        fx.controller.release(new NodeStub('div', fx.tracker));
+        assert.equal(dialog.attributes.has('open'), true, 'releasing another message leaves it open');
+        fx.controller.release(bubble);
+        assert.equal(dialog.attributes.has('open'), false, 'no actions remain on a released message\'s file');
+    } finally {
+        fx.controller.destroy();
+        fx.restore();
+    }
 });
