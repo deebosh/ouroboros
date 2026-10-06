@@ -535,3 +535,33 @@ def test_agent_scope_keeps_post_loop_child_lookups_and_resets_reused_workers(tmp
     second = agent_module.OuroborosAgent.handle_task(host, {"id": "two", "type": "task"})
     assert obs.task_timing() is None and first is not second
     assert first["phases"] is not second["phases"]
+
+
+def test_a_delivery_context_without_a_drive_root_still_delivers_once_and_records_nothing(tmp_path):
+    """The timing row is best effort: a sender context that carries no DRIVE_ROOT must deliver
+    exactly as before and simply record no timing (the call site may not read a missing root)."""
+    from ouroboros.finalization_timing import emit_finalization_timing
+
+    timed = {"_finalization_timing": {"phases": {"sender": {"finished_at": "t", "finished_sec": 1.0, "started_sec": 0.5}}},
+             "task_id": "t1", "delivery_id": "d1"}
+    emit_finalization_timing(timed, None)
+    assert not (tmp_path / "logs" / "events.jsonl").exists()
+    emit_finalization_timing(timed, tmp_path)
+    rows = [json.loads(line) for line in (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [row["type"] for row in rows] == ["task_finalization_timing"]
+
+    sent = []
+
+    class RootlessCtx:
+        RUNNING = {}
+
+        @staticmethod
+        def send_with_budget(chat_id, text, **kwargs):
+            sent.append(text)
+
+        @staticmethod
+        def append_jsonl(path, data):
+            raise AssertionError(f"no error row expected, got {data!r}")
+
+    delivery._handle_send_message({"type": "send_message", "chat_id": 1, "text": "Done.", **timed}, RootlessCtx())
+    assert sent == ["Done."]

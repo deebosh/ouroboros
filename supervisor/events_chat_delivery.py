@@ -351,7 +351,7 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
                 from supervisor.terminal_delivery import record_cancel_receipt_delivery
 
                 record_cancel_receipt_delivery(ctx.DRIVE_ROOT, task_id, delivery_id, chat_id)
-        emit_finalization_timing(evt, ctx.DRIVE_ROOT)
+        emit_finalization_timing(evt, getattr(ctx, "DRIVE_ROOT", None))
     except Exception as e:
         ctx.append_jsonl(
             ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",

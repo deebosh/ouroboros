@@ -122,7 +122,7 @@ def emit_finalization_timing(event, drive_root):
     The sender's existing delivery identity, not a new registry, deduplicates it.
     """
     timing = event.get("_finalization_timing")
-    if not timing or "sender" not in timing.get("phases", {}):
+    if drive_root is None or not timing or "sender" not in timing.get("phases", {}):
         return
     try:
         from ouroboros.utils import append_jsonl
