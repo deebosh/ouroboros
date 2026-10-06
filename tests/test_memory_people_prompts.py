@@ -107,6 +107,29 @@ def test_system_states_the_chronicle_contract_and_each_writer_in_one_home():
     assert "Read-only helpers do not write" not in flat
 
 
+def test_system_names_the_natural_moments_to_seal_without_a_command_or_a_host_check():
+    """The sealing rule stands word for word; right after its first sentence one sentence names the natural
+    moments to look at what has closed and seal it — a wake, the end of a root task — and that the view shows
+    what is still unsealed and since when. It is an observation about moments, not a command and not a host
+    check: no threshold, no reminder, no 'must'; the model decides (owner decision 2A)."""
+    memory = _section(_read("prompts/SYSTEM.md"), "Memory")
+    rule = ("People's words and my own replies stay verbatim while their conversation is open and fits; when a "
+            "matter closes — by its sense, not by a calendar — or the host says it no longer fits, I seal it with "
+            "`chronicle_write` as a page in my own words written from those rows, quoting exactly the decisive words "
+            "and my promises; every line of the record says who wrote it — my reply, a child's report, a host fact, "
+            "a helper's draft.")
+    moments = ("A wake and the end of a root task are natural moments to look at what has closed since my last page "
+               "— here and in the live rooms — and seal it; the view shows what is still unsealed and since when.")
+    assert f"{rule} {moments} What must stay in view I mark with `memory_mark`;" in memory
+    assert memory.count("natural moments") == 1
+    assert "natural moments" not in _read("prompts/CONSCIOUSNESS.md")  # one home: the wake text does not restate it
+    # The standing pages line of the view is what "since when" points at: the status sentence about the old
+    # retelling speaks of the story status, not of my pages, so the two do not contradict.
+    claims = _claims(memory)
+    assert any("story status" in c and "old retelling" in c and "not yet all folded" in c for c in claims)
+    assert not any("no page" in c or "pages sealed" in c for c in claims)
+
+
 def test_system_learns_a_person_through_the_relationship_not_only_on_demand():
     human = _section(_read("prompts/SYSTEM.md"), "Environment and My Human")
     claims = _claims(human)
