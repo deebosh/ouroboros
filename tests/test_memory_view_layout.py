@@ -226,6 +226,27 @@ def test_local_compaction_keeps_my_story_and_this_room_and_never_splits_a_reply(
     assert "[Compacted for local-model context" in section(kept_c, "## Live rooms")  # not a kept title
 
 
+@pytest.mark.parametrize("book", [False, True])
+def test_local_compaction_keeps_identity_and_my_story_whichever_block_holds_them(tmp_path, monkeypatch, book):
+    """The handbook moves B off the second block; a local model still gets my identity, story and room."""
+    from ouroboros import llm_local
+    from ouroboros.llm import LLMClient
+
+    env, memory, _rooms = world(tmp_path)
+    messages, _cap = _messages(env, memory, {**MAIN, "workspace_root": "" if book else str(tmp_path / "project")})
+    a, *middle, c = (block["text"] for block in messages[0]["content"])
+    b = middle[-1]
+    assert [text.startswith("## DEVELOPMENT.md\n") for text in middle] == ([True, False] if book else [False])
+    sizes = iter([10**9, 0])  # the request is over the local window; its compacted form fits
+    monkeypatch.setattr(llm_local, "_estimate_message_chars", lambda _messages: next(sizes))
+    kept_a, *kept_middle, kept_c = (block["text"] for block in
+                                    LLMClient()._prepare_messages_for_local_context(messages, 8192, 512)[0]["content"])
+    assert section(b, "## Identity") in kept_middle[-1] and section(b, "## My story") in kept_middle[-1]
+    assert section(c, "## This room (Main)") in kept_c and section(a, "## BIBLE.md") in kept_a
+    if book:  # the handbook compacts as a book, like the governance block before it
+        assert kept_middle[0].startswith("## DEVELOPMENT.md\n\n[Compacted for local-model context")
+
+
 def test_the_view_fact_reaches_the_cap_info_the_task_context_and_one_event(tmp_path):
     from ouroboros.memory_inventory import VIEW_TRACE_KEY
     from ouroboros.tools.tool_context import ToolContext
