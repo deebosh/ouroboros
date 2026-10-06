@@ -667,7 +667,7 @@ def run_parallel_review(
         if not bool(getattr(ctx, "_review_reconcile_only", False)):
             try:
                 seats = commit_gate_paid_seats(triad_prepared, triad_exited, scope_rows)
-                wave_refusal = admit_commit_gate_wave(ctx, seats, wave_id=retry_key)
+                wave_refusal = admit_commit_gate_wave(ctx, seats)
             except Exception as e:
                 # Fail-open is the enforcement choice (as review_wave_budget_gate's
                 # own), but "admitted" and "admission crashed" are different

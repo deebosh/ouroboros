@@ -1,9 +1,10 @@
 """Every reviewer send is billed to a review round (#1544).
 
-A caller may name its wave (skill review). Otherwise a review's paid-cycle
-identity (``retry_key``: one per commit, scope or acceptance cycle) is its
-wave, and a review without one gets a fresh wave. Either way every slot of
-the round carries the same wave, on its usage row and on the returned run.
+A caller may name its wave (skill and plan review). Otherwise a review's
+paid-cycle identity (``retry_key``: one per commit, scope or acceptance cycle)
+is its wave, and a review without one gets a fresh wave. Either way every slot
+of the round carries the same wave, on its usage row and on the returned run.
+Only a caller-named wave splits the prompt-cache estimate (owner choice A).
 """
 from __future__ import annotations
 
@@ -30,14 +31,15 @@ def test_every_slot_of_a_paid_cycle_is_billed_to_that_cycle(tmp_path):
     rows, result = _review(tmp_path, ReviewRequest(
         surface="task_acceptance", goal="review", task_id="t-cycle", retry_key="task_acceptance:rev-1"))
     assert {row["review_wave_id"] for row in rows} == {"task_acceptance:rev-1"}
-    assert result.request["usage_attribution"]["review_wave_id"] == "task_acceptance:rev-1"
+    assert result.request["resolved_wave_id"] == "task_acceptance:rev-1"
+    assert result.request["usage_attribution"] == {}  # the caller's attribution stays as given
 
 
 def test_a_review_without_a_cycle_key_gets_one_fresh_wave_for_all_its_slots(tmp_path):
     first, result = _review(tmp_path, ReviewRequest(surface="deep_self_review", goal="review", task_id="t-a"))
     second, _ = _review(tmp_path, ReviewRequest(surface="deep_self_review", goal="review", task_id="t-b"))
     [wave] = {row["review_wave_id"] for row in first}
-    assert wave.startswith("wave-") and result.request["usage_attribution"]["review_wave_id"] == wave
+    assert wave.startswith("wave-") and result.request["resolved_wave_id"] == wave
     assert {row["review_wave_id"] for row in second} != {wave}  # the next review is its own round
 
 
@@ -58,7 +60,7 @@ def test_a_multi_model_fan_out_shares_one_wave_across_its_rows(monkeypatch):
     seen = []
 
     def fake_run_review_request(request, slots, **_kwargs):
-        seen.append(dict(request.usage_attribution))
+        seen.append({"wave": request.resolved_wave_id, "attribution": dict(request.usage_attribution)})
         return SimpleNamespace(actors=[{"status": "ok", "raw_text": "[]", "usage": {}, "slot_id": slots[0].slot_id,
                                         "prompt_ref": {}, "response_ref": {}}])
 
@@ -66,11 +68,11 @@ def test_a_multi_model_fan_out_shares_one_wave_across_its_rows(monkeypatch):
     monkeypatch.setattr(review, "LLMClient", lambda: object())
     models = ["model/a", "model/b", "model/c"]
     asyncio.run(_multi_model_review_async("diff", "review this", models, None))
-    assert len(seen) == 3 and len({row["review_wave_id"] for row in seen}) == 1
-    assert seen[0]["review_wave_id"].startswith("wave-")
+    assert len(seen) == 3 and len({row["wave"] for row in seen}) == 1 and seen[0]["wave"].startswith("wave-")
+    assert not any(row["attribution"] for row in seen)  # a derived round, never a caller-named wave
     seen.clear()
     asyncio.run(_multi_model_review_async("diff", "review this", models, None, retry_key="commit:cycle-2"))
-    assert len(seen) == 3 and not any("review_wave_id" in row for row in seen)  # the substrate uses the key
+    assert len(seen) == 3 and not any(row["wave"] for row in seen)  # the substrate uses the key
 
 
 def test_attribution_is_not_reconciliation_or_attempt_identity():
@@ -139,4 +141,34 @@ def test_reviews_that_run_their_executor_directly_name_their_round(tmp_path, mon
             assert preflight._run_advisory_delegated("review task", repo, ctx)[0].success
     [seen] = observed
     assert seen["scope"]["review_wave_id"].startswith("wave-") and not seen["scope"]["review_slot_id"]
-    assert seen["request"]["usage_attribution"]["review_wave_id"] == seen["scope"]["review_wave_id"]
+    assert seen["request"]["resolved_wave_id"] == seen["scope"]["review_wave_id"]
+    assert not seen["scope"]["cache_wave"]  # the prompt-cache split stays per task (owner choice A)
+
+
+@pytest.mark.parametrize("attribution, retry_key, cache_wave", [
+    ({}, "commit:cycle-1", ""),                                    # a derived round: split per task
+    ({"review_wave_id": "plan:fingerprint:2"}, "plan:fingerprint:2", "plan:fingerprint:2"),  # caller-named
+])
+def test_only_a_caller_named_wave_splits_the_prompt_cache_estimate(tmp_path, attribution, retry_key, cache_wave):
+    """The owner chose to record every round without changing the cache estimate behind
+    reservations and commit-gate admission: a derived round leaves the split per task, a wave
+    the caller names (plan and skill review) splits it, as before (#1544)."""
+    from ouroboros._usage_cache_splits import _surface
+    from ouroboros.usage_accounting import current_usage_scope
+
+    observed = []
+
+    class _Watching(FakeLLM):
+        def chat(self, *args, **kwargs):
+            scope = current_usage_scope()
+            observed.append((scope.review_wave_id, scope.cache_wave, _surface()))
+            return super().chat(*args, **kwargs)
+
+    ctx = SimpleNamespace(task_id="t-cache", event_queue=None, pending_events=[])
+    run_review_request(
+        ReviewRequest(surface="task_acceptance", goal="review", task_id="t-cache", retry_key=retry_key,
+                      usage_attribution=dict(attribution)),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")], drive_root=tmp_path, llm=_Watching(), usage_ctx=ctx)
+    [(wave, cache, surface)] = observed
+    assert wave == retry_key and cache == cache_wave
+    assert surface == "|".join(part for part in ("task_acceptance_review", cache_wave, "slot_a") if part)

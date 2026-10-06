@@ -249,6 +249,9 @@ class UsageScope:
     billing_group_limit_revision: Optional[str] = None
     root_limit_source: str = ""  # Original None + provenance is unlimited, not a new default.
     root_limit_revision: Optional[str] = None
+    # The wave a caller named to own its prompt-cache split (skill, plan review). A round the review
+    # derives (#1544: retry_key or a fresh id) is attribution only; the split stays per task.
+    cache_wave: str = ""
 @dataclass(frozen=True)
 class PhysicalAttemptContext:
     profile: Literal["owner_max", "owner_low", "owner_nano", "task_local_low", "task_local_nano"]

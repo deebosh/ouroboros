@@ -181,7 +181,7 @@ async def _query_model(
     session_profile: str = "",
     surface: str = "multi_model_review", session_policy: dict = None, usage_attribution: dict = None,
     retry_key: str = "", subagent_id: str = "", use_local: bool | None = None, task_evidence: dict = None,
-    native_retrieval: bool = False,
+    native_retrieval: bool = False, resolved_wave_id: str = "",
 ):
     async with semaphore:
         slot = None
@@ -218,6 +218,7 @@ async def _query_model(
                 evidence={"task_execution": evidence} if evidence else {},
                 evidence_refs=commit_review_evidence_refs(evidence),
                 usage_attribution=usage_attribution or {},
+                resolved_wave_id=resolved_wave_id,
                 task_attempt=getattr(ctx, "task_attempt", None) if ctx is not None else None,
                 retry_key=str(retry_key or ""),
                 reconcile_only=bool(getattr(ctx, "_review_reconcile_only", False)),
@@ -336,12 +337,11 @@ async def _multi_model_review_async(content: str, prompt: str,
         messages = []
         bible_text = _rev().load_governance_doc(_rev()._REPO_ROOT, "BIBLE.md", on_missing="explicit")
 
-    if not retry_key and not (usage_attribution or {}).get("review_wave_id"):
-        # One round, one wave: each row sends its own request, so a fan-out without
-        # a paid-cycle key names its wave here (review_records.resolve_review_wave).
-        from ouroboros.review_records import new_review_wave_id
+    # One round, one wave: each row sends its own request, so a fan-out without a paid-cycle
+    # key names its round here (review_records.resolve_review_wave); attribution only.
+    from ouroboros.review_records import new_review_wave_id
 
-        usage_attribution = {**(usage_attribution or {}), "review_wave_id": new_review_wave_id()}
+    fan_out_wave = "" if retry_key or (usage_attribution or {}).get("review_wave_id") else new_review_wave_id()
     semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
     llm_client = _rev().LLMClient()
     tasks = [
@@ -351,6 +351,7 @@ async def _multi_model_review_async(content: str, prompt: str,
                      session_profile=row_profiles[idx], surface=surface,
                      session_policy=session_policy, usage_attribution=usage_attribution,
                      retry_key=retry_key, subagent_id=row_actors[idx], use_local=row_local[idx], task_evidence=task_evidence,
+                     resolved_wave_id=fan_out_wave,
                      native_retrieval=row_retrieves[idx] and row_routes[idx] is ReviewRouteKind.API_CHAT
                      and not row_actors[idx])
         for idx, m in enumerate(models)

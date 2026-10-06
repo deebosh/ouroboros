@@ -294,10 +294,10 @@ def test_paid_seats_are_priced_seat_by_seat_scope_first(gate, tmp_path, monkeypa
     seen = {}
 
     def _gate(ctx, *, surface, models, prompt_chars, max_completion_tokens, extra=None,
-              categories="", slot_ids="", wave_id=""):
+              categories="", slot_ids=""):
         seen.update(surface=surface, models=models, prompt_chars=prompt_chars,
                     max_completion_tokens=max_completion_tokens, extra=extra,
-                    categories=categories, slot_ids=slot_ids, wave_id=wave_id)
+                    categories=categories, slot_ids=slot_ids)
         return None
 
     monkeypatch.setattr("ouroboros.tools.review_helpers.review_wave_budget_gate", _gate)
@@ -308,8 +308,6 @@ def test_paid_seats_are_priced_seat_by_seat_scope_first(gate, tmp_path, monkeypa
 
     assert seen["surface"] == "commit_gate"
     assert seen["models"] == [SCOPE_MODEL, *TRIAD_MODELS]
-    # Admission names the wave the seats then send under: the commit cycle's key (#1544).
-    assert seen["wave_id"] and {row["review_wave_id"] for row in attempt_rows_in_start_order(gate)} == {seen["wave_id"]}
     scope_chars, triad_chars = seen["prompt_chars"][0], seen["prompt_chars"][1]
     assert seen["prompt_chars"] == [scope_chars, triad_chars, triad_chars]
     # The scope pack is measured as the exact message pair the substrate sends;
@@ -711,36 +709,3 @@ def test_admission_that_raises_fails_open_loudly_and_typed(gate, tmp_path, monke
         "review_wave_budget_insufficient", "review_scope_lead_unobserved"}]
     assert any("commit-gate wave admission unavailable (RuntimeError" in r.getMessage()
                and r.levelno == logging.WARNING for r in caplog.records)
-
-
-def test_a_seat_is_priced_under_its_cycles_wave(tmp_path, monkeypatch):
-    """The substrate sends a commit-gate seat under its cycle's wave (#1544), so admission names
-    the same wave: a re-review of the cycle reads the seat's own warm split, and a new cycle
-    starts cold, as its first send does."""
-    from dataclasses import replace
-
-    from ouroboros import pricing as pricing_mod
-    from ouroboros.pricing import infer_provider_from_model
-
-    class _P(tuple):
-        tiers = ()
-
-    model = "anthropic/claude-fable-5"
-    monkeypatch.setattr(pricing_mod, "get_pricing", lambda **k: {model: _P((10.0, 1.0, 12.5, 50.0))})
-    ua._reset_task_cache_splits()
-    provider = infer_provider_from_model(model)
-    caller = ua.UsageScope(drive_root=tmp_path, task_id=ROOT, root_task_id=ROOT, root_limit_usd=1000.0)
-    seat = dict(categories="scope_review_review", slot_ids="scope_slot_1", root_task_id=ROOT, models=[model],
-                prompt_chars=400_000, max_completion_tokens=1000, task_id=ROOT, root_limit_usd=1000.0)
-
-    def bound(wave):
-        return ua.review_wave_admission(tmp_path, wave_id=wave, **seat)["slot_bounds"][0]
-
-    with ua.usage_scope(caller):
-        cold = bound("commit:c1")
-        with ua.usage_scope(replace(caller, category="scope_review_review", review_slot_id="scope_slot_1",
-                                    review_wave_id="commit:c1")):
-            ua.stash_task_cache_split(ROOT, model, 90_000, provider=provider, ttl_seconds=300.0)
-        same_cycle, next_cycle = bound("commit:c1"), bound("commit:c2")
-    assert same_cycle < cold
-    assert next_cycle == pytest.approx(cold)
