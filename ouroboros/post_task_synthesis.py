@@ -386,7 +386,9 @@ def _child_task_evidence(env: Any, task: Dict[str, Any], limit: int = 6000) -> t
     """Compact evidence from child/subagent results for parent experience review.
 
     Returns the prompt text AND the rows it was rendered from: the caller needs
-    the typed child outcomes, and one walk is the only walk (P7)."""
+    the typed child outcomes. This one child-evidence walk serves admission and
+    the prompt; a qualified reflection separately reads canonical receipt lineage
+    without changing this walk's source or eligibility semantics."""
     task_id = str(task.get("id") or "")
     if not task_id:
         return "", []
