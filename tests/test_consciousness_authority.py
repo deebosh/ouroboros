@@ -188,7 +188,7 @@ def test_i3_serialized_request_prefix_matches_an_owner_turn(tmp_path, monkeypatc
         msgs, _ = build_llm_messages(env=env, memory=memory, task=task)
         prefix = [json.dumps(msgs[0]["content"][i], sort_keys=True) for i in (0, 1)]
         assert prefix == owner_prefix, level
-        assert "cache_control" not in msgs[0]["content"][2]
+        assert "cache_control" not in msgs[0]["content"][-1]
         reg = _registry(tmp_path, task["metadata"], task_id="t-owner")
         assert json.dumps(reg.schemas(), sort_keys=True) == owner_tools, level
         assert reg.capability_omissions() == owner_reg.capability_omissions(), level

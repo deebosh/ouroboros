@@ -205,7 +205,7 @@ def _run_advisory_native(
     from ouroboros.llm import LLMClient
     from ouroboros.review_execution import ReviewAssignment
     from ouroboros.review_native_episode import NativeToolRoundReviewExecutor, native_episode_transcript_bound
-    from ouroboros.review_substrate import ReviewRequest
+    from ouroboros.review_substrate import ReviewRequest, resolve_review_wave
     from ouroboros.reviewer_slot_config import reviewer_slots
     from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
 
@@ -258,10 +258,9 @@ def _run_advisory_native(
         custody_root=custody_root(ctx),
     )
     executor = NativeToolRoundReviewExecutor(assignment, llm=LLMClient())
-    _scope = _dc_replace(
-        current_usage_scope() or UsageScope(),
-        category="advisory_review", source="advisory_native",
-    )
+    _base = current_usage_scope() or UsageScope()  # the advisory names its round's wave (#1544)
+    _scope = _dc_replace(_base, category="advisory_review", source="advisory_native",
+                         review_wave_id=resolve_review_wave(request, request.usage_attribution, _base.review_wave_id))
     try:
         with usage_scope(_scope):
             attempt = executor.execute()

@@ -675,7 +675,7 @@ def test_no_observation_non_claude_main_route_keeps_todays_initial_mode(tmp_path
         docs_need_development=False,
     )
     env = SimpleNamespace(drive_root=str(tmp_path))
-    monkeypatch.setattr(context_fit, "reference_doc_sections", lambda *a, **k: [])
+    monkeypatch.setattr(context_fit, "reference_doc_sections", lambda *a, **k: ([], ""))
 
     def resolver(task, *, allow_fetch):
         return (
@@ -735,7 +735,7 @@ def test_first_successful_call_seeds_density_so_the_next_projection_is_measured(
         docs_need_development=False,
     )
     env = SimpleNamespace(drive_root=str(tmp_path))
-    monkeypatch.setattr(context_fit, "reference_doc_sections", lambda *a, **k: [])
+    monkeypatch.setattr(context_fit, "reference_doc_sections", lambda *a, **k: ([], ""))
 
     def resolver(task, *, allow_fetch):
         return (

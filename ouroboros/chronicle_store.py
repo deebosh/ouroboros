@@ -19,7 +19,9 @@ Light writer's, or a delegated child's or nanny's signed with its focus) is
 a draft that acts at once; the mind's ``decision`` accepts or rejects it, and a
 rejected draft stops acting, so its rows are open and its members unfolded
 again; a draft already folded into a part is not rejected while that part acts
-(``already_folded``). Only the mind corrects, beside the original.
+(``already_folded``). Only the mind corrects, and a correction stands under the
+original wherever the record is shown, signed and dated (``_interpret``); it never
+replaces the record's words.
 
 Every precondition is checked inside the same publication lock, and a refusal
 is a typed ``PublishResult`` (not an exception) carrying the current revision
@@ -38,7 +40,7 @@ import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional, Tuple
 
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 from ouroboros.utils import append_jsonl, assert_test_data_path, utc_now_iso
@@ -151,6 +153,15 @@ def draft_signer(author: Any) -> str:
         return "Light"
     task = str(author.get("task_id") or focus.get("task_id") or "").strip()
     return f"{role}, task {task}" if task else role
+
+
+def correction_line(fix: Mapping[str, Any]) -> str:
+    """The signature a correction stands under, beside its original: ``[correction <id> by mind (<focus>), <date>]``.
+
+    Only the mind corrects, so the focus (``draft_signer``'s words) and the publication date
+    say who and when; the same line wherever the record is shown.
+    """
+    return f"[correction {fix.get('id')} by mind ({draft_signer(fix.get('author'))}), {str(fix.get('ts') or '')[:10] or 'date not recorded'}]"
 
 
 # A markdown emphasis marker: a run of up to three ``*``/``_`` that opens before a word (nothing
@@ -758,13 +769,20 @@ class ChronicleStore:
         return covers
 
     def _interpret(self, db, record) -> Dict[str, Any]:
+        """The record as it acts: its own words, then every correction of the mind under them, each signed.
+
+        ``current_text`` keeps the original and adds each correction in publication order under
+        ``correction_line``; the author stays the record's. ``revision`` is the last correction's id
+        (what ``expected_revision`` names) and ``corrections`` lists them all. A correction never
+        replaces a record's words: to say a record anew the mind folds it into a part over it.
+        """
         record = dict(record)
-        current = db.execute("SELECT body FROM records WHERE target=? AND kind='correction' ORDER BY sequence DESC "
-                             "LIMIT 1", (record["id"],)).fetchone()
-        correction = json.loads(current[0]) if current else None
-        record["current_text"] = correction["text"] if correction else record.get("text", "")
-        record["current_author"] = correction["author"] if correction else record.get("author", {})
-        record["revision"] = correction["id"] if correction else record["id"]
+        fixes = [json.loads(body) for (body,) in db.execute(
+            "SELECT body FROM records WHERE target=? AND kind='correction' ORDER BY sequence", (record["id"],))]
+        record["current_text"] = "\n\n".join([str(record.get("text", "")),
+                                              *(f"{correction_line(fix)}\n{fix.get('text', '')}" for fix in fixes)])
+        record["revision"] = fixes[-1]["id"] if fixes else record["id"]
+        record["corrections"] = [{"id": fix["id"], "author": fix.get("author"), "ts": fix.get("ts")} for fix in fixes]
         status = self._status(db, record)
         if status:
             record["status"] = status
@@ -796,9 +814,8 @@ class ChronicleStore:
     def room_records(self, room_id: Any, *, after_seq: int = 0) -> List[Dict[str, Any]]:
         """A room's pages, parts, notes, legacy sections and gaps, without rejected drafts.
 
-        Each carries ``current_text``/``current_author`` (the mind's latest
-        correction, else the original), ``revision`` (the id whose text acts),
-        ``status`` for pages and parts and ``folded_into``.
+        Each is interpreted (``_interpret``): ``current_text`` with the mind's corrections under
+        the original, ``revision``, ``corrections``, ``status`` for pages and parts and ``folded_into``.
         """
         with self._index() as db:
             rows = [{**json.loads(body), "sequence": seq} for seq, body in db.execute(

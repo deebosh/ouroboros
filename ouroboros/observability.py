@@ -21,6 +21,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ouroboros.finalization_timing import (  # noqa: F401 — compatibility exports
+    emit_finalization_timing, mark_last_answer, stamp_finalization_enqueue,
+    task_timing, task_timing_scope, timed_phase, without_finalization_timing,
+)
 from ouroboros.secret_masking import SECRET_TOKEN_PATTERNS
 from ouroboros.utils import (
     atomic_write_json,
