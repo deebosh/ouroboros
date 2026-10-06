@@ -423,7 +423,6 @@ from ouroboros.delegate_source_coverage import (
     apply_source_range_receipt,
     _merge_verified_source_range,
     merge_source_delivery_confirmations,
-    _source_range_receipt_valid,
     record_source_range_verified,
     work_order_source_verification,
 )
