@@ -515,7 +515,7 @@ def _part_input(root: pathlib.Path, store: ChronicleStore, unit: FallbackUnit, b
 
     def compose(k: int) -> Tuple[str, Dict[str, Any]]:
         stamp = part_stamp(member.get("host_stamp") for member in members[:k])
-        blocks = [f"### {m['kind']} {m['id']} — by {memory_inventory._author_words(m.get('current_author'))}"
+        blocks = [f"### {m['kind']} {m['id']} — by {memory_inventory._author_words(m.get('author'))}"
                   + (" — earlier helper retelling, not a source, may be wrong" if m["kind"] == "legacy" else "")
                   + "\n" + _indented(m.get("current_text"))
                   + "".join(f"\nquote ({q.get('speaker')}, {q.get('address')}): {q.get('text')}" for q in m.get("quotes") or ())

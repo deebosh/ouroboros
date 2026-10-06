@@ -122,6 +122,24 @@ _LOCAL_COMPACTION_MODES = {
         "Non-core sections were compacted for local execution.",
     ),
 }
+# Titles only the identity/story block carries (its semi-stable set minus what C keeps too).
+_STORY_TITLES = _LOCAL_COMPACTION_MODES["semi_stable"][0] - _LOCAL_COMPACTION_MODES["dynamic"][0]
+
+
+def _local_block_mode(text: str, idx: int, count: int) -> str:
+    """The compaction profile of system block ``idx`` of ``count``, chosen by role.
+
+    The first block is governance and the last the changing block C. In Max the
+    optional handbook D stands between governance and the identity/story block B
+    (``context_fit._system_blocks``), so B is the middle block carrying my identity or
+    story, not the second one; every other middle block is a book, compacted as static.
+    """
+    if idx == 0:
+        return "static"
+    if idx == count - 1:
+        return "dynamic"
+    titles = {title.split("(")[0].strip() for title, _section in _split_markdown_sections(text)[1]}
+    return "semi_stable" if titles & _STORY_TITLES else "static"
 
 
 def _compact_local_text(text: str, mode: str) -> str:
@@ -170,12 +188,7 @@ class _LocalLaneMixin:
                     if not isinstance(block, dict) or block.get("type") != "text":
                         continue
                     block_text = str(block.get("text", ""))
-                    if idx == 0:
-                        block["text"] = _compact_local_text(block_text, "static")
-                    elif idx == 1:
-                        block["text"] = _compact_local_text(block_text, "semi_stable")
-                    else:
-                        block["text"] = _compact_local_text(block_text, "dynamic")
+                    block["text"] = _compact_local_text(block_text, _local_block_mode(block_text, idx, len(content)))
             elif isinstance(content, str):
                 msg["content"] = _compact_local_text(content, "system")
             break

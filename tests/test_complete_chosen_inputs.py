@@ -71,7 +71,7 @@ def test_large_direct_request_keeps_chosen_prompt_and_host_instruction_roles(tmp
     assert request["prompt"] == prompt
     instructions = request["instructions"]
     assert instructions.count(objective) == 1 and instructions.count(expected) == 1
-    marker = "HOST TASK CONTRACT AUTHORITY (complete normalized JSON; exact strings are authority):\n"
+    marker = "HOST TASK CONTRACT AUTHORITY (normalized JSON; predecessor is a brief):\n"
     # The contract JSON is followed by the owner's words that caused the work, so decode just the JSON.
     host, _end = json.JSONDecoder().raw_decode(instructions.split(marker, 1)[1])
     assert host["objective"] == objective and host["expected_output"] == expected

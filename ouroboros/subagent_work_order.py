@@ -65,11 +65,12 @@ def _text(value: Any) -> str:
 
 
 def assignment_instructions(ctx: Any) -> str:
-    """Host-authored complete normalized contract for every direct delegate start.
+    """Host-authored assignment with a predecessor brief for each direct start.
 
     The owner's words that caused the work follow the contract: a root's own
     corpus, a child's inherited words, or the host's absence marker; a declared
-    contract keeps its parent's selection and carries none.
+    contract keeps its parent's selection and carries none. Full predecessor
+    reports are read through the launching task, never claimed to be inline.
     """
 
     contract = getattr(ctx, "task_contract", None)
@@ -84,14 +85,22 @@ def assignment_instructions(ctx: Any) -> str:
     if not contract:
         return ""
     from ouroboros.contracts.task_contract import task_input_sources
+    from ouroboros.main_context_authority import project_helper_predecessor_authority
     from ouroboros.owner_words import owner_words_text
 
     # A declared run's receipt names the words among omitted inputs, for the sessions it starts too.
     declared = task_input_sources({"task_contract": contract}) == "declared"
+    if contract.get("predecessor_authority"):
+        contract["predecessor_authority"] = project_helper_predecessor_authority(
+            contract["predecessor_authority"], declared=declared)
     words = "" if declared else owner_words_text(ctx, audience="session")
     return (
-        "HOST TASK CONTRACT AUTHORITY (complete normalized JSON; exact strings are authority):\n"
+        "HOST TASK CONTRACT AUTHORITY (normalized JSON; predecessor is a brief):\n"
         + json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + ("\n\nThe predecessor brief omits evidence; its source names get_task_result. "
+           "Ask the launching task (nanny or root) for the full report; it can reply through delegate_answer. "
+           "Without a question channel, return input_required for a new run with the answers."
+           if contract.get("predecessor_authority") else "")
         + (f"\n\n{words}" if words else "")
     )
 

@@ -2,8 +2,11 @@
 
 The mind writes its own records; the host signs them (``focus_signature``) and
 expands what a page covers. A page names a range of its room (``from``/``to``
-row addresses) or a set of tasks; the host turns that request into the exact
-SET of the room's rows BEFORE the publication lock (the lock is not re-entrant
+row addresses), the room's open rows up to an address (``to`` alone: the rows
+the view counts as open, ``memory_inventory.open_room_rows``, so what pages
+already seal and what came after stay out) or a set of tasks; the host turns
+that request into the exact SET of the room's rows BEFORE the publication
+lock (the lock is not re-entrant
 and reading the chain needs none), adds the room's notes of those tasks,
 counts each row's source class, stamps every covered task with the host's own
 facts and verifies the quotes the writer chose. A refusal names the current
@@ -40,7 +43,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
-from ouroboros import chat_chain
+from ouroboros import chat_chain, memory_inventory
 from ouroboros.chronicle_import import LEGACY_ROOM_ID, row_lineage
 from ouroboros.chronicle_store import (SPEAKERS, ChronicleStore, PublishResult, draft_signer, source_time_span,
                                        verify_quotes)
@@ -196,14 +199,19 @@ def _task_rows(root: Path, room: str, task_ids: Iterable[Any]) -> List[Tuple[Dic
 def _expand(root: Path, room: str, lineage: Dict[str, Any], *, from_addr: Any = None, to_addr: Any = None,
             task_ids: Any = None) -> Tuple[Dict[str, Any], Dict[str, Any], List[Tuple[Dict[str, Any], Dict[str, Any], int]]]:
     if task_ids is not None and (from_addr or to_addr):
-        raise ValueError("covers is either {from, to} or {task_ids}, not both")
+        raise ValueError("covers is either {from, to}, {to} or {task_ids}, not both")
     if task_ids is not None:
         if not isinstance(task_ids, (list, tuple)):
             raise ValueError("covers.task_ids is a list of task ids")
         found, request, mode = _task_rows(root, room, task_ids), {"task_ids": [str(t) for t in task_ids]}, "tasks"
+    elif to_addr and not from_addr:  # "up to here": the room's open rows, as the view counts them, to the address
+        open_rows = {address["row_sha256"] for address, _meta, _pos in memory_inventory.open_room_rows(root, room)}
+        found = [entry for entry in chat_chain.iter_room_rows(root, room, to_addr=to_addr)
+                 if entry[0]["row_sha256"] in open_rows]
+        request, mode = {"to": to_addr}, "open_to"
     else:
         if not from_addr or not to_addr:
-            raise ValueError("covers is {from, to} (row addresses, inclusive) or {task_ids}")
+            raise ValueError("covers is {from, to} (row addresses, inclusive), {to} (the open rows up to it) or {task_ids}")
         found = list(chat_chain.iter_room_rows(root, room, from_addr=from_addr, to_addr=to_addr))
         request, mode = {"from": from_addr, "to": to_addr}, "range"
     seen, rows = set(), []
@@ -212,7 +220,7 @@ def _expand(root: Path, room: str, lineage: Dict[str, Any], *, from_addr: Any = 
             seen.add(entry[0]["row_sha256"])
             rows.append(entry)
     if not rows:
-        raise ValueError(f"covers resolve to no row of room {room}")
+        raise ValueError(f"covers resolve to no {'open ' if mode == 'open_to' else ''}row of room {room}")
     tasks = list(dict.fromkeys([str(row.get("task_id")) for _a, row, _p in rows if row.get("task_id")]
                                + (list(request.get("task_ids") or []))))
     store = _existing_store(root)
@@ -236,8 +244,9 @@ def page_covers(root: Any, room_id: Any, *, from_addr: Any = None, to_addr: Any 
     """The exact row set a page request names, with its coverage facts and the rows read.
 
     ``{"covers", "coverage_facts", "rows": [(address, row), ...]}``. ``from_addr``/``to_addr``
-    bound the room's stream inclusively; ``task_ids`` takes those tasks' rows and the
-    owner's words bound to them. Unresolved bounds raise ``chat_chain.RowAddressError``.
+    bound the room's stream inclusively; ``to_addr`` alone takes the room's open rows up to it;
+    ``task_ids`` takes those tasks' rows and the owner's words bound to them. Unresolved bounds
+    raise ``chat_chain.RowAddressError``.
     """
     covers, facts, rows = _expand(Path(root), str(room_id), row_lineage(Path(root)), from_addr=from_addr,
                                   to_addr=to_addr, task_ids=task_ids)
@@ -297,7 +306,7 @@ def check_quotes(root: Any, quotes: Any) -> Tuple[bool, Optional[int]]:
 def _write_page(ctx: Any, root: Path, store: ChronicleStore, author: Dict[str, Any], a: Dict[str, Any]) -> str:
     covers_arg = a["covers"]
     if not isinstance(covers_arg, dict):
-        return _arg_error(ctx, "a page needs covers: {from, to} row addresses or {task_ids}")
+        return _arg_error(ctx, "a page needs covers: {from, to} row addresses, {to} alone or {task_ids}")
     room, lineage = _room(ctx, root, a["room_id"]), row_lineage(root)
     try:
         covers, facts, rows = _expand(root, room, lineage, from_addr=covers_arg.get("from"),
@@ -442,15 +451,23 @@ def _span(span: Any) -> str:
     return f"{span.get('start')}–{span.get('end')}" + (" (incomplete)" if span.get("incomplete") else "")
 
 
-def _covers_summary(record: Dict[str, Any]) -> str:
+def _periods(store: ChronicleStore, root: Path, records: List[Dict[str, Any]]) -> Dict[str, memory_inventory.Period]:
+    """Each listed part's period as read from its members' rooms (``memory_inventory.record_period``)."""
+    parts = [record for record in records if record.get("kind") == "part"]
+    units = {unit.record_id: unit for unit in memory_inventory.legacy_units(store, root)} if parts else {}
+    return {record["id"]: memory_inventory.record_period(store, record, units) for record in parts}
+
+
+def _covers_summary(record: Dict[str, Any], period: Optional[memory_inventory.Period]) -> str:
     covers = record.get("covers") if isinstance(record.get("covers"), dict) else {}
     kind = record.get("kind")
     if kind == "page":
         notes = len(covers.get("note_ids") or [])
         return (f"covers {_span(covers.get('ts_span'))}, {covers.get('count', 0)} rows"
                 + (f" + {notes} notes" if notes else ""))
-    if kind == "part":
-        return f"folds {len(covers.get('member_ids') or [])} records, {_span(covers.get('ts_span'))}"
+    if kind == "part":  # the period its members' rows give, the same the view prints; never the recorded aggregate
+        dated = _span(period.span) + period.note() if period is not None else "period unknown"
+        return f"folds {len(covers.get('member_ids') or [])} records, {dated}"
     if kind in ("legacy", "gap"):
         raw = covers.get("raw_range") if isinstance(covers.get("raw_range"), dict) else {}
         meta = record.get("metadata") or {}
@@ -488,34 +505,35 @@ def _target_label(target: Any) -> str:
     return f"source {target.get('path') or target.get('kind') or '?'}{location}"
 
 
-def _record_header(record: Dict[str, Any]) -> str:
+def _record_header(record: Dict[str, Any], period: Optional[memory_inventory.Period] = None) -> str:
     parts = [f"{record.get('kind')} {record.get('id')}", f"room {record.get('room_id')}",
              _author_label(record.get("author"))]
     if record.get("kind") == "mark":
         parts += [f"scope {record.get('scope')}", f"target {_target_label(record.get('target_ref'))}",
                   f"visibility {record.get('visibility')}"]
-    for part in (record.get("status"), _covers_summary(record), _stamp_summary(record.get("host_stamp"))):
+    for part in (record.get("status"), _covers_summary(record, period), _stamp_summary(record.get("host_stamp"))):
         if part:
             parts.append(str(part))
     if record.get("target_id"):
         parts.append(f"target {record['target_id']}")
     if record.get("folded_into"):
         parts.append(f"folded into {record['folded_into']}")
-    revision = record.get("revision")
-    if revision and revision != record.get("id"):
-        parts.append(f"revision {revision} (corrected by {_author_label(record.get('current_author'))})")
-    elif revision:
-        parts.append(f"revision {revision}")
+    fixes = record.get("corrections") or []
+    if fixes:  # the acting revision is the last correction's, signed by its own author, not the record's
+        parts.append(f"revision {record.get('revision')} (corrected by {_author_label(fixes[-1].get('author'))})")
+    elif record.get("revision"):
+        parts.append(f"revision {record['revision']}")
     parts.append(f"seq {record.get('sequence')}")
     return "[" + "; ".join(parts) + "]"
 
 
-def _listed(record: Dict[str, Any]) -> str:
+def _listed(record: Dict[str, Any], periods: Dict[str, memory_inventory.Period]) -> str:
     """One record as listed in its room: the header, then the text that acts."""
+    header = _record_header(record, periods.get(record["id"]))
     if record.get("kind") == "mark":
         quote = record.get("quote") if record.get("visibility") == "full" else None
-        return _record_header(record) + "\n" + str(record.get("text") or "") + (f"\nquote: {quote}" if quote else "")
-    return _record_header(record) + "\n" + str(record.get("current_text", record.get("text")) or "")
+        return header + "\n" + str(record.get("text") or "") + (f"\nquote: {quote}" if quote else "")
+    return header + "\n" + str(record.get("current_text", record.get("text")) or "")
 
 
 def _row_line(address: Dict[str, Any], row: Dict[str, Any], pos: int, lineage: Dict[str, Any]) -> Tuple[str, str]:
@@ -575,10 +593,12 @@ def _read_records(root: Path, room: str, after_seq: int, limit: int) -> str:
     store = _existing_store(root)
     head = f"room {room}; head {store.room_head(room) if store is not None else 0}"
     entries: List[Dict[str, Any]] = []
+    periods: Dict[str, memory_inventory.Period] = {}
     if store is not None:
         entries = sorted(store.room_records(room, after_seq=after_seq) + _active_marks(store, room, after_seq),
                          key=lambda record: record["sequence"])
-    kept, texts, exhausted = _collect(iter(entries), _listed, limit)
+        periods = _periods(store, root, entries)
+    kept, texts, exhausted = _collect(iter(entries), lambda record: _listed(record, periods), limit)
 
     def continuation(k: int, done: bool) -> str:
         last = kept[k - 1]["sequence"] if k else after_seq
@@ -591,7 +611,8 @@ def _read_records(root: Path, room: str, after_seq: int, limit: int) -> str:
         return text
     big = kept[0]  # one record larger than a page is read through its own address
     size = len(str(big.get("current_text", big.get("text")) or ""))
-    stub = f"{_record_header(big)}\n(text of {size} chars does not fit this page: memory_read(node_id={big['id']}) pages it)"
+    stub = (f"{_record_header(big, periods.get(big['id']))}\n(text of {size} chars does not fit this page: "
+            f"memory_read(node_id={big['id']}) pages it)")
     return f"{head}\n{continuation(1, exhausted and len(kept) == 1)}\n{stub}"
 
 
@@ -706,7 +727,8 @@ def _read_node(root: Path, node_id: str, start: int, limit: int) -> str:
     if record is None:
         raise ValueError(f"memory node {node_id} not found")
     shown, document = _node_document(store, record)
-    return _window(_record_header(shown), document, start, limit, lambda end: f"memory_read(node_id={node_id}, start={end})")
+    header = _record_header(shown, _periods(store, root, [shown]).get(shown["id"]))
+    return _window(header, document, start, limit, lambda end: f"memory_read(node_id={node_id}, start={end})")
 
 
 def _read_source(root: Path, ref: Any, start: int, limit: int) -> str:
@@ -868,11 +890,11 @@ def chronicle_tools() -> List[ToolEntry]:
                                        "speaker": {"type": "string", "enum": sorted(SPEAKERS)}}}}
     write = {
         "kind": {"type": "string", "enum": ["page", "part", "note", "correction", "decision"],
-                 "description": "page seals one or more closed arcs of a room; part folds adjacent records of one lower level (pages, legacy sections or parts); note is a separate record for my future self; correction stands beside a record; decision accepts or rejects a helper's draft."},
+                 "description": "page seals one or more closed arcs of a room; part folds adjacent records of one lower level (pages, legacy sections or parts); note is a separate record for my future self; correction stands under the record's words wherever the record is shown, signed and dated — it adds and never replaces them, so to say a record anew I fold it into a part over it; decision accepts or rejects a helper's draft."},
         "room_id": room,
         "text": {"type": "string", "description": "The record in my own words. No length limit; it is read back through memory_read pages."},
         "covers": {"type": "object", "additionalProperties": False,
-                   "description": "page: {from, to} row addresses (inclusive, this room's rows between them) or {task_ids} (those tasks' rows and the owner's words bound to them). The host expands it into the exact row set; rows another page already seals are refused (already_sealed).",
+                   "description": "page: {from, to} row addresses (inclusive, this room's rows between them), {to} alone (every row of this room still open up to that address, the ones the view counts as open — the host leaves out what pages already seal and what came after; it defines the page's coverage, not proof that the rows were read) or {task_ids} (those tasks' rows and the owner's words bound to them). The host expands it into the exact row set; rows another page already seals are refused (already_sealed).",
                    "properties": {"from": address, "to": address, "task_ids": {"type": "array", "items": string}}},
         "member_ids": {"type": "array", "items": string, "description": "part: adjacent unfolded records of one kind in one room; default room is theirs."},
         "quotes": quotes,
@@ -918,7 +940,7 @@ def chronicle_tools() -> List[ToolEntry]:
     return [
         ToolEntry("chronicle_write", schema(
             "chronicle_write",
-            "Write my own chronicle record: seal a page over a room's closed arcs (the host expands covers into the exact row set, stamps each covered task with its recorded outcome and checks quotes), fold adjacent records into a part, keep a note for my future self, correct a record beside its original, or accept/reject a helper's draft. A delegated child or nanny publishes pages and parts only as drafts signed in its own name for the integrating mind to accept or reject; its part folds only legacy sections and its own drafts (its note, correction or decision, or a part over other records, is refused: not_integrator). Records are never rewritten. A refusal returns the current revision or room head and the conflicting ids; read them with memory_read.",
+            "Write my own chronicle record: seal a page over a room's closed arcs (the host expands covers into the exact row set, stamps each covered task with its recorded outcome and checks quotes), fold adjacent records into a part, keep a note for my future self, correct a record (a signed revision under its own words wherever it is shown; to say it anew, fold it into a part), or accept/reject a helper's draft. A delegated child or nanny publishes pages and parts only as drafts signed in its own name for the integrating mind to accept or reject; its part folds only legacy sections and its own drafts (its note, correction or decision, or a part over other records, is refused: not_integrator). Records are never rewritten. A refusal returns the current revision or room head and the conflicting ids; read them with memory_read.",
             write, ["kind"]), _chronicle_write),
         ToolEntry("memory_read", schema(
             "memory_read",
