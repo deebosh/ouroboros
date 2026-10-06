@@ -283,6 +283,8 @@ def test_scope_reserves_before_the_triad_even_when_it_is_slower(gate, tmp_path, 
     assert [row["model"] for row in reserved] == [SCOPE_MODEL, *sorted(TRIAD_MODELS)] or \
         [row["model"] for row in reserved] == [SCOPE_MODEL, *reversed(sorted(TRIAD_MODELS))]
     assert reserved[0]["review_slot_id"] == "scope_slot_1"
+    # One commit cycle, one wave: the scope seat and every triad seat (#1544).
+    assert len({row["review_wave_id"] for row in reserved}) == 1 and reserved[0]["review_wave_id"]
 
 
 def test_paid_seats_are_priced_seat_by_seat_scope_first(gate, tmp_path, monkeypatch):
