@@ -543,7 +543,7 @@ def test_health_invariants_come_first_in_a_consciousness_wake_context(tmp_path):
 
     dynamic_text = messages[0]["content"][2]["text"]
     assert dynamic_text.startswith("## Shared understanding")
-    assert "## This room" not in dynamic_text  # a wake has no current room
+    assert "\n## This room (Main) — head " in dynamic_text  # a wake reads Main as its room, as the Main turn does
     assert dynamic_text.index("## Health Invariants") < dynamic_text.index("## Scratchpad")
     assert dynamic_text.index("## Health Invariants") < dynamic_text.index("## Drive state")
 

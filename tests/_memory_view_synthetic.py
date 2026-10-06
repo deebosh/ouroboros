@@ -113,8 +113,10 @@ def room(room_id: str = "1", *, label: str = "Main", legacy: int = 0, legacy_cha
 
 
 def snapshot(*, role: str = "integrator", room_facts: Optional[Dict[str, Any]] = None, story: Any = (),
-             live: Any = (), mark_count: int = 0, owner_words: str = "", live_rooms: str = "lines") -> mv.MemoryViewSnapshot:
-    spec = dataclasses.replace(mv.ROLE_DEFAULTS[role], live_rooms=live_rooms,
+             live: Any = (), mark_count: int = 0, owner_words: str = "",
+             live_rooms: Optional[str] = None) -> mv.MemoryViewSnapshot:
+    """A snapshot of ``role``'s default spec (``live_rooms`` overrides it) over synthetic facts."""
+    spec = dataclasses.replace(mv.ROLE_DEFAULTS[role], live_rooms=live_rooms or mv.ROLE_DEFAULTS[role].live_rooms,
                                room_id=room_facts["room_id"] if room_facts else None)
     status = {"folded": 0, "total": 23, "pages_by_me": 0, "latest_by_me": "", "helper_pages": 0, "parts": 0,
               "open_records": 377, "open_rows": 9_422, "open_chars": 2_001_746, "helper_route": "light"} if spec.story else {}
@@ -132,15 +134,16 @@ def actor(name: str) -> mv.MemoryViewSnapshot:
                  spoken(3, "ouroboros", 1_200)]
     project_lane = [spoken(i, "human" if i % 2 else "ouroboros", 1_100) for i in range(5)]
     live12 = [live_room(i) for i in range(12)]
+    main_room = room("1", legacy=23, legacy_chars=8_400, lane1=main_lane, lane2=19)
     if name == "main":
-        return snapshot(room_facts=room("1", legacy=23, legacy_chars=8_400, lane1=main_lane, lane2=19),
-                        story=pointers(), live=live12, mark_count=12)
+        return snapshot(room_facts=main_room, story=pointers(), live=live12, mark_count=12)
     if name == "project":
         return snapshot(room_facts=room("257912875", label="Project X [chat_id=257912875]", legacy=8,
                                         legacy_chars=4_900, origins=1, lane1=project_lane, lane2=2),
                         story=pointers(), live=live12, mark_count=12)
-    if name == "consciousness":
-        return snapshot(role="consciousness", story=pointers(), live=[live_room(i) for i in range(13)], mark_count=12)
+    if name == "consciousness":  # Main's own view, and the words of people in the other live rooms
+        return snapshot(role="consciousness", room_facts=main_room, story=pointers(),
+                        live=[live_room(i, words=2, word_chars=1_100) for i in range(12)], mark_count=12)
     if name in ("child_project", "nanny"):
         return snapshot(role="child" if name == "child_project" else "nanny", story=pointers(),
                         room_facts=room("257912875", label="Project X [chat_id=257912875]", legacy=8,

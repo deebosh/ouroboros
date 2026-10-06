@@ -27,7 +27,7 @@ PRESENCE = {"presence": {"binding_id": "b1", "event": {"provider": "telegram", "
 def test_role_defaults_are_the_table_of_the_spec():
     table = {  # story, room_page, room_lanes, origin_words, live_rooms, marks, knowledge, owner_words
         "integrator": (True, True, True, True, "lines", "all", True, False),
-        "consciousness": (True, False, False, False, "lines", "all", True, False),
+        "consciousness": (True, True, True, True, "lines_with_words", "all", True, False),  # Main's view + people's words
         "presence": (True, True, True, False, "none", "room_and_global", True, False),
         "child": (True, True, False, True, "none", "room_and_global", False, True),
         "nanny": (False, True, False, True, "none", "room_and_global", False, True),
@@ -88,8 +88,9 @@ def test_the_view_room_is_the_task_own_room_and_main_outside_the_projects(tmp_pa
         assert mv.view_spec_for_task(task, tmp_path).room_id == room, name
     presence = mv.view_spec_for_task({"id": "tp", "chat_id": 555, "metadata": PRESENCE}, tmp_path)
     assert (presence.role, presence.room_id) == ("presence", "555")  # Presence keeps its own conversation
-    wake = mv.view_spec_for_task({"id": "w", "chat_id": 1, "metadata": {"usage_category": "consciousness"}}, tmp_path)
-    assert wake.room_id is None
+    for chat in (1, 0, None):  # a wake has no chat of its own: its room is Main whatever chat id it carries
+        wake = mv.view_spec_for_task({"id": "w", "chat_id": chat, "metadata": {"usage_category": "consciousness"}}, tmp_path)
+        assert (wake.role, wake.room_id) == ("consciousness", "1"), chat
 
 
 def test_the_view_room_matches_own_room_chat_inside_projects(tmp_path):
@@ -487,8 +488,8 @@ def test_this_room_has_its_head_retold_records_origin_words_and_notes(tmp_path):
 def test_main_room_page_shows_the_room_less_retellings_whole_to_its_integrator_and_a_pointer_elsewhere(tmp_path):
     """The flat summary and a room-less era predate rooms and were Main's memory: whole in
     Main's room page, under their own label, for Main's integrator and for a child that starts with the top
-    level of the life account; a pointer in the story, and nothing more, for another room or consciousness;
-    nothing at all for a nanny in Main, which carries no story."""
+    level of the life account; a pointer in the story, and nothing more, for another room; a wake reads Main
+    as its integrator does; nothing at all for a nanny in Main, which carries no story."""
     import json
 
     rooms = shared.world(tmp_path, flat="The retired flat summary of everything.", activate=False)
@@ -512,8 +513,7 @@ def test_main_room_page_shows_the_room_less_retellings_whole_to_its_integrator_a
     assert "The retired flat summary" not in story and "memory_read(node_id='legacy-flat-" in story
     assert "memory_read(node_id='legacy-b02-rlegacy')" in story and "A room-less era." not in story
     others = {"bound": {"id": "bound", "chat_id": 1},  # bound to alpha
-              "nanny": {"id": "n1", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1", **NANNY_ROUTE},
-              "wake": {"id": "w1", "chat_id": 1, "metadata": {"usage_category": "consciousness"}}}
+              "nanny": {"id": "n1", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1", **NANNY_ROUTE}}
     for name, task in others.items():
         snapshot = mv.capture_memory_view(tmp_path, task, mv.view_spec_for_task(task, tmp_path))
         room = mv.render_room(snapshot)
@@ -523,7 +523,11 @@ def test_main_room_page_shows_the_room_less_retellings_whole_to_its_integrator_a
             assert story == "" and "legacy-b02-rlegacy" not in room, name
         else:
             assert "memory_read(node_id='legacy-b02-rlegacy')" in story, name
-        assert snapshot.spec.room_id == {"bound": str(rooms["alpha"]), "nanny": "1", "wake": None}[name]
+        assert snapshot.spec.room_id == {"bound": str(rooms["alpha"]), "nanny": "1"}[name]
+    wake_task = {"id": "w1", "chat_id": 1, "metadata": {"usage_category": "consciousness"}}
+    wake = mv.capture_memory_view(tmp_path, wake_task, mv.view_spec_for_task(wake_task, tmp_path))
+    assert wake.spec.room_id == "1" and wake.room == main.room  # the wake's Main is Main's integrator's
+    assert mv.render_story(wake) == mv.render_story(main) and "The retired flat summary" in mv.render_room(wake)
     # A child starts with the top level of the life account, so Main's room-less retellings stand whole on its page.
     kid = {"id": "kid1", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1"}
     child = mv.capture_memory_view(tmp_path, kid, mv.view_spec_for_task(kid, tmp_path))
@@ -542,9 +546,15 @@ def test_each_role_sees_its_parts_of_the_live_view(tmp_path):
     main, main_text = _view(tmp_path, MAIN_TASK)
     assert [mark["text"] for mark in main.marks] == ["Watch root1", "Watch alpha", "For everyone"]
     wake, wake_text = _view(tmp_path, {"id": "w1", "chat_id": 1, "metadata": {"usage_category": "consciousness"}})
-    assert "## This room" not in wake_text and "- [global; Main] For everyone" in wake_text
-    assert "### Main — open 2026-09-05 10:02 → 2026-09-05 10:27; people " in wake_text  # Main is one line
-    assert "please look at X" not in wake_text and "transport words" not in wake_text  # no people's words
+    assert "- [global; Main] For everyone" in wake_text and "Watch alpha" in wake_text  # all marks, as Main's turn
+    assert _section(wake_text, "## This room (Main)") == _section(main_text, "## This room (Main)")  # byte for byte
+    assert "please look at X" in _section(wake_text, "### Open conversation since")
+    assert "### Main — " not in wake_text  # Main is this room, not a live-room line
+    live = _section(wake_text, "## Live rooms")
+    assert "alpha words" in live and "beta words" in live and "transport words" in live  # people's words, verbatim
+    assert "alpha reply" not in wake_text and "beta reply" not in wake_text  # my replies there: one read by address
+    assert f"memory_read(room_id='{rooms['alpha']}', rows=true)" in live
+    assert "alpha words" not in main_text and "beta words" not in main_text  # the Main turn keeps its one line per room
     child_task = {"id": "kid9", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1",
                   "metadata": words}
     child, child_text = _view(tmp_path, child_task)

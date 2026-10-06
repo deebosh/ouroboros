@@ -46,6 +46,8 @@ def test_the_request_is_three_blocks_with_my_story_in_b_and_knowledge_in_c(tmp_p
 
 
 def test_b_is_byte_identical_for_main_another_room_and_a_wake(tmp_path):
+    """One story for every integrating focus; a wake's room is Main, byte for byte the Main turn's, and its
+    live rooms carry the words of people there (the Main turn's carry one line per room)."""
     env, memory, rooms = world(tmp_path)
     views = {name: blocks(env, memory, task) for name, task in (
         ("main", MAIN), ("alpha", {"id": "bound", "chat_id": 1}), ("beta", {"id": "tb", "chat_id": rooms["beta"]}),
@@ -53,6 +55,11 @@ def test_b_is_byte_identical_for_main_another_room_and_a_wake(tmp_path):
     assert len({view[1] for view in views.values()}) == 1  # B: one story, whatever the room or role
     assert len({view[0] for view in views.values()}) == 1  # A: governance and books
     assert len({view[2] for view in views.values()}) == 4  # C: each one's own rooms
+    main_c, wake_c = views["main"][2], views["wake"][2]
+    assert section(wake_c, "## This room (Main)") == section(main_c, "## This room (Main)")
+    assert "## This room (Main)" not in views["alpha"][2]
+    for words in ("alpha again", "beta again"):  # people's words of the other live rooms, verbatim, to the wake alone
+        assert words in section(wake_c, "## Live rooms") and words not in main_c, words
 
 
 def test_a_knowledge_edit_changes_only_c_and_a_new_page_changes_b_but_never_a(tmp_path):

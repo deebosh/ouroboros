@@ -239,10 +239,10 @@ def test_the_physical_floor_block_appears_exactly_when_a_step_past_f1_ran_or_the
     nano = note(mv.FloorLevel((("F7", ("x",)),)), mode="nano", tool_names=meta)
     assert nano.endswith("\n(memory_read is reachable through enable_tools)")
     assert "enable_tools" not in note(mv.FloorLevel((("F7", ("x",)),)), mode="low", tool_names=meta)
-    # Placed at the end of this room, or of the live rooms when the view has no room.
+    # Placed at the end of this room (every role has one), or of the live rooms of a snapshot without a room.
     level = mf.fit_memory_view(snapshot, _window(0))
     assert mv.render_room(snapshot, level, floor_note=note(level)).endswith(note(level))
-    roomless = syn.snapshot(role="consciousness", story=syn.pointers(20, 4), live=[syn.live_room(0)])
+    roomless = syn.snapshot(story=syn.pointers(20, 4), live=[syn.live_room(0)])
     text = mv.render_room(roomless, mv.FULL_VIEW, floor_note="### Physical floor\nx")
     assert text.index("## Live rooms") < text.index("### Physical floor") and text.endswith("x")
 

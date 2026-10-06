@@ -6,7 +6,8 @@ story (``## My story``); block C the live part (``## Marks I keep in view``,
 one ``ViewSpec``: ``ROLE_DEFAULTS`` by role (Main, a root and a Project task are the
 integrator; consciousness; Presence; a delegated child; a nanny), or an explicit spec a
 task carries under ``memory_view``. The current room is the task's own room
-(``dialogue_evidence.own_room_chat``); outside a Project and Main it is Main, except a
+(``dialogue_evidence.own_room_chat``); outside a Project and Main it is Main (a wake's too:
+it reads Main as the Main turn does, plus people's words in the other live rooms), except a
 Presence turn, which sees its own conversation.
 
 ``capture_memory_view`` reads the facts once per request into a ``MemoryViewSnapshot``
@@ -132,14 +133,14 @@ class ViewSpec:
 
 ROLE_DEFAULTS: Mapping[str, ViewSpec] = MappingProxyType({
     "integrator": ViewSpec("integrator"),
-    "consciousness": ViewSpec("consciousness", room_page=False, room_lanes=False, origin_words=False),
+    # a wake: the integrator's view of Main (it has no chat of its own) plus people's words in the other live rooms
+    "consciousness": ViewSpec("consciousness", live_rooms="lines_with_words"),
     "presence": ViewSpec("presence", origin_words=False, live_rooms="none", marks="room_and_global"),
     "child": ViewSpec("child", room_lanes=False, live_rooms="none", marks="room_and_global", knowledge=False,
                       owner_words=True),
     "nanny": ViewSpec("nanny", story=False, room_lanes=False, live_rooms="none", marks="room_and_global",
                       knowledge=False, owner_words=True),
 })
-_ROOMLESS = frozenset({"consciousness"})
 _FIELDS = {field.name: field.type for field in dataclasses.fields(ViewSpec)}
 
 
@@ -218,7 +219,8 @@ def view_spec_for_task(task: Mapping[str, Any], drive_root: Any, *, ctx: Any = N
     """The role's default spec, or the task's explicit ``memory_view`` after its fields check.
 
     An explicit spec with an unknown field or value is not used: the role default is, and the
-    refusal is one event in ``logs/events.jsonl``. Every role but consciousness gets its current room.
+    refusal is one event in ``logs/events.jsonl``. Every role gets its current room (``view_room_id``);
+    a wake, which has no chat of its own, gets Main, and reads it as the Main turn does.
     """
     role = view_role(task)
     spec = ROLE_DEFAULTS[role]
@@ -233,8 +235,6 @@ def view_spec_for_task(task: Mapping[str, Any], drive_root: Any, *, ctx: Any = N
             spec = dataclasses.replace(spec, **dict(explicit))
     if spec.room_id is not None:
         return dataclasses.replace(spec, room_id=str(spec.room_id))
-    if spec.role in _ROOMLESS:
-        return spec
     from ouroboros.memory_inventory import membership_facts
 
     projects = membership_facts(drive_root).project_chat_ids
