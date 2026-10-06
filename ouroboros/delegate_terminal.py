@@ -6,6 +6,7 @@ import logging
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from ouroboros import delegate_custody as custody
+from ouroboros.observability import timed_phase
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ def custody_audit_snapshot(drive_root: Any) -> Dict[str, Any]:
     }
 
 
+@timed_phase("custody_audit", within="release_task_runs")
 def _audit_task_custody(drive_root: Any, mine: str, result: Dict[str, Any], *,
                         snapshot: Optional[Mapping[str, Any]] = None,
                         emit_evidence: bool = True) -> None:

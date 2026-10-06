@@ -102,20 +102,19 @@ Interactive read cost is O(response), through a maintained projection, a
 cursor, rotation or a bounded tail — never a full-history scan filtered down to
 the answer.
 
-- **Evaluate the whole operation as the project grows.** For a changed data
-  reader, weigh growth in history, object count and project size, including
-  nested repetition, cold caches and concurrent users of shared resources. An
-  installation migration or repair is an explicit lifecycle job with a durable
-  watermark; ordinary startup does not reconstruct unrelated history. An
-  explicit-owner scan (an audit the owner starts, a rebuild job) is allowed;
-  its cost belongs to that job, which runs outside the dialogue's process
-  (ARCHITECTURE invariant 10). Where growth can materially hurt responsiveness, show evidence at a
-  representative scale on the affected path. First remove redundant work or
-  reuse a validated view within one operation; add a projection, cache or
-  other mechanism only when that simpler change is insufficient. A batch names
-  its observation boundary, the next batch refreshes it, and unknown evidence
-  never becomes an empty answer. This is advisory reasoning, not a universal
-  time limit, mandatory heavy benchmark for every PR, or a new approval gate.
+- **Evaluate the whole operation as the project grows.** For changed readers,
+  weigh growing history, object count and project size, nested repetition,
+  cold caches and shared-resource contention. Installation migration/repair is
+  an explicit lifecycle job with a durable watermark; ordinary startup never
+  reconstructs unrelated history. Owner-started audits/rebuilds run outside the
+  dialogue's process (ARCHITECTURE invariant 10); their cost belongs to that job.
+  Where growth can hurt responsiveness, show representative-scale evidence on
+  the affected path. Measure existing boundaries with monotonic spans and counts
+  in the event log, never new history reads for telemetry. First remove redundant
+  work or reuse a validated view within one operation; add a projection, cache
+  or other mechanism only if insufficient. Batches name their observation boundary
+  and refresh next time; unknown evidence never means empty. This advisory reasoning
+  sets no universal time limit, mandatory heavy benchmark or extra approval gate.
 - **Storage-agnostic.** A full-table read filtered in code IS a replay (a
   `SELECT *` narrowed in Python, a whole JSONL file parsed for its tail),
   including unbounded collections INSIDE snapshot/state files.

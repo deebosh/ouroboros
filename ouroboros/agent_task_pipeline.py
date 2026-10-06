@@ -13,6 +13,7 @@ import time
 from dataclasses import replace
 from typing import Any, Callable, Dict, List
 
+from ouroboros.observability import timed_phase
 from ouroboros.settings_integrity import copy_task_settings_context
 from ouroboros.cost_projection import cost_projection, resolve_cost_pair
 from ouroboros.task_results import (
@@ -803,10 +804,10 @@ def emit_task_results(
             post_task_open=not task.get("_skip_post_task_synthesis") and not _root_post_task_already_completed(env, task),
         )
         register_final_answer_owed(task, send_event, env_drive_root=env.drive_root)
-    _store_task_result(
-        env, task, text, usage, llm_trace, review_evidence=review_evidence,
-        loop_outcome=loop_outcome, cost_fields=task_cost_fields, final_delivery=send_event,
-    )
+    with timed_phase("result_store", timing=usage.get("_finalization_timing") or {}):
+        _store_task_result(env, task, text, usage, llm_trace, review_evidence=review_evidence,
+                           loop_outcome=loop_outcome, cost_fields=task_cost_fields,
+                           final_delivery=send_event)
     stored_result = load_task_result(env.drive_root, str(task.get("id") or "")) or {}
     if _root_outbox and task.get("_skip_post_task_synthesis"):
         # Stop before post-task dispatch forbids paid synthesis, not the free
