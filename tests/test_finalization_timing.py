@@ -191,12 +191,12 @@ def test_last_answer_replaces_prior_rounds_without_cross_thread_leaks(tmp_path):
 
 
 def test_phase_seconds_ignore_wall_clock_reversal_and_preserve_exceptions(monkeypatch):
-    from ouroboros import observability as obs
+    from ouroboros import finalization_timing, observability as obs
 
     clock = SimpleNamespace(now=100.0)
-    monkeypatch.setattr(obs, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(finalization_timing, "time", SimpleNamespace(monotonic=lambda: clock.now))
     stamps = iter(["2026-10-06T00:00:03Z", "2026-10-06T00:00:02Z", "2026-10-06T00:00:01Z"])
-    monkeypatch.setattr(obs, "utc_now_iso", lambda: next(stamps))
+    monkeypatch.setattr(finalization_timing, "utc_now_iso", lambda: next(stamps))
     with obs.task_timing_scope():
         usage = {}
         obs.mark_last_answer(usage)
