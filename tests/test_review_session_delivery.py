@@ -847,6 +847,14 @@ def _late_success_executor(tmp_path, fake_route, monkeypatch, *, llm, seen_by, w
         return original(self, run_id, **kw)
 
     monkeypatch.setattr(FakeGateway, "get_run", get_run)
+    if seen_by == "spent_read":
+        # The subject is what the deadline read DOES with a `succeeded` it sees, not whether a
+        # loaded test host schedules the read's worker thread inside its 1 ms wall bound: the
+        # fake answers synchronously (the bound itself is pinned by the delegate_progress tests).
+        from ouroboros import delegate_progress
+
+        monkeypatch.setattr(delegate_progress, "_strict_poll",
+                            lambda gateway, run_id, timeout: gateway.get_run(run_id, timeout_sec=timeout))
     return AgentSessionReviewExecutor(
         ReviewAssignment(request=_agent_request(), slot=_agent_slot(timeout_sec=window),
                          call_id="c-late", call_type="scope_review", custody_root=tmp_path),
