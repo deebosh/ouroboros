@@ -486,7 +486,8 @@ _GAP_WORDS = {
 def _gap_line(gap: Mapping[str, Any]) -> str:
     words = _GAP_WORDS.get(str(gap.get("kind")), str(gap.get("kind")))
     try:
-        words = words.format(**gap)
+        # History pages carry offsets in the captured chain, not a physical file.
+        words = words.format(**{"path": "the captured chat.jsonl chain", **gap})
     except (KeyError, IndexError):
         pass
     return f"- {words}" + ("; it names this conversation" if gap.get("mentions_conversation") else "")

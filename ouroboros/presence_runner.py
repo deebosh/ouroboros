@@ -1423,12 +1423,12 @@ class PresenceTurnExecution:
 class PresenceTurnExecutions:
     """The Host's live presence turns by durable turn id: start one, or join the one already running.
 
-    A turn is work, not its request. It queues on the gate as a coroutine (no thread, shared or
-    owned), then runs on its own daemon thread with the admitting request's context variables
-    (settings, usage and wait scopes), as ``asyncio.to_thread`` carried them. ``reserve``d
-    capacity returns only at true settlement: a cancelled or disconnected waiter leaves the turn
-    and its capacity in place, and a retry of the same event joins it. A turn the process exits
-    under stays host-lost for the transport's retry; the daemon thread never extends a drain.
+    A turn queues on the gate as a coroutine (no thread), then runs on its own daemon thread
+    with the admitting request's context variables (settings, usage and wait scopes), as
+    ``asyncio.to_thread`` carried them. Both versions return ``reserve``d capacity at a qualified
+    park or terminal settlement; version 0's HTTP waiter stays open until terminal. Cancelling or
+    disconnecting a waiter leaves the turn and any held capacity in place; retries join it.
+    A process exit leaves the turn host-lost for retry; the daemon thread never extends a drain.
     """
 
     def __init__(self) -> None:

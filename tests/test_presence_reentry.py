@@ -117,6 +117,47 @@ def test_unavailable_source_keeps_whole_observed_text_inline(tmp_path, monkeypat
     assert "Coverage: every row" in note
 
 
+@pytest.mark.parametrize("failure", ["reader_absent", "write_failed", "readback_failed"])
+def test_unavailable_source_after_scan_budget_names_chain_gap_offsets(tmp_path, monkeypatch, failure):
+    from ouroboros.presence_authority import presence_ceiling_payload
+    from supervisor.state import rotate_chat_log_if_needed
+
+    _, ctx = _actor(tmp_path)
+    if failure == "reader_absent":
+        ctx.task_contract = {"capability_ceiling": presence_ceiling_payload(
+            replace(_ceiling(), tool_grants=()))}
+    else:
+        def fail(*args, **kwargs):
+            raise OSError("source unavailable")
+        target = "store_actor_source_bytes" if failure == "write_failed" else "read_actor_source_bytes"
+        monkeypatch.setattr(f"ouroboros.artifacts.{target}", fail)
+    archived = _append(tmp_path, _row(KEY, "archived before park"))
+    archive_bytes = archived.stat().st_size
+    rotate_chat_log_if_needed(tmp_path, max_bytes=1)
+    _append(tmp_path, _row(KEY, "before park"))
+    cursor = pc._chat_cursor(tmp_path)
+    live = _append(tmp_path, _row("telegram:bot-1:elsewhere:0", "foreign " * 100),
+                   _row(KEY, "after scan budget"))
+    physical_offset = live.stat().st_size
+    bad_rows = [(b"{broken\n", "a malformed line"), (b"[1,2]\n", "a non-object line"),
+                (b'{"partial":', "a row still being written")]
+    _append(tmp_path, raw=b"".join(raw for raw, _ in bad_rows))
+    monkeypatch.setattr(pc, "_REENTRY_SCAN_BYTES", 1)
+    monkeypatch.setattr(pc, "_REENTRY_PAGE_BYTES", 20)
+    assert pc._conversation_rows_since(tmp_path, cursor, KEY)[1][-1]["kind"] == "scan_budget_exhausted"
+
+    note = pc.reentry_note(_binding(tmp_path, cursor), ctx)
+
+    assert '"after scan budget"' in note and "foreign " not in note
+    assert "get_task_result(" not in note and "chat_history(" not in note
+    assert "Coverage gaps" in note and "Coverage: every row" not in note
+    assert "{path}" not in note and "{offset}" not in note
+    for raw, description in bad_rows:
+        # A preceding archive makes chain offsets differ from live-file offsets.
+        assert f"{description} at the captured chat.jsonl chain byte {archive_bytes + physical_offset}" in note
+        physical_offset += len(raw)
+
+
 def _append_gap_locations(root, count=12):
     _append(root, _row(KEY, "before the gap interval"))
     cursor = pc._chat_cursor(root)
