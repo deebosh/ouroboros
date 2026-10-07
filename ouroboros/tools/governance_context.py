@@ -32,8 +32,10 @@ supplied universal checklist alone, the body's constitution, handbook, design
 system, architecture map and standing disclosures are recorded
 ``not_applicable`` (named, never silently dropped), and the navigation indexes
 the SUBJECT's own documents (``subject_root``) plus its required-source
-manifest. The shared-contract section is a body rule and travels with the body
-layer only (a skill advisory judges another subject and runs the core layer).
+manifest. The shared-contract section is a rule of this repository's CODE and
+travels with the body layer only; a skill advisory stays on the body layer
+(constitution, disclosures) but judges a payload that is not this repository's
+code, so it receives no shared-contract section (``repository_rules=False``).
 
 Choosing which reference chapter to inline from an exact file-name mention is
 context ASSEMBLY, not behaviour selection: no verdict, routing decision or
