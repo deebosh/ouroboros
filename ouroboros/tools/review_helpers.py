@@ -235,9 +235,9 @@ def review_wave_budget_gate(
     ``max_completion_tokens`` take one value per slot, and ``categories`` /
     ``slot_ids`` name the usage scope each seat will SEND under, so its bound
     reads the seat's own observed cache split rather than the caller's), against
-    every fence ``reserve_attempt`` enforces — the global TOTAL_BUDGET remainder
-    (the scope's ``global_limit_usd``) and the task's root fence — the event naming
-    the binding axis with both remainders. A wave that fits at admission time is
+    every fence ``reserve_attempt`` enforces — global TOTAL_BUDGET, the task's
+    current root and its original billing group — with the binding axis and
+    remainders named in the event. A wave that fits at admission time is
     dispatched whole; one that does not is refused before any seat spends.
     Fail-open on any error/unknown."""
     try:

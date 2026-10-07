@@ -3,9 +3,8 @@
 The scope reviewer — the only constitutionally blocking seat — reserves its
 budget FIRST, and the commit-gate wave (scope seats + triad seats) is admitted
 all-or-nothing against every fence the ledger enforces at reservation — the
-global TOTAL_BUDGET remainder and the task's root fence (the earlier wording
-"against the task's current root fence" omitted the global axis; rc.14 audit
-point 2) — BEFORE any paid seat is dispatched. A wave that does not fit is a
+global TOTAL_BUDGET remainder, the task's current root and its original billing
+group — BEFORE any paid seat is dispatched. A wave that does not fit is a
 typed $0 pre-dispatch refusal naming the binding axis and the shortfall, never
 a half-dispatched panel (the 4 September paid run: two triad seats held the
 money, the third seat and the scope seat were refused mid-wave, and the commit
