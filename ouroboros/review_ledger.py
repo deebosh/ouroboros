@@ -291,11 +291,19 @@ def revise_record(drive_root: Any, record_id: str, mutate: Callable[[Dict[str, A
 
 
 def load_record(drive_root: Any, record_id: str) -> Optional[Dict[str, Any]]:
-    """The full record by id (junction for the PR/merge reader); ``None`` when absent."""
+    """The full record by id (junction for the PR/merge reader): ``None`` when no such
+    record exists; ``ValueError`` when the file is there but cannot be read as a record,
+    so a corrupt record is never reported as absent."""
     try:
-        return _read_json(record_path(drive_root, record_id))
+        path = record_path(drive_root, record_id)
     except ValueError:
         return None
+    if not path.exists():
+        return None
+    payload = _read_json(path)
+    if payload is None:
+        raise ValueError(f"review ledger record {record_id} exists but is not readable as a record")
+    return payload
 
 
 def note_author_decision(drive_root: Any, record_id: str, decision: Dict[str, Any]) -> Optional[Dict[str, Any]]:

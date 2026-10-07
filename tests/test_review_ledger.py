@@ -77,6 +77,20 @@ def test_record_round_trip_schema_version_and_read_by_id(tmp_path):
     assert rl.recent_records(tmp_path, "other-task", 5) == []
 
 
+def test_corrupt_record_file_is_unreadable_never_absent(tmp_path):
+    record = rl.build_commit_gate_record(_facts(_three(), _scope()), drive_root=tmp_path)
+    rl.write_record(tmp_path, record)
+    path = rl.record_path(tmp_path, record.record_id)
+    path.write_text("{not a record", encoding="utf-8")
+    with pytest.raises(ValueError, match="exists but is not readable"):
+        rl.load_record(tmp_path, record.record_id)
+    path.write_text(json.dumps(["a list", "not a mapping"]), encoding="utf-8")
+    with pytest.raises(ValueError):
+        rl.load_record(tmp_path, record.record_id)
+    path.unlink()
+    assert rl.load_record(tmp_path, record.record_id) is None
+
+
 def test_record_vocabulary_is_enforced(tmp_path):
     record = rl.build_commit_gate_record(_facts(_three(), _scope()))
     bad = record.to_dict()
