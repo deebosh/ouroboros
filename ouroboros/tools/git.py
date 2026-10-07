@@ -52,6 +52,7 @@ from ouroboros.tools.commit_gate import (
     _invalidate_advisory,  # noqa: F401
     _record_commit_attempt,
     record_bound_commit_success, prepare_author_commit_request,
+    record_commit_gate_refusal,
     check_identical_verdict_refusal,
     check_review_cycles_ceiling,
     classify_review_block,  # noqa: F401
@@ -202,6 +203,11 @@ def _free_cycle_gate(
         pass
     if _authorized_managed_update_resolver(ctx):
         _repair_managed_merge_head(ctx)
+    # The free refusal is still a review outcome the owner must be able to read:
+    # a NOT_DISPATCHED ledger record names why nothing was reviewed.
+    record_id = record_commit_gate_refusal(
+        ctx, commit_message, goal=goal, scope=scope, pre_fingerprint=pre_fingerprint, kind=reason, message=message,
+    )
     _record_commit_attempt(
         ctx,
         commit_message,
@@ -213,11 +219,13 @@ def _free_cycle_gate(
         pre_review_fingerprint=str(fp),
         rebuttal_sha256=rebuttal_sha,
         review_contract_fingerprint=contract_fp,
+        review_record_id=record_id,
     )
     return {
         "status": "blocked",
         "message": message,
         "block_reason": reason,
+        "review_record_id": record_id,
     }
 
 
@@ -996,6 +1004,8 @@ def _format_commit_result(ctx, commit_message, push_status, test_warning):
     result = f"OK: committed to {ctx.branch_dev}: {commit_message}{push_status}"
     if test_warning:
         result += test_warning
+    if getattr(ctx, "_current_review_record_id", ""):
+        result += f"\nreview_record_id: {ctx._current_review_record_id}"
     if ctx._review_advisory:
         result += "\n\n⚠️ Advisory warnings:\n" + "\n".join(
             f"  - {format_review_history_entry(w)}" for w in ctx._review_advisory

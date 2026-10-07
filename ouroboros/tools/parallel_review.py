@@ -9,7 +9,7 @@ import json
 import logging
 import time
 
-from ouroboros.utils import run_cmd
+from ouroboros.utils import run_cmd, utc_now_iso
 from ouroboros.review_substrate import scope_reviewer_slots
 from ouroboros.tools.review_helpers import build_scope_actor_record, format_review_history_entry, review_enforcement_blocks
 from ouroboros.tools.scope_review import (
@@ -535,6 +535,58 @@ def _commit_review_retry_key(
     }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _structured_review_result(triad_prepared, scope_rows, scope_result, *, started_ts, retry_key,
+                              wave_refusal, triad_exited, triad_early):
+    """What this wave ASSIGNED and what each seat was GIVEN, as one typed mapping
+    for the review ledger record (``review_ledger.build_commit_gate_record``).
+    The gate decision reads nothing here; a failure to describe the wave is logged
+    and leaves an empty mapping, never a changed verdict."""
+    try:
+        return _describe_review_wave(triad_prepared, scope_rows, scope_result, started_ts=started_ts, retry_key=retry_key,
+                                     wave_refusal=wave_refusal, triad_exited=triad_exited, triad_early=triad_early)
+    except Exception:
+        log.warning("structured review result unavailable for the review ledger", exc_info=True)
+        return {}
+
+
+def _describe_review_wave(triad_prepared, scope_rows, scope_result, *, started_ts, retry_key,
+                          wave_refusal, triad_exited, triad_early):
+    from ouroboros.review_model_routes import adaptive_quorum
+    from ouroboros.reviewer_slot_config import row_plan_retrieves
+
+    prepared = triad_prepared or {}
+    plan = dict(prepared.get("row_plan") or {})
+
+    def _at(key, i):
+        values = list(plan.get(key) or [])
+        value = values[i] if i < len(values) else ""
+        return str(getattr(value, "value", value) or "")
+
+    triad_rows = [
+        {"slot_id": _at("slot_ids", i), "model": _at("models", i), "route": _at("routes", i), "effort": _at("efforts", i),
+         "session_target": _at("session_targets", i), "session_profile": _at("session_profiles", i),
+         "subagent_id": _at("subagent_ids", i), "retrieves": row_plan_retrieves(plan, i)}
+        for i in range(len(plan.get("slot_ids") or []))
+    ]
+    seats, briefs = [], {}
+    for row in scope_rows or []:
+        slot = row["slot"]
+        seats.append({"slot_id": slot.slot_id, "model": slot.model, "route": str(getattr(slot.route, "value", slot.route) or ""),
+                      "effort": slot.effort, "session_target": slot.session_target, "session_profile": slot.session_profile,
+                      "subagent_id": slot.subagent_id, "retrieves": True})
+        briefs[slot.slot_id] = str((row.get("prepared") or {}).get("session_task") or "")
+    return {
+        "started_ts": started_ts, "retry_key": retry_key, "wave_refusal": str(wave_refusal or ""),
+        "triad_prompt": str(prepared.get("prompt") or ""), "triad_session_task": str(prepared.get("session_task") or ""),
+        "triad_rows": triad_rows, "triad_quorum": adaptive_quorum(len(triad_rows)) if triad_rows else 0,
+        "triad_assembly_refusal": str(triad_early or "") if triad_exited and triad_early else "",
+        "scope_rows": seats, "scope_briefs": briefs, "scope_brief": next((b for b in briefs.values() if b), ""),
+        "scope_quorum": adaptive_quorum(len(seats)) if seats else 0,
+        "scope_status": str(getattr(scope_result, "status", "") or ""),
+        "scope_blocked": bool(getattr(scope_result, "blocked", False)),
+    }
+
+
 def run_parallel_review(
     ctx, commit_message, *, goal="", scope="", review_rebuttal="",
     review_binding_fingerprint="",
@@ -558,7 +610,8 @@ def run_parallel_review(
     ctx._last_scope_model = ""
     ctx._last_triad_raw_results = []
     ctx._last_scope_raw_result = {}
-    ctx._last_scope_raw_results = []
+    ctx._last_scope_raw_results, ctx._last_review_structured = [], {}
+    _started_ts, wave_refusal = utc_now_iso(), None
     # Managed subject↔binding assertion input: every gate subject built during
     # THIS attempt records its S tree here; the commit gate then asserts the
     # set equals the binding fingerprint's tree_sha (typed failure otherwise).
@@ -663,7 +716,6 @@ def run_parallel_review(
         from ouroboros.tools.review_admission import admit_commit_gate_wave, commit_gate_paid_seats
 
         seats = []
-        wave_refusal = None
         if not bool(getattr(ctx, "_review_reconcile_only", False)):
             try:
                 seats = commit_gate_paid_seats(triad_prepared, triad_exited, scope_rows)
@@ -806,34 +858,40 @@ def run_parallel_review(
     triad_advisory_post = list(getattr(ctx, '_review_advisory', []))
     triad_advisory = [a for a in triad_advisory_post if a not in _advisory_snapshot_before]
 
-    if scope_result is not None:
-        updated = _scope_history + [_scope_history_entry(scope_result)]
-        existing = getattr(ctx, '_scope_review_history', None) or {}
-        if not isinstance(existing, dict):
-            existing = {}
-        existing[snapshot_key] = updated
-        ctx._scope_review_history = existing
-        # Canonical scope actor record for durable CommitAttemptRecord persistence.
-        raw_results = list(getattr(ctx, "_last_scope_raw_results", []) or [])
-        if raw_results:
-            ctx._last_scope_raw_result = {
-                "status": getattr(scope_result, "status", ""),
-                "model_id": getattr(scope_result, "model_id", "") or getattr(ctx, "_last_scope_model", ""),
-                "context_manifest": getattr(scope_result, "context_manifest", {}) or {},
-                "raw_results": raw_results,
-                "raw_text": getattr(scope_result, "raw_text", ""),
-                "critical_findings": getattr(scope_result, "critical_findings", []) or [],
-                "advisory_findings": getattr(scope_result, "advisory_findings", []) or [],
-            }
-        else:
-            ctx._last_scope_raw_result = build_scope_actor_record(
-                scope_result,
-                fallback_model_id=getattr(ctx, "_last_scope_model", ""),
-            )
-    else:
-        ctx._last_scope_raw_result = {}
-
+    _record_scope_outcome(ctx, scope_result, snapshot_key, _scope_history)
+    ctx._last_review_structured = _structured_review_result(
+        triad_prepared, scope_rows, scope_result, started_ts=_started_ts, retry_key=retry_key,
+        wave_refusal=wave_refusal, triad_exited=triad_exited, triad_early=triad_early)
     return review_err, scope_result, triad_block_reason, triad_advisory
+
+
+def _record_scope_outcome(ctx, scope_result, snapshot_key, scope_history) -> None:
+    """Scope history for this snapshot plus the canonical scope actor record for
+    durable CommitAttemptRecord persistence (moved out of ``run_parallel_review``)."""
+    if scope_result is None:
+        ctx._last_scope_raw_result = {}
+        return
+    existing = getattr(ctx, '_scope_review_history', None) or {}
+    if not isinstance(existing, dict):
+        existing = {}
+    existing[snapshot_key] = scope_history + [_scope_history_entry(scope_result)]
+    ctx._scope_review_history = existing
+    raw_results = list(getattr(ctx, "_last_scope_raw_results", []) or [])
+    if raw_results:
+        ctx._last_scope_raw_result = {
+            "status": getattr(scope_result, "status", ""),
+            "model_id": getattr(scope_result, "model_id", "") or getattr(ctx, "_last_scope_model", ""),
+            "context_manifest": getattr(scope_result, "context_manifest", {}) or {},
+            "raw_results": raw_results,
+            "raw_text": getattr(scope_result, "raw_text", ""),
+            "critical_findings": getattr(scope_result, "critical_findings", []) or [],
+            "advisory_findings": getattr(scope_result, "advisory_findings", []) or [],
+        }
+    else:
+        ctx._last_scope_raw_result = build_scope_actor_record(
+            scope_result,
+            fallback_model_id=getattr(ctx, "_last_scope_model", ""),
+        )
 
 
 def aggregate_review_verdict(review_err, scope_result, triad_block_reason, triad_advisory,

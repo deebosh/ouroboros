@@ -1180,13 +1180,17 @@ def _last_execution_path() -> "pathlib.Path":
 _LAST_EXECUTION_LOCK = threading.Lock()
 
 
-def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict[str, Any]) -> None:
+def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict[str, Any], *,
+                                    record_id: str = "") -> None:
     """Record each actor's last effective execution (best-effort, atomic).
 
     Written under the process data root (``config.DATA_DIR``), never a
     ToolContext review drive: UI state beside the saved settings, not per-task
     forensics — those live in the durable actor records already. An isolated
     contributor review's data root IS its review drive, so its markers stay there.
+    ``record_id`` names the review ledger record the execution belongs to when the
+    caller already holds it; a surface that learns the id only after its wave
+    settled binds it afterwards with ``bind_reviewer_slot_record_id``.
     """
     from ouroboros.review_substrate import TYPED_FAILURE_FACT_KEYS
     from ouroboros.utils import utc_now_iso, write_text_atomic
@@ -1255,6 +1259,7 @@ def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict
                 **({"effort": dict(usage["effort"])} if isinstance(usage.get("effort"), dict) else {}),
                 "capability_delta": usage.get("capability_delta") or [],
                 "status": str(getattr(actor, "status", "") or ""),
+                **({"review_record_id": str(record_id)} if record_id else {}),
             }
             # B1: typed failure facts, present only when the substrate carried them
             # (a later health surface reads them; absence stays honest absence).
@@ -1269,6 +1274,33 @@ def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict
             data = dict(ordered[-_LAST_EXECUTION_CAP:])
         path.parent.mkdir(parents=True, exist_ok=True)
         write_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=1))
+
+
+def bind_reviewer_slot_record_id(slot_ids: Any, record_id: str, *, since_ts: str = "") -> None:
+    """Name the review ledger record on the rows a settled wave just wrote (the gate
+    learns the id after its seats recorded themselves). Rows older than ``since_ts``
+    belong to an earlier wave and keep their own id; best-effort, atomic."""
+    from ouroboros.utils import write_text_atomic
+
+    record_id = str(record_id or "")
+    if not record_id:
+        return
+    path = _last_execution_path()
+    with _LAST_EXECUTION_LOCK:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        changed = False
+        for slot_id in slot_ids or []:
+            row = data.get(str(slot_id))
+            if isinstance(row, dict) and (not since_ts or str(row.get("ts") or "") >= since_ts):
+                row["review_record_id"] = record_id
+                changed = True
+        if changed:
+            write_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=1))
 
 
 def reviewer_slot_last_executions() -> Dict[str, Any]:
@@ -1300,6 +1332,7 @@ __all__ = [
     "parse_reviewer_slots",
     "reviewer_slot_config_error",
     "authored_reviewer_slots_state",
+    "bind_reviewer_slot_record_id",
     "project_reviewer_slots_into_env",
     "record_reviewer_slot_executions",
     "reviewer_slot_last_executions",
