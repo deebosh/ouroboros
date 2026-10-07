@@ -732,14 +732,14 @@ def _review_evidence_and_cost(ctx: object) -> tuple[list[dict], dict]:
 def _pinned_default_panel_view(profile: str):
     """The pinned document's task view for a contributor default panel, else ``None``.
 
-    The shipped panel reads Main, the model slots and provider routes
-    (``review_model_routes``). Here they come from the verified document over the
-    product and provider defaults, as a host task derives them
-    (``subagent_runtime.apply_task_start_settings``), never from an inherited
-    projection, whose keys still serve the calls. Only this lane freezes what it
-    resolves, so only here does the view decide what executes.
+    Main, the model slots and provider routes (``review_model_routes``) come from the
+    verified document over the product and provider defaults, never from an inherited
+    projection (whose keys still serve the calls); a credential the document leaves empty
+    is the run's own (environment or keys file), merged as a host task merges it
+    (``subagent_runtime.apply_task_start_settings``). Only this lane freezes what it resolves.
     """
     from ouroboros import config
+    from ouroboros.provider_models import ALL_PROVIDER_CREDENTIAL_KEYS
     from ouroboros.reviewer_slot_config import structured_reviewer_slots_present
     from ouroboros.server_runtime import apply_runtime_provider_defaults
     from ouroboros.settings_integrity import read_settings_json_verified, task_settings_snapshot
@@ -747,8 +747,10 @@ def _pinned_default_panel_view(profile: str):
     if profile != _CONTRIBUTOR_PROFILE or not os.environ.get(SETTINGS_INTEGRITY_ENV) \
             or structured_reviewer_slots_present():
         return None  # the process environment, as before
-    settings = config.defaults_for_settings_document(True)
-    settings.update(config.normalize_settings_raw(read_settings_json_verified(config.SETTINGS_PATH)))
+    settings, document = config.defaults_for_settings_document(True), config.normalize_settings_raw(
+        read_settings_json_verified(config.SETTINGS_PATH))
+    settings.update(document, **{key: os.environ[key] for key in ALL_PROVIDER_CREDENTIAL_KEYS
+                                 if document.get(key) in (None, "") and os.environ.get(key, "").strip()})
     settings, projected = apply_runtime_provider_defaults(settings)[0], {}
     config.apply_settings_to_env(settings, environ=projected)
     return task_settings_snapshot(settings, projected)
@@ -756,27 +758,24 @@ def _pinned_default_panel_view(profile: str):
 
 def _resolved_review_config(*, profile: str = "production_commit_gate") -> dict:
     """Return resolved review slots and efforts after settings/env loading."""
-    from ouroboros.config import get_context_mode, get_review_enforcement
+    from ouroboros.config import get_context_mode, get_review_enforcement, resolved_review_model_target
+    from ouroboros.model_slots import local_lane_label
     from ouroboros.reviewer_slot_config import load_reviewer_slot_config, row_effort
     from ouroboros.settings_integrity import task_settings_scope
 
-    with task_settings_scope(_pinned_default_panel_view(profile)):
+    view = _pinned_default_panel_view(profile)
+    with task_settings_scope(view):
         config = load_reviewer_slot_config()
+        # The view chose each row's lane; its frozen row says so, so probing and dispatch keep it.
+        local = {row.target_id for row in (*config.triad, *config.scope)
+                 if view is not None and resolved_review_model_target(row.target_id).provider_route == "local"}
 
     def _project(row, surface: str) -> dict:
-        route = {
-            "kind": row.kind,
-            "target_id": row.target_id,
-        }
-        if row.profile_id:
-            route["profile_id"] = row.profile_id
-        return {
-            "slot_id": row.slot_id,
-            "route": route,
-            "effort": row_effort(row, surface),
-            **({"subagent_id": row.subagent_id} if row.subagent_id else {}),
-            **({"delivery": row.delivery} if row.delivery else {}),
-        }
+        route = {"kind": row.kind, "target_id": local_lane_label(row.target_id, row.target_id in local),
+                 **({"profile_id": row.profile_id} if row.profile_id else {})}
+        return {"slot_id": row.slot_id, "route": route, "effort": row_effort(row, surface),
+                **({"subagent_id": row.subagent_id} if row.subagent_id else {}),
+                **({"delivery": row.delivery} if row.delivery else {})}
 
     triad_slots = [_project(row, "review") for row in config.triad]
     scope_slots = [_project(row, "scope_review") for row in config.scope]

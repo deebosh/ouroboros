@@ -226,7 +226,8 @@ review state, reviewer markers, locks and logs. It reads your `settings.json`
 in place under an integrity pin (never copied, never written; an edit during
 the run is a typed refusal; the reviewer panel and efforts come from it, or the
 product default where it names none, derived from its own model and provider
-settings — never from a copy inherited in your environment), and with
+settings — never from a copy inherited in your environment — and from the
+provider keys the run has), and with
 `--attach-host-engine` that engine's ownership marker, loopback descriptor and
 token. A provider key missing from both the environment and settings may still
 come from the wrapper's keys-file fallback (`OUROBOROS_KEYS_FILE`). Every run
@@ -239,7 +240,9 @@ then uses the Claudexor engine already running for your data root and never
 starts, prepares, rotates or stops one; a missing, foreign, dead or too old
 engine is a typed refusal, never another engine. That engine records the runs
 it executes for this review in its own home (`<data root>/claudexor`), as it
-does for every delegated run. The wrapper checks route-specific readiness
+does for every delegated run. Without that option the run starts no engine
+either: any other Claudexor call it makes (a Claudexor Main or Light model) is a
+typed refusal. The wrapper checks route-specific readiness
 where it has a reliable probe; the selected route reports other failures
 explicitly.
 

@@ -553,6 +553,37 @@ def test_default_route_without_attach_keeps_owned_management(owned, engine, tmp_
     assert discover_daemon().port == engine.port
 
 
+def test_an_isolated_review_without_attach_never_starts_an_engine(owned, tmp_path, monkeypatch):
+    """No attach selection: reviewer rows on Claudexor are refused up front, and any other
+    Claudexor call the cycle makes (a Light model canonicalizing an unparsed verdict) gets a
+    typed refusal — never a prepared runtime or a started engine under the review drive."""
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+    from ouroboros.review_verdict_extraction import _extract_verdict_via_light_model
+
+    monkeypatch.setenv(REVIEW_RUN_CAP_ENV, "4")  # set only by the isolated review's launcher
+    monkeypatch.delenv(ATTACH_HOME_ENV, raising=False)
+    prepared, refusals = [], []
+
+    def prepare(*_args, **_kwargs):
+        prepared.append("runtime")
+        raise AssertionError("an isolated review must never prepare an engine runtime")
+
+    def gateway_refusals(real=owned.ensure_owned_gateway):
+        try:
+            return real()
+        except ClaudexorUnavailable as exc:
+            refusals.append(exc.code)
+            raise
+
+    monkeypatch.setattr("ouroboros.claudexor_runtime.get_runtime_manager", prepare)
+    monkeypatch.setattr("ouroboros.llm_claudexor.ensure_owned_gateway", gateway_refusals)
+    monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", "claudexor::claude=claude-light")
+
+    assert _extract_verdict_via_light_model("The change looks fine to me.")[0] is None
+    assert (prepared, refusals) == ([], ["attach_only_engine"])
+    assert not (tmp_path / "review-drive" / "claudexor").exists()
+
+
 def test_run_cap_is_the_global_limit_over_the_saved_budget(tmp_path, monkeypatch):
     from ouroboros import config
     from ouroboros.settings_setup_contract import resolve_total_budget_usd
@@ -652,6 +683,36 @@ def test_isolation_fails_closed_and_continuation_keeps_its_cap(tmp_path, monkeyp
         isolate(tmp_path / "other")
 
 
+def test_another_spelling_of_the_host_root_is_refused_before_mkdir(tmp_path, monkeypatch):
+    """``Path.resolve`` keeps the spelling it was given, and a spelling is not a directory.
+
+    On a case-insensitive volume (the macOS and Windows default) another case of the host
+    root IS the host root; on a case-sensitive one it is a distinct path, refused all the
+    same. A macOS firmlink spelling (``/System/Volumes/Data``) is the host under any case rule.
+    """
+    host = _legacy_host(tmp_path, 1).resolve()
+    for key in ("OUROBOROS_DATA_DIR", SETTINGS_INTEGRITY_ENV, REVIEW_RUN_CAP_ENV, ATTACH_HOME_ENV):
+        monkeypatch.setenv(key, "inherited")
+    variant = host.with_name(host.name.upper())
+    spellings = [variant / "review", variant, host.parent.with_name(host.parent.name.upper())]
+    firmlink = pathlib.Path("/System/Volumes/Data" + str(host))
+    if firmlink.is_dir() and os.path.samefile(firmlink, host):  # only where that alias exists
+        spellings += [firmlink / "review", firmlink]
+    before = _tree_state(host)
+
+    config = sys.modules.pop("ouroboros.config")  # the check reads module presence only
+    try:  # restored at once: a teardown importing config meanwhile would load a second copy
+        for spelling in spellings:
+            with pytest.raises(RuntimeError, match="overlaps the host data root"):
+                isolate_review_data(host_data=host, drive_root=str(spelling), run_cap="4", attach_host_engine=False)
+    finally:
+        sys.modules["ouroboros.config"] = config
+
+    assert _tree_state(host) == before  # no drive, record or ledger inside the installation
+    assert not variant.exists() or os.path.samefile(variant, host)  # a distinct variant was not created
+    assert os.environ["OUROBOROS_DATA_DIR"] == "inherited"  # refused before selecting anything
+
+
 def test_wrapper_settings_load_refuses_bytes_that_changed_under_its_pin(tmp_path, monkeypatch):
     import scripts.run_external_review as module
 
@@ -705,19 +766,24 @@ def test_wrapper_settings_load_makes_the_pinned_document_the_whole_panel(tmp_pat
 
 
 # The default panel a host task runs when its settings name none: the task-start
-# view of the document (``subagent_runtime``), as a host task binds it.
+# view of the document (``subagent_runtime``), as a host task binds it, each row on
+# the lane it dispatches on (``" (local)"`` where ``use_local``).
 _HOST_TASK_PANEL = '''import json
-from ouroboros.reviewer_slot_config import load_reviewer_slot_config
+from ouroboros.model_slots import local_lane_label
+from ouroboros.review_substrate import scope_reviewer_slots
+from ouroboros.reviewer_slot_config import load_reviewer_slot_config, triad_delivery_slots
 from ouroboros.settings_integrity import task_settings_scope
 from ouroboros.subagent_runtime import apply_task_start_settings
 
 with task_settings_scope(apply_task_start_settings()):
-    config = load_reviewer_slot_config()
-print(json.dumps({"source": config.source, "triad": [row.target_id for row in config.triad],
-                  "scope": [row.target_id for row in config.scope]}))
+    source = load_reviewer_slot_config().source
+    triad, scope = ([local_lane_label(slot.model, slot.use_local) for slot in slots]
+                    for slots in (triad_delivery_slots(), scope_reviewer_slots()))
+print(json.dumps({"source": source, "triad": triad, "scope": scope}))
 '''
 # The wrapper's resolution in ``_prepare_review_configuration`` order, after its real
-# isolation (no git snapshot, no provider probe), frozen as the review executes it.
+# isolation (no git snapshot, no provider probe), frozen and then delivered as the
+# review dispatches it, with the OpenRouter rows the wrapper would probe a key for.
 _WRAPPER_PANEL = '''import json, sys
 import scripts.run_external_review as wrapper
 
@@ -727,20 +793,25 @@ if sys.argv[1:]:
 wrapper._load_settings_into_env()
 wrapper._apply_contributor_review_env()
 frozen = wrapper._freeze_contributor_slots(wrapper._resolved_review_config(profile=wrapper._CONTRIBUTOR_PROFILE))
-print(json.dumps({"source": frozen["slot_config_source"], "triad": frozen["triad_models"],
-                  "scope": frozen["scope_models"]}))
+from ouroboros.model_slots import local_lane_label
+from ouroboros.review_substrate import scope_reviewer_slots
+from ouroboros.reviewer_slot_config import triad_delivery_slots
+
+triad, scope = ([local_lane_label(slot.model, slot.use_local) for slot in slots]
+                for slots in (triad_delivery_slots(), scope_reviewer_slots()))
+print(json.dumps({"source": frozen["slot_config_source"], "triad": triad, "scope": scope,
+                  "openrouter_probe": wrapper._configured_openrouter_models(frozen)}))
 '''
 
 
-def test_a_pinned_document_without_a_panel_gets_its_hosts_default_panel(tmp_path):
-    """The default panel's model and provider inputs come from the pinned document too."""
+def _panel_resolver(root: pathlib.Path, document: dict):
+    """Run a panel script against a host whose settings are ``document``, and its pin."""
     from ouroboros.settings_defaults import RETIRED_COMMA_LIST_SETTING_KEYS, settings_env_keys
 
-    host = tmp_path / "host-data"
-    host.mkdir()
+    host = root / "host-data"
+    host.mkdir(parents=True)
     settings = host / "settings.json"
-    settings.write_text(json.dumps({"ANTHROPIC_API_KEY": _HOST_PROVIDER_VALUE,
-                                    "OUROBOROS_MODEL": "anthropic::claude-opus-5"}), encoding="utf-8")
+    settings.write_text(json.dumps(document), encoding="utf-8")
     dropped = {*settings_env_keys(), *RETIRED_COMMA_LIST_SETTING_KEYS, SETTINGS_INTEGRITY_ENV, "OUROBOROS_KEYS_FILE"}
     clean = {key: value for key, value in os.environ.items() if key not in dropped}
     clean.update(OUROBOROS_DATA_DIR=str(host), OUROBOROS_SETTINGS_PATH=str(settings))
@@ -749,17 +820,64 @@ def test_a_pinned_document_without_a_panel_gets_its_hosts_default_panel(tmp_path
         run = subprocess.run([sys.executable, "-c", code, *argv], cwd=str(REPO), env={**clean, **inherited},
                              capture_output=True, text=True, timeout=300)
         assert run.returncode == 0, run.stderr[-4000:]
-        return json.loads(run.stdout.strip().splitlines()[-1])
+        result = json.loads(run.stdout.strip().splitlines()[-1])
+        probe = result.pop("openrouter_probe", None)
+        return result if probe is None else (result, probe)
 
-    host_panel = resolve(_HOST_TASK_PANEL, **{SETTINGS_INTEGRITY_ENV: hashlib.sha256(settings.read_bytes()).hexdigest()})
+    return resolve, {SETTINGS_INTEGRITY_ENV: hashlib.sha256(settings.read_bytes()).hexdigest()}
+
+
+def test_a_pinned_document_without_a_panel_gets_its_hosts_default_panel(tmp_path):
+    """The default panel's model and provider inputs come from the pinned document too."""
+    resolve, pin = _panel_resolver(tmp_path, {"ANTHROPIC_API_KEY": _HOST_PROVIDER_VALUE,
+                                              "OUROBOROS_MODEL": "anthropic::claude-opus-5"})
+
+    host_panel = resolve(_HOST_TASK_PANEL, **pin)
     assert host_panel["source"] == "default"
     assert host_panel["triad"] == ["anthropic::claude-opus-5"] * 3  # the host's exclusive direct provider
-    assert resolve(_WRAPPER_PANEL, str(tmp_path / "drive-clean")) == host_panel
-    # A shell exported for another configuration: an older Main, another provider's key.
-    for index, stale in enumerate(({"OUROBOROS_MODEL": "anthropic::claude-sonnet-4-5"},
-                                   {"OPENAI_API_KEY": "stale-provider-value"})):
-        assert resolve(_WRAPPER_PANEL, **stale) != host_panel  # unpinned, it selects another panel
-        assert resolve(_WRAPPER_PANEL, str(tmp_path / f"drive-{index}"), **stale) == host_panel
+    assert resolve(_WRAPPER_PANEL, str(tmp_path / "drive-clean")) == (host_panel, [])
+    # A shell exported for another configuration: an older Main.
+    stale = {"OUROBOROS_MODEL": "anthropic::claude-sonnet-4-5"}
+    assert resolve(_WRAPPER_PANEL, **stale)[0] != host_panel  # unpinned, it selects another panel
+    assert resolve(_WRAPPER_PANEL, str(tmp_path / "drive-stale"), **stale) == (host_panel, [])
+    # Another provider's key is a credential the run's calls can use, so the panel is the one
+    # the host derives with that credential available, whichever source supplies it.
+    extra = {"OPENAI_API_KEY": "isolation-fixture-second-provider-value"}
+    assert resolve(_WRAPPER_PANEL, str(tmp_path / "drive-extra"), **extra)[0] == resolve(_HOST_TASK_PANEL, **pin, **extra)
+
+
+def test_a_pinned_default_panel_keeps_the_credentials_its_calls_use(tmp_path):
+    """Saved models choose the panel; the credentials are the run's, from any supported source.
+
+    A credential reaches this run from its environment or the wrapper's keys file as
+    well as from the document (synthetic values; no provider is contacted).
+    """
+    credential = {"ANTHROPIC_API_KEY": _HOST_PROVIDER_VALUE}
+    resolve, pin = _panel_resolver(tmp_path, {"OUROBOROS_MODEL": "anthropic::claude-opus-5"})
+    host_panel = resolve(_HOST_TASK_PANEL, **pin, **credential)
+    assert host_panel["triad"] == ["anthropic::claude-opus-5"] * 3
+    keys_file = tmp_path / "keys.txt"
+    keys_file.write_text(f"anthropic: {_HOST_PROVIDER_VALUE}\n", encoding="utf-8")
+    for name, supplied in (("environment", credential), ("keys-file", {"OUROBOROS_KEYS_FILE": str(keys_file)}),
+                           ("stale-main", {**credential, "OUROBOROS_MODEL": "anthropic::claude-sonnet-4-5"})):
+        assert resolve(_WRAPPER_PANEL, str(tmp_path / f"drive-{name}"), **supplied) == (host_panel, []), name
+
+
+def test_a_frozen_default_row_dispatches_on_the_lane_it_was_resolved_on(tmp_path):
+    """Each frozen row dispatches, and is probed, on the lane the host would run it on."""
+    # A local-only install: Main on the local lane, no remote credential saved.
+    resolve, pin = _panel_resolver(tmp_path, {
+        "USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "owner/local-model.gguf", "OUROBOROS_MODEL": "owner-local"})
+    local_panel = resolve(_HOST_TASK_PANEL, **pin)
+    assert local_panel["triad"] == ["owner-local (local)"] * 3
+    assert local_panel["scope"] and set(local_panel["scope"]) == {"owner-local (local)"}
+    for name, inherited in (("clean", {}), ("stale-lane-flag", {"USE_LOCAL_MAIN": "0"}),
+                            ("remote-credential", {"OPENAI_API_KEY": "isolation-fixture-second-provider-value"})):
+        host = resolve(_HOST_TASK_PANEL, **pin, **inherited)
+        wrapper, probe = resolve(_WRAPPER_PANEL, str(tmp_path / f"drive-local-{name}"), **inherited)
+        assert wrapper == host, name
+        if name != "remote-credential":  # the document names the lane flag; a stale one does not move it
+            assert host == local_panel and probe == [], name  # a local row needs no OpenRouter key
 
 
 def test_run_identities_never_reach_tests_or_preflight():

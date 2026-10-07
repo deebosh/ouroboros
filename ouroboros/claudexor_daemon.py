@@ -21,9 +21,9 @@ Lifecycle belongs to the installation, not the process that first needed it:
   managers/processes; caller wait expiry reports ``daemon_starting`` and never
   kills it. Engine writer election owns the concurrent first-launch race;
 * ATTACH-ONLY (``review_run_isolation.attach_home``, the isolated contributor
-  review): another data plane's running engine, by marker, loopback descriptor
-  and handshake — never started, prepared, rotated, claimed or stopped; a
-  missing or dead one is a typed refusal. Own runs stay cancellable;
+  review, which starts no engine unattached): another data plane's running engine,
+  by marker, loopback descriptor and handshake — never started, prepared, rotated,
+  claimed or stopped; a missing or dead one is a typed refusal. Own runs stay cancellable;
 * STOP-ONLY-WHAT-IS-PROVABLY-OURS: ``stop`` (Panic) terminates the child THIS
   manager spawned and ledger roots confirmed by our marker and measured
   custody fingerprint, with an authenticated endpoint, a typed transport
@@ -67,7 +67,7 @@ from ouroboros.claudexor_startup_failure import (
     start_failure_label,
     start_failure_row,
 )
-from ouroboros.review_run_isolation import attach_home
+from ouroboros.review_run_isolation import attach_home, run_cap_from_env
 from ouroboros.config import (
     CLAUDEXOR_STARTUP_WAIT_SEC as _SPAWN_WAIT_SEC,
     CLAUDEXOR_STARTUP_POLL_SEC as _SPAWN_POLL_SEC,
@@ -642,8 +642,8 @@ class OwnedClaudexorDaemon:
         from ouroboros.claudexor_runtime import ClaudexorRuntimeError, get_runtime_manager
         from ouroboros.gateways.claudexor import SHORT_POLL_TIMEOUT_SEC, ClaudexorUnavailable
 
-        if attach_home() is not None:
-            raise ClaudexorUnavailable("attach_only_engine", "an attach-only process never starts or prepares an engine")
+        if attach_home() is not None or run_cap_from_env() is not None:  # attached, or an isolated review
+            raise ClaudexorUnavailable("attach_only_engine", "an isolated review never starts or prepares an engine")
         with self._lock:
             generation = self._generation
             self._check_start_generation(generation)

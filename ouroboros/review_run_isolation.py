@@ -82,6 +82,21 @@ def attach_home() -> Optional[pathlib.Path]:
     return pathlib.Path(raw) if raw else None
 
 
+def _within(path: pathlib.Path, root: pathlib.Path) -> bool:
+    """``path`` is ``root`` or below it under any spelling ``resolve`` keeps: case-folded (a
+    case-insensitive volume), or the same directory reached another way (a firmlink)."""
+    folded = [part.casefold() for part in root.parts]
+    for level in (path, *path.parents):
+        if [part.casefold() for part in level.parts] == folded:
+            return True
+        try:
+            if os.path.samefile(level, root):
+                return True
+        except OSError:  # not there (yet): its existing ancestors decide
+            continue
+    return False
+
+
 def isolate_review_data(*, host_data: pathlib.Path, drive_root: str, run_cap: str,
                         attach_host_engine: bool) -> Dict[str, Any]:
     """Make the drive this process's data root; return the facts (and record them once).
@@ -97,7 +112,7 @@ def isolate_review_data(*, host_data: pathlib.Path, drive_root: str, run_cap: st
     drive = pathlib.Path(
         drive_root or tempfile.mkdtemp(prefix="ouroboros-external-review-")
     ).expanduser().resolve(strict=False)
-    if drive == host or host in drive.parents or drive in host.parents:
+    if _within(drive, host) or _within(host, drive):
         raise RuntimeError(f"the review drive {drive} overlaps the host data root {host}")
     drive.mkdir(parents=True, exist_ok=True)
     record_path = drive / ISOLATION_RECORD
