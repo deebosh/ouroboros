@@ -59,7 +59,7 @@ from ouroboros.launcher_onboarding import (
     prepare_first_run_settings as _prepare_first_run_settings,
     present_first_run_onboarding as _present_first_run_onboarding,
 )
-from ouroboros.launcher_background import (Background, activate_running_instance, background_env,
+from ouroboros.launcher_background import (Background, DesktopApi, activate_running_instance, background_env,
                                            request_tray_cleanup, stop_tray_before_exit)
 from ouroboros.launcher_server_reaper import (
     reap_same_install_strays as _reap_same_install_strays_impl,
@@ -1451,7 +1451,8 @@ def main(argv=()):
         with urllib.request.urlopen(full_url, timeout=60) as resp, target.open("wb") as fh:  # noqa: S310 - localhost validated above
             shutil.copyfileobj(resp, fh)
 
-    class MainApi:
+    class MainApi(DesktopApi):  # alerts, shell facts and system notifications: launcher_background.DesktopApi
+        _background = background
         @staticmethod
         def _native_confirm(title: str, message: str) -> bool:
             return bool(_webview_window and _webview_window.create_confirmation_dialog(title, message))
@@ -1514,9 +1515,6 @@ def main(argv=()):
 
         def open_external_url(self, url: str) -> dict:
             return _open_external_url(url)
-        def request_attention(self, sound: bool = True, title: str = "", body: str = "", cue_when_visible: bool = True) -> dict:
-            return background.attention(bool(sound), str(title or ""), str(body or ""), bool(cue_when_visible))
-        notify_owner = request_attention  # newer pages send the alert text; older launchers lack this name
 
         def save_bytes_to_downloads(self, filename: str, b64: str) -> dict:
             try:
