@@ -306,6 +306,7 @@ _GENERIC_VCS_TARGET_TOOLS = frozenset({
     "vcs_pull_ff",
     "vcs_restore",
     "vcs_revert",
+    "review_change",
 })
 
 
