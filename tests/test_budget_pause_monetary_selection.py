@@ -19,11 +19,16 @@ Generations, characterized here because they decide what a selection is worth:
 - a NEW root pause after the root's own Resume lifted F raises a new latch:
   a pending child grant is revoked and a running child's older selection no
   longer admits a send.
+
+A selected child that cold-sleeps beneath F and is Resumed by the owner starts
+and keeps its selection when consumption (event, repair tick or a warm park)
+retires only the sleep timing; its own readiness never starts or spends under F.
 """
 
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -357,6 +362,237 @@ def test_a_selected_child_that_pauses_again_needs_a_new_resume(tmp_path, monkeyp
     assert evidence["refused"] == FENCED, evidence
     assert evidence["regrant"] == 1 and evidence["pause_generation"] == 2, evidence
     assert isinstance(evidence["readmitted"], str), evidence
+
+
+# --- a cold sleep beneath the latch: consumption retires the sleep clock, not the selection --
+
+def _cold_sleep_park(monkeypatch, limit_ctx, **selected):
+    """The member's own cold sleep at its round boundary (``enter_cold_sleep``, scope task)."""
+    from ouroboros import budget_pause, model_sleep
+
+    ctx = limit_ctx.tools._ctx
+    monkeypatch.setattr(model_sleep, "cold_blockers", lambda _ctx, **_kw: [])
+    ctx._model_sleep = {"sleep_id": "s1", "mode": "cold", **model_sleep.selectors(ctx, **selected)}
+    with pytest.raises(budget_pause.BudgetPauseRequested) as raised:
+        budget_pause.enter_cold_sleep(limit_ctx)
+    budget_pause.end_dispatch_fence(str(ctx.task_id))
+    return raised.value.pause
+
+
+def _sleeper_under_latch(tmp_path, monkeypatch, **selected):
+    """The owner-selected child runs under F, then cold-sleeps beneath the same latch."""
+    queue, workers, sup, (child_ctx, child_limit), fence_f = _child_under_latch(tmp_path, monkeypatch, sibling=True)
+    assert queue.resume_budget_paused_task(CHILD)["ok"]
+    sent = _workers(workers)
+    _run_child(monkeypatch, queue, workers, sent, child_ctx, child_limit)
+    _install(sup, CHILD, _cold_sleep_park(monkeypatch, child_limit, **selected))
+    assert _pending(workers, CHILD)["_budget_pause"]["reason"] == "sleep"
+    assert queue.BUDGET_ROOT_FENCES[ROOT]["fence_id"] == fence_f
+    return queue, workers, sup, (child_ctx, child_limit), fence_f, sent
+
+
+def _wake_and_consume(monkeypatch, workers, sent, child_ctx, child_limit):
+    """Assign the granted sleeper and let its worker consume; return the consumption event."""
+    workers.assign_tasks()
+    assert [task["id"] for task in sent] == [CHILD]
+    events = []
+    child_ctx.event_queue = SimpleNamespace(put=events.append)
+    _consume(monkeypatch, child_ctx, child_limit, sent[0]["_budget_pause_resume"])
+    sent.clear()
+    return next(event for event in events if event.get("phase") == "consumed")
+
+
+@pytest.mark.parametrize("door", ["consumed_event", "repair_tick"])
+def test_an_owner_resumed_cold_sleeper_keeps_its_selection_once_consumption_retires_the_sleep_clock(
+        tmp_path, monkeypatch, door):
+    """The owner's Resume of the sleeping child is a selection against F. Consumption — its
+    event, or the assignment tick repairing a lost one — folds the sleep interval and spends
+    only the sleep timing: after the snapshot publishes, the child's later sends still reserve
+    under F, the rest of the tree stays refused, and stale or repeated notifications fold nothing."""
+    from ouroboros import budget_pause
+    from supervisor.events_budget import _handle_budget_pause
+    from supervisor.worker_assignment import _tick_parked_work
+
+    queue, workers, sup, (child_ctx, child_limit), fence_f, sent = _sleeper_under_latch(
+        tmp_path, monkeypatch, wake_after_sec=3600)
+    granted = queue.resume_budget_paused_task(CHILD)
+    assert granted["ok"] is True, granted
+    handoff = _pending(workers, CHILD)["_budget_pause_resume"]
+    assert (handoff["authority"], handoff["selected_by"], handoff["root_fence_id"]) == (
+        "explicit_resume", "owner", fence_f) and handoff["sleep_exclusion_since"], handoff
+    consumed = _wake_and_consume(monkeypatch, workers, sent, child_ctx, child_limit)
+    meta = workers.RUNNING[CHILD]
+    evidence = {"fence_f": fence_f, "before_consumption": _reserve(tmp_path, CHILD)}
+    for wrong in ({"pause_id": "other"}, {"grant_id": "other"}, {"task_attempt": 99}):
+        _handle_budget_pause({**consumed, **wrong}, sup)
+    evidence["stale_events_kept_clock"] = bool(
+        meta.get("sleep_parked_at") and meta["task"]["_budget_pause_resume"].get("sleep_exclusion_since"))
+    if door == "consumed_event":
+        _handle_budget_pause(consumed, sup)
+    else:
+        _tick_parked_work(queue)
+    folded = meta.get("budget_paused_sec")
+    _handle_budget_pause(consumed, sup)
+    _tick_parked_work(queue)
+    assert queue.persist_queue_snapshot(reason="test_after_sleep_consumption")
+    carrier = _snapshot_task(tmp_path, "running", CHILD).get("_budget_pause_resume") or {}
+    row = budget_pause.budget_pause_row(tmp_path, CHILD)
+    evidence.update(
+        state=row["state"], folded=[folded, meta.get("budget_paused_sec"), row["paused_duration_sec"]],
+        sleep_parked_at=meta.get("sleep_parked_at"),
+        running_projection={key: carrier.get(key) for key in (
+            "root_fence_id", "selected_by", "authority", "grant_id", "sleep_exclusion_since")},
+        first=_reserve(tmp_path, CHILD), later=_reserve(tmp_path, CHILD),
+        sibling=_reserve(tmp_path, SIBLING), root=_reserve(tmp_path, ROOT),
+        latch=queue.BUDGET_ROOT_FENCES.get(ROOT))
+    workers.assign_tasks()
+    evidence["dispatched"] = [task["id"] for task in sent]
+    _record(f"owner_resumed_cold_sleeper[{door}]", evidence)
+    assert isinstance(evidence["before_consumption"], str), evidence
+    assert evidence["stale_events_kept_clock"] is True, evidence
+    assert evidence["state"] == budget_pause.STATE_RESUMED and evidence["sleep_parked_at"] is None, evidence
+    assert evidence["folded"][0] == evidence["folded"][1] == pytest.approx(evidence["folded"][2]), evidence
+    assert evidence["running_projection"] == {
+        "root_fence_id": fence_f, "selected_by": "owner", "authority": "explicit_resume",
+        "grant_id": granted["grant_id"], "sleep_exclusion_since": None}, evidence
+    for key in ("first", "later"):
+        assert isinstance(evidence[key], str) and evidence[key], evidence
+    assert evidence["sibling"] == evidence["root"] == FENCED, evidence
+    assert evidence["latch"]["fence_id"] == fence_f and evidence["dispatched"] == [], evidence
+
+
+def test_a_warm_park_before_the_cold_notification_keeps_the_selection(tmp_path, monkeypatch):
+    """The resumed sleeper warm-parks before its cold consumption event arrives: the park
+    folds the cold interval first, retiring only that pending timing, then owns its own
+    interval; the published snapshot admits the child's sends under F, parked and woken."""
+    from supervisor.events_budget import _handle_budget_pause
+    from supervisor.worker_assignment import _tick_parked_work
+    from supervisor.worker_owner_wait import _grant_resume, handle_owner_wait
+
+    queue, workers, sup, (child_ctx, child_limit), fence_f, sent = _sleeper_under_latch(
+        tmp_path, monkeypatch, wake_after_sec=3600)
+    assert queue.resume_budget_paused_task(CHILD)["ok"]
+    consumed = _wake_and_consume(monkeypatch, workers, sent, child_ctx, child_limit)
+    meta = workers.RUNNING[CHILD]
+    worker = workers.WORKERS[meta["worker_id"]]
+    worker.proc = SimpleNamespace(pid=77, is_alive=lambda: True)
+    cold_started = meta["sleep_parked_at"]
+    checkpoint = {"wait_id": "warm-after-cold", "task_attempt": meta["attempt"],
+                  "source_ref": {"x": 1}, "reason": "sleep", "sleep": {"senders": [ROOT]}}
+    handle_owner_wait({"task_id": CHILD, "wait_id": checkpoint["wait_id"], "task_attempt": meta["attempt"],
+                       "worker_id": worker.wid, "pid": 77, "phase": "park", "checkpoint": checkpoint}, workers)
+    warm = {"command": [(c.get("phase"), c.get("reason")) for c in sent if c.get("type") == "owner_wait"],
+            "state": (meta.get("owner_wait") or {}).get("state"), "parked_at": meta.get("sleep_parked_at"),
+            "cold_folded": meta.get("budget_paused_sec")}
+    assert warm["command"] == [("parked", None)] and warm["state"] == "waiting", warm
+    _tick_parked_work(queue)
+    _handle_budget_pause(consumed, sup)
+    assert queue.persist_queue_snapshot(reason="test_warm_parked")
+    carrier = _snapshot_task(tmp_path, "running", CHILD).get("_budget_pause_resume") or {}
+    evidence = {"fence_f": fence_f, "warm": warm, "cold_started": cold_started,
+                "after_stale_repairs": [meta.get("sleep_parked_at"), meta.get("budget_paused_sec")],
+                "carrier": {key: carrier.get(key) for key in ("authority", "root_fence_id", "sleep_exclusion_since")},
+                "parked": _reserve(tmp_path, CHILD)}
+    assert _grant_resume(CHILD, meta, worker)
+    assert queue.persist_queue_snapshot(reason="test_warm_resumed")
+    evidence.update(woken=_reserve(tmp_path, CHILD), sleep_parked_at=meta.get("sleep_parked_at"),
+                    sibling=_reserve(tmp_path, SIBLING))
+    _record("cold_then_warm_under_latch", evidence)
+    assert warm["parked_at"] and warm["parked_at"] != cold_started, evidence
+    assert evidence["after_stale_repairs"] == [warm["parked_at"], warm["cold_folded"]], evidence
+    assert evidence["carrier"] == {"authority": "explicit_resume", "root_fence_id": fence_f,
+                                   "sleep_exclusion_since": None}, evidence
+    assert isinstance(evidence["parked"], str) and isinstance(evidence["woken"], str), evidence
+    assert evidence["sleep_parked_at"] is None and evidence["sibling"] == FENCED, evidence
+
+
+def test_a_readiness_wake_beneath_the_latch_neither_starts_nor_spends(tmp_path, monkeypatch):
+    """No owner Resume: the sleeper's own readiness is granted under F, but that grant is
+    never a selection — the launch is refused, nothing is consumed and no send reserves."""
+    from ouroboros import budget_pause
+    from supervisor.sleep_wake import wake_ready_sleepers
+    from tests.test_model_sleep import _mail
+
+    queue, workers, _sup_ctx, _child, fence_f, sent = _sleeper_under_latch(tmp_path, monkeypatch, senders=[SIBLING])
+    _mail(tmp_path, CHILD, "done", sender=SIBLING)
+    woke = wake_ready_sleepers(queue)
+    assert [outcome.get("ok") for outcome in woke] == [True], woke
+    handoff = _pending(workers, CHILD)["_budget_pause_resume"]
+    assert (handoff["authority"], handoff["root_fence_id"]) == ("sleep_readiness", fence_f), handoff
+    workers.assign_tasks()
+    row = budget_pause.budget_pause_row(tmp_path, CHILD)
+    evidence = {"fence_f": fence_f, "dispatched": [task["id"] for task in sent], "reserve": _reserve(tmp_path, CHILD),
+                "grant": {key: row["grant"].get(key) for key in ("authority", "consumed_at")}, "state": row["state"],
+                "latch": queue.BUDGET_ROOT_FENCES.get(ROOT)}
+    _record("readiness_wake_under_latch", evidence)
+    assert evidence["dispatched"] == [] and evidence["reserve"] == FENCED, evidence
+    assert evidence["grant"] == {"authority": "sleep_readiness", "consumed_at": None}, evidence
+    assert evidence["state"] == budget_pause.STATE_RESUME_GRANTED and evidence["latch"]["fence_id"] == fence_f, evidence
+
+
+@pytest.mark.parametrize("wake", ["readiness", "owner"])
+def test_a_latch_raised_after_the_wake_refuses_the_consumed_sleeper(tmp_path, monkeypatch, wake):
+    """Woken and started before any latch, the sleeper consumes after the root's own pause
+    raised F: a readiness carrier leaves, an owner's (fenceless) selection stays but names
+    no fence, so neither admits a send under F."""
+    from supervisor.events_budget import _handle_budget_pause
+    from supervisor.sleep_wake import wake_ready_sleepers
+    from tests.test_model_sleep import _mail
+
+    queue, _state, workers = _tree(tmp_path, monkeypatch)
+    sup = _sup(tmp_path, queue, workers)
+    child_ctx, child_limit = _member_ctx(tmp_path)
+    _fixed_price(monkeypatch)
+    _install(sup, CHILD, _cold_sleep_park(monkeypatch, child_limit, senders=[ROOT]))
+    if wake == "readiness":
+        _mail(tmp_path, CHILD, "done", sender=ROOT)
+        assert [outcome.get("ok") for outcome in wake_ready_sleepers(queue)] == [True]
+    else:
+        assert queue.resume_budget_paused_task(CHILD)["ok"]
+    sent = _workers(workers)
+    workers.assign_tasks()
+    assert [task["id"] for task in sent] == [CHILD]
+    evidence = {"before_latch": _reserve(tmp_path, CHILD)}
+    _root_ctx, root_limit = _member_ctx(tmp_path, ROOT, ROOT)
+    _install(sup, ROOT, _planning_park(root_limit))
+    events = []
+    child_ctx.event_queue = SimpleNamespace(put=events.append)
+    _consume(monkeypatch, child_ctx, child_limit, sent[0]["_budget_pause_resume"])
+    _handle_budget_pause(next(event for event in events if event.get("phase") == "consumed"), sup)
+    assert queue.persist_queue_snapshot(reason="test_after_sleep_consumption")
+    carrier = _snapshot_task(tmp_path, "running", CHILD).get("_budget_pause_resume")
+    evidence.update(latch=queue.BUDGET_ROOT_FENCES.get(ROOT), after_latch=_reserve(tmp_path, CHILD),
+                    carrier={key: carrier.get(key) for key in ("authority", "root_fence_id")} if carrier else None,
+                    sleep_parked_at=workers.RUNNING[CHILD].get("sleep_parked_at"))
+    _record(f"latch_after_wake[{wake}]", evidence)
+    assert isinstance(evidence["before_latch"], str) and evidence["latch"]["fence_id"], evidence
+    assert evidence["after_latch"] == FENCED and evidence["sleep_parked_at"] is None, evidence
+    assert evidence["carrier"] == (None if wake == "readiness"
+                                   else {"authority": "explicit_resume", "root_fence_id": ""}), evidence
+
+
+def test_a_newer_root_latch_refuses_the_consumed_sleepers_older_selection(tmp_path, monkeypatch):
+    """The selection kept past consumption names F only: once the root's own Resume lifts F
+    and the root pauses again (latch G), the resumed sleeper's next send is refused."""
+    from supervisor.events_budget import _handle_budget_pause
+
+    queue, workers, sup, (child_ctx, child_limit), fence_f, sent = _sleeper_under_latch(
+        tmp_path, monkeypatch, wake_after_sec=3600)
+    assert queue.resume_budget_paused_task(CHILD)["ok"]
+    _handle_budget_pause(_wake_and_consume(monkeypatch, workers, sent, child_ctx, child_limit), sup)
+    evidence = {"fence_f": fence_f, "consumed_under_f": _reserve(tmp_path, CHILD)}
+    root_ctx, root_limit = _member_ctx(tmp_path, ROOT, ROOT)
+    _install(sup, ROOT, _refused_dispatch_park(tmp_path, root_limit, ROOT))
+    assert queue.resume_budget_paused_task(ROOT)["ok"]
+    workers.assign_tasks()
+    assert [task["id"] for task in sent] == [ROOT]
+    _consume(monkeypatch, root_ctx, root_limit, sent[0]["_budget_pause_resume"])
+    sent.clear()
+    _install(sup, ROOT, _planning_park(root_limit))
+    evidence.update(latch_g=dict(queue.BUDGET_ROOT_FENCES[ROOT]), after_g=_reserve(tmp_path, CHILD))
+    _record("consumed_sleeper_newer_latch", evidence)
+    assert isinstance(evidence["consumed_under_f"], str), evidence
+    assert evidence["latch_g"]["fence_id"] != fence_f and evidence["after_g"] == FENCED, evidence
 
 
 def _handoff(**overrides):

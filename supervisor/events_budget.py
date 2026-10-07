@@ -256,7 +256,14 @@ def _handle_budget_pause(evt: Dict[str, Any], ctx: Any) -> None:
                 return
             meta["budget_paused_sec"] = float(row["paused_duration_sec"])
             meta.pop("sleep_parked_at", None)
-            task.pop("_budget_pause_resume", None)
+            # Consumption spends the sleep clock, not the selection: an explicit
+            # Resume keeps its fence-bound handoff like any consumed grant
+            # (``budget_fence_selected``); a readiness wake selected nothing.
+            if resume.get("authority") == "explicit_resume":
+                task["_budget_pause_resume"] = {key: value for key, value in resume.items()
+                                                if key != "sleep_exclusion_since"}
+            else:
+                task.pop("_budget_pause_resume", None)
         return
     task_id = str(evt.get("task_id") or "")
     pause = evt.get("resource_limit") if isinstance(evt.get("resource_limit"), dict) else {}
