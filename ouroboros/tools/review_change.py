@@ -159,9 +159,21 @@ def _git_line(cwd: pathlib.Path, *args: str) -> str:
 
 
 def _system_repo(ctx: ToolContext) -> pathlib.Path:
+    """The context's body root: the system repository, or the bound body candidate
+    (``body_candidate.bind``) that this task authors — what ``root=system_repo`` names."""
     from ouroboros.tools.tool_resolution import system_repo_dir_for
 
     return pathlib.Path(system_repo_dir_for(ctx)).resolve()
+
+
+def _governance_repo(ctx: ToolContext) -> pathlib.Path:
+    """The INSTALLED body whose rules execute — governance for every subject and the
+    body identity the predicate compares against. For a bound body candidate this is
+    the SERVING checkout, never the candidate (``review_substrate.review_repo_dirs_for``'s
+    rule: the candidate is the subject; the body that is running is the authority)."""
+    from ouroboros.body_candidate import serving_repo_dir_for
+
+    return pathlib.Path(serving_repo_dir_for(ctx)).resolve()
 
 
 def _admitted_workspace_root(ctx: ToolContext, value: str) -> pathlib.Path:
@@ -753,13 +765,13 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
     request = parse_request(args)
     root_kind, root = resolve_review_root(ctx, binding, request)
     _verify_revisions(root, request)
-    system = _system_repo(ctx)
-    fact = body_fact(root, system_repo=system, data_dir=ledger_root(ctx), treat_as_body=request.treat_as_body)
+    governance = _governance_repo(ctx)
+    fact = body_fact(root, system_repo=governance, data_dir=ledger_root(ctx), treat_as_body=request.treat_as_body)
     layer = layer_for(fact)
     panel = compose_panel(request, adds_only=layer == "body"
                           and not runtime_mode_at_least(get_runtime_mode(), "cyber_pro"))
     spec = ReviewSubjectSpec(root_kind=root_kind, root=str(root), kind=request.subject, base=request.base,
-                             head=request.head, governance_root=str(system), surface=SURFACE,
+                             head=request.head, governance_root=str(governance), surface=SURFACE,
                              body_fact=str(fact.body), body_how=str(fact.how), layer=layer)
     # Open custody after the wave keeps the isolated checkout (review_subject.isolated_checkout).
     retention: Dict[str, Any] = {}

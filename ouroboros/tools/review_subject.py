@@ -794,9 +794,11 @@ def _normalized_spec(ctx: Any, spec: ReviewSubjectSpec) -> ReviewSubjectSpec:
         raise ValueError("a review subject names its root")
     governance = str(spec.governance_root or "").strip()
     if not governance:
-        from ouroboros.tools.tool_resolution import system_repo_dir_for
+        # The installed body that is RUNNING (``review_substrate.review_repo_dirs_for``'s
+        # rule): a bound body candidate is a subject, never its own authority.
+        from ouroboros.body_candidate import serving_repo_dir_for
 
-        governance = str(system_repo_dir_for(ctx))
+        governance = str(serving_repo_dir_for(ctx))
     # The governance root is resolved like the scope path's today; the subject
     # root stays as the caller spelled it (the gate's ``ctx.repo_dir``).
     return dataclasses.replace(spec, root=str(spec.root),

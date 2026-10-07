@@ -19,6 +19,7 @@ import pytest
 import ouroboros.review_substrate as substrate
 from ouroboros import review_ledger
 from ouroboros.tools import git as git_mod
+from ouroboros.tools import review as review_mod
 from ouroboros.tools import review_change
 from ouroboros.tools.git_review_cycle import _run_non_committing_review_cycle
 from ouroboros.tools.registry import ToolContext
@@ -125,3 +126,85 @@ def test_review_change_on_the_system_index_is_the_commit_gates_brief(staged_body
         aligned = operation_text.replace(label, COMMIT_MESSAGE)
         assert hashlib.sha256(aligned.encode()).hexdigest() == hashlib.sha256(gate_text.encode()).hexdigest(), slot_id
         assert "## Informational context — commit message" in gate_text, slot_id
+
+
+SERVING_RULE = "SERVING-CONSTITUTION-MARKER: the rule that is running."
+CANDIDATE_RULE = "CANDIDATE-CONSTITUTION-MARKER: the candidate rewrote its own rule."
+
+
+def test_a_bound_body_candidate_is_the_subject_and_the_serving_body_is_the_governance(tmp_path, monkeypatch):
+    """A task authoring its own body writes a bound candidate worktree
+    (``body_candidate.bind`` points ``repo_dir``/``system_repo_dir`` at it). The
+    candidate is the SUBJECT of ``review_change``; the rules every seat reads —
+    constitution, handbook, navigation — come from the SERVING checkout
+    (``review_substrate.review_repo_dirs_for``'s rule), never from the candidate's
+    own copy, so a candidate cannot be judged by the rule it rewrote."""
+    from ouroboros import body_candidate
+
+    fixture = shared.init_installed_body(tmp_path)
+    serving = Path(fixture["repo"])
+    (serving / "BIBLE.md").write_text(f"# Constitution\n\n{SERVING_RULE}\n", encoding="utf-8")
+    shared.git(serving, "add", "BIBLE.md")
+    shared.git(serving, "commit", "-q", "-m", "constitution")
+    head = shared.git(serving, "rev-parse", "HEAD")
+    candidate = (tmp_path / "candidates" / "c1").resolve()
+    candidate.parent.mkdir()
+    shared.git(serving, "worktree", "add", "-q", "-b", "candidate/c1", str(candidate), head)
+    (candidate / "BIBLE.md").write_text(f"# Constitution\n\n{CANDIDATE_RULE}\n", encoding="utf-8")
+    shared.git(candidate, "add", "BIBLE.md")
+    shared.git(candidate, "commit", "-q", "-m", "the candidate rewrites its rule")
+    (candidate / "ouroboros" / "config.py").write_text("FIXTURE = 'installed'\nCANDIDATE_CHANGE = 'reviewed on the candidate'\n",
+                                                        encoding="utf-8")
+    shared.git(candidate, "add", "ouroboros/config.py")
+
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps(runner._slot_plan_payload(shared.GOLDEN_CONFIG)))
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
+    monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "1")
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "pro")
+    monkeypatch.setattr(git_mod, "_run_review_preflight_tests", shared.passing_test_runner)
+    briefs: list[dict] = []
+    monkeypatch.setattr(substrate, "run_review_request", shared.golden_substrate(briefs))
+    tiered: list[tuple[str, str]] = []  # (delivery, governance root) the triad tiered its rules from
+    real_tiering = review_mod._triad_governance_context
+
+    def observed_tiering(ctx, touched_paths, checklist_section, api_models, api_slots, **kwargs):
+        tiered.append((str(kwargs.get("delivery", "packet")), str(kwargs.get("governance_root") or "")))
+        return real_tiering(ctx, touched_paths, checklist_section, api_models, api_slots, **kwargs)
+
+    monkeypatch.setattr(review_mod, "_triad_governance_context", observed_tiering)
+    ctx = ToolContext(repo_dir=serving, system_repo_dir=serving, drive_root=tmp_path / "drive", task_id="task-candidate")
+    body_candidate.bind(ctx, {"candidate_id": "c1", "path": str(candidate), "branch": "candidate/c1",
+                              "base_sha": head, "repo_dir": str(serving)})
+    assert body_candidate.is_bound(ctx) and Path(ctx.repo_dir) == candidate
+
+    result = run_review_change(ctx, root="system_repo", surface="change", goal=GOAL, scope=SCOPE, subject="index")
+
+    assert result["aggregate"] == "PASS" and result["state"] == "settled", result
+    record = review_ledger.load_record(ctx.drive_root, result["record_id"])
+    # The candidate is the subject (its staged index, read as the body's own index) ...
+    assert (result["subject"]["root_kind"], result["subject"]["root"]) == ("system_repo", str(candidate))
+    assert result["subject"]["tree_sha"] == shared.git(candidate, "write-tree")
+    assert result["checklist"] == {"layer": "body", "body_fact": "true", "how": "git_common_dir", "treat_as_body": False}
+    # ... and the serving body is the governance, on the record and in every delivery.
+    assert result["subject"]["governance_root"] == record["subject"]["governance_root"] == str(serving.resolve())
+    assert sorted(brief["slot_id"] for brief in briefs) == ["s1", "t1", "t2"]
+    # The packet seat's constitutional head is the RUNNING body's by construction; the
+    # tiers it selects from (and the retrieving seat's inlined BIBLE) are the serving copy.
+    assert sorted(tiered) == [("packet", str(serving.resolve())), ("retrieving", str(serving.resolve()))]
+    for brief in briefs:
+        text = _brief_text(brief)
+        assert CANDIDATE_RULE not in text, brief["slot_id"]
+        if brief["slot_id"] == "t2":  # the retrieving seat reads the candidate's tree under the serving rules
+            assert SERVING_RULE in text and brief["session_root"] == str(candidate)
+        else:
+            assert "+CANDIDATE_CHANGE" in text, brief["slot_id"]
+        if brief["slot_id"] == "s1":
+            assert SERVING_RULE in text
+    assert shared.git(candidate, "write-tree") == result["subject"]["tree_sha"]  # read only
+    assert shared.git(serving, "status", "--porcelain") == ""
+
+    # Unbound, the governance and the subject are the one system repository, as before.
+    plain = ToolContext(repo_dir=serving, system_repo_dir=serving, drive_root=tmp_path / "plain-drive", task_id="task-plain")
+    spec = review_change.ReviewSubjectSpec(root_kind="system_repo", root=str(serving), kind="index")
+    frozen = review_change.freeze_subject(plain, spec)
+    assert frozen.spec.governance_root == str(serving.resolve()) and review_change._governance_repo(plain) == serving.resolve()
