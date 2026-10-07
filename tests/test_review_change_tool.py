@@ -27,7 +27,7 @@ from ouroboros import review_ledger as rl
 from ouroboros import reviewer_slot_config as slots
 from ouroboros.tools import commit_gate
 from ouroboros.tools import review_change as rc
-from ouroboros.tools.review_subject import ReviewSubjectSpec, review_retry_key
+from ouroboros.tools.review_subject import ReviewSubjectSpec, review_retry_key, review_round_sha
 
 
 def _git(repo: pathlib.Path, *args: str) -> str:
@@ -490,12 +490,20 @@ def test_the_same_identity_returns_the_settled_record_free(h: Harness) -> None:
     rebutted = h.run(subject="index", review_rebuttal="The finding is stale: line 3 already bounds it.")
     assert len(h.wave.calls) == 3 and rebutted["reused"] is False
     assert h.wave.calls[2].rebuttal.startswith("The finding is stale")
-    assert h.wave.calls[2].retry_key == h.wave.calls[0].retry_key
+    # A new round is a new PHYSICAL operation too (identity c carries the round): the
+    # custody layer must not hand the first round's answers back to the rebuttal.
+    assert h.wave.calls[2].retry_key != h.wave.calls[0].retry_key
     same_round = h.run(subject="index", review_rebuttal="The finding is stale: line 3 already bounds it.")
     assert len(h.wave.calls) == 3 and same_round["reused"] is True and same_round["record_id"] == rebutted["record_id"]
     h.run(subject="index", author_questions=["Is the cache bounded?"])
-    assert len(h.wave.calls) == 4
-    assert [attempt.attempt for attempt in h.attempts(h.project)] == [1, 2, 3, 4]
+    assert len(h.wave.calls) == 4 and h.wave.calls[3].retry_key not in {c.retry_key for c in h.wave.calls[:3]}
+    # The semantic brief is part of the round: another goal or scope is another wave;
+    # the unchanged request (same goal) is the settled record, free.
+    h.run(subject="index", goal="Unbound the cache")
+    h.run(subject="index", goal="Bound the cache", scope="only the cache module")
+    assert len(h.wave.calls) == 6 and len({c.retry_key for c in h.wave.calls}) == 6
+    assert h.run(subject="index", goal="Bound the cache")["reused"] is True and len(h.wave.calls) == 6
+    assert [attempt.attempt for attempt in h.attempts(h.project)] == [1, 2, 3, 4, 5, 6]
 
 
 def test_an_undecided_record_is_not_reused(h: Harness) -> None:
@@ -518,7 +526,9 @@ def test_the_wave_runs_under_its_own_identities_and_restores_the_task(h: Harness
     [call] = h.wave.calls
     frozen = call.subject
     assert call.tool == "review_change" and call.record_id == result["record_id"]
-    assert call.retry_key == review_retry_key(frozen) and call.retry_key.endswith(f":index:{frozen.diff_sha}:change")
+    round_sha = review_round_sha(frozen)  # no rebuttal, no questions, empty brief: the bare round
+    assert call.retry_key == review_retry_key(frozen, round_sha=round_sha) != review_retry_key(frozen)
+    assert call.retry_key.startswith("review:") and f":index:{frozen.diff_sha}:change:" in call.retry_key
     record = rl.load_record(h.drive, result["record_id"])
     assert record["fingerprints"]["retry_key"] == call.retry_key and record["fingerprints"]["reuse_key"]
     assert (h.ctx._current_review_tool_name, h.ctx._current_review_retry_key, h.ctx._review_history) == (

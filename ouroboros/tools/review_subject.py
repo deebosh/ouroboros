@@ -942,18 +942,32 @@ def assigned_seats(triad_seat_ids: Any, scope_seat_ids: Any) -> Tuple[Tuple[str,
     return tuple([(str(s), "change") for s in triad_seat_ids] + [(str(s), "coupling") for s in scope_seat_ids])
 
 
+def review_round_sha(frozen: FrozenSubject, *, rebuttal_sha: str = "", questions: Sequence[str] = (),
+                     goal: str = "", scope: str = "") -> str:
+    """Identity (b), the LOGICAL round of one subject: what the author asked of the
+    reviewers this time — the rebuttal (its sha), the author questions, the semantic
+    brief (goal, scope) — and the resolved revisions the record names (parent and
+    head: two commits with one tree are two rounds). It enters identity (a), so a
+    changed brief never reuses an old answer, and identity (c), so a new round is a
+    new physical operation while a retry of the SAME round rejoins the old one."""
+    from ouroboros.review_ledger import round_sha_of
+
+    return round_sha_of(rebuttal_sha=rebuttal_sha, questions=questions, goal=goal, scope=scope,
+                        base=frozen.parent_sha, head=frozen.spec.head)
+
+
 def review_reuse_key(frozen: FrozenSubject, *, rules_sha: str, layer: str, assigned: Any, enforcement: str,
-                     contract_fp: str, rebuttal_sha: str = "") -> str:
+                     contract_fp: str, round_sha: str = "") -> str:
     """Identity (a): the settled-record reuse key of one subject under one set of
-    rules, one composition and one contract. A new ``review_rebuttal`` (its sha)
-    is the logical round — identity (b) — and makes a NEW key: one more paid
-    review of the same subject; repeating the same rebuttal reuses that round."""
+    rules, one composition and one contract, in one logical round (``round_sha``,
+    identity b): a new rebuttal, question, goal, scope or revision pair makes a NEW
+    key — one more paid review of the same bytes; the identical request reuses."""
     from ouroboros.review_ledger import reuse_key_digest
 
     return reuse_key_digest(surface=frozen.spec.surface, kind=frozen.spec.kind, root=frozen.spec.root,
                             diff_sha=frozen.diff_sha, tree_sha=frozen.tree_sha, rules_sha=rules_sha, layer=layer,
                             assigned=assigned, enforcement=enforcement, contract_fp=contract_fp,
-                            rebuttal_sha=rebuttal_sha)
+                            round_sha=round_sha)
 
 
 def reuse_or_none(drive_root: Any, key: str, *, questions: Sequence[str] = ()) -> Optional[Dict[str, Any]]:
@@ -972,10 +986,13 @@ def reuse_or_none(drive_root: Any, key: str, *, questions: Sequence[str] = ()) -
     return {"reused": True, "record_id": str(record.get("record_id") or ""), "record": record, "usd": 0.0}
 
 
-def review_retry_key(frozen: FrozenSubject) -> str:
-    """Identity (c): the custody retry key of one physical review of one subject,
-    stable across a crash or timeout so a rejoin never pays twice."""
+def review_retry_key(frozen: FrozenSubject, *, round_sha: str = "") -> str:
+    """Identity (c): the custody retry key of one physical review of one subject in
+    one logical round, stable across a crash or timeout so a rejoin never pays
+    twice — and distinct per round, so a new rebuttal or question is a new
+    operation and never replays the previous round's answers out of custody."""
     from ouroboros.review_state import make_repo_key
 
     root_key = make_repo_key(pathlib.Path(frozen.spec.root))
-    return f"review:{root_key}:{frozen.spec.kind}:{frozen.diff_sha}:{frozen.spec.surface}"
+    key = f"review:{root_key}:{frozen.spec.kind}:{frozen.diff_sha}:{frozen.spec.surface}"
+    return f"{key}:{round_sha[:16]}" if round_sha else key

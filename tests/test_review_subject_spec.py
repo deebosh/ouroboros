@@ -29,6 +29,7 @@ from ouroboros.tools.review_subject import (
     reuse_or_none,
     review_retry_key,
     review_reuse_key,
+    review_round_sha,
 )
 
 
@@ -513,8 +514,9 @@ def test_rebuttal_is_a_new_round_and_the_ceiling_stays_common_per_root(tmp_path,
     drive = pathlib.Path(ctx.drive_root)
     frozen = freeze_subject(ctx, _index_spec(repo))
     first_rebuttal = hashlib.sha256(b"new evidence").hexdigest()
-    key, rebutted = _keys(frozen), _keys(frozen, rebuttal_sha=first_rebuttal)
-    assert rebutted != key and _keys(frozen, rebuttal_sha=first_rebuttal) == rebutted  # repeating it reuses the round
+    rebutted_round = review_round_sha(frozen, rebuttal_sha=first_rebuttal)
+    key, rebutted = _keys(frozen), _keys(frozen, round_sha=rebutted_round)
+    assert rebutted != key and _keys(frozen, round_sha=rebutted_round) == rebutted  # repeating it reuses the round
 
     repo_key = make_repo_key(pathlib.Path(repo))
 
@@ -557,6 +559,46 @@ def test_retry_key_is_stable_per_subject_and_distinct_across_subjects(tmp_path):
     assert review_retry_key(frozen) == expected == review_retry_key(freeze_subject(ctx, _index_spec(repo)))
     # Another surface of the same bytes is another physical review; so are other bytes.
     assert review_retry_key(freeze_subject(ctx, _index_spec(repo, surface="change"))) != expected
+    # The logical round rides the key (identity b → c): a round is a new physical
+    # operation of the same bytes, a retry of the SAME round the same one.
+    round_sha = review_round_sha(frozen, rebuttal_sha="r1", questions=["q?"], goal="g", scope="s")
+    keyed = review_retry_key(frozen, round_sha=round_sha)
+    assert keyed == f"{expected}:{round_sha[:16]}" == review_retry_key(freeze_subject(ctx, _index_spec(repo)), round_sha=round_sha)
+    assert keyed != review_retry_key(frozen, round_sha=review_round_sha(frozen, rebuttal_sha="r2", questions=["q?"], goal="g", scope="s"))
     (repo / "x.txt").write_text("z\n", encoding="utf-8")
     _git(repo, "add", "-A")
     assert review_retry_key(freeze_subject(ctx, _index_spec(repo))) != expected
+
+
+def test_the_logical_round_is_the_whole_request_in_both_identities(tmp_path):
+    """Identity (b) is what the author asked THIS time — rebuttal, questions, goal,
+    scope — and the resolved revisions the record names. Each enters the reuse key
+    (a changed brief never reuses an old answer; two commits with one tree are two
+    rounds) and the custody retry key (a new round never replays the previous
+    round's answers out of custody); the identical request keeps both keys."""
+    system = _system_repo(tmp_path)
+    foreign, base, head = _foreign_repo(tmp_path)
+    ctx = _ctx(system, tmp_path)
+    _git(foreign, "commit", "-q", "--allow-empty", "-m", "empty")  # one more revision, the same tree
+    moved = _out(foreign, "rev-parse", "HEAD")
+    (foreign / "keep.txt").write_text("k2\n", encoding="utf-8")
+    _git(foreign, "add", "-A")
+    frozen = freeze_subject(ctx, ReviewSubjectSpec(root_kind="active_workspace", root=str(foreign), kind="index", surface="change"))
+    asked = {"rebuttal_sha": "", "questions": ["Is it bounded?"], "goal": "Bound it", "scope": "keep.txt"}
+    round_sha = review_round_sha(frozen, **asked)
+    assert round_sha == review_round_sha(frozen, **asked) == rl.round_sha_of(**asked, base=frozen.parent_sha, head="")
+    reuse, retry = _keys(frozen, round_sha=round_sha), review_retry_key(frozen, round_sha=round_sha)
+    for changed in ({"rebuttal_sha": "r"}, {"questions": []}, {"questions": ["Is it bounded?", "Fast?"]},
+                    {"goal": "Unbound it"}, {"scope": ""}):
+        other = review_round_sha(frozen, **{**asked, **changed})
+        assert other != round_sha, changed
+        assert _keys(frozen, round_sha=other) != reuse and review_retry_key(frozen, round_sha=other) != retry, changed
+
+    # Two revision pairs with ONE tree (the empty commit on top) are two rounds.
+    with isolated_checkout(ctx, ReviewSubjectSpec(root_kind="active_workspace", root=str(foreign), kind="base..head",
+                                                  base=base, head=head, surface="change")) as first, \
+            isolated_checkout(ctx, ReviewSubjectSpec(root_kind="active_workspace", root=str(foreign), kind="base..head",
+                                                     base=base, head=moved, surface="change")) as second:
+        assert first.tree_sha == second.tree_sha and first.diff_sha == second.diff_sha
+        assert review_round_sha(first, **asked) != review_round_sha(second, **asked)
+        assert _keys(first, round_sha=review_round_sha(first, **asked)) != _keys(second, round_sha=review_round_sha(second, **asked))

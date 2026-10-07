@@ -45,7 +45,7 @@ from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.review_helpers import checklist_fingerprint
 from ouroboros.tools.review_subject import (
     ReviewSubjectSpec, freeze_subject, is_gate_subject, isolated_checkout, reuse_or_none, review_retry_key,
-    review_reuse_key,
+    review_reuse_key, review_round_sha,
 )
 from ouroboros.utils import run_cmd, utc_now_iso
 
@@ -396,12 +396,17 @@ def _prepare_wave(ctx: ToolContext, request: ReviewChangeRequest, frozen: Any, p
     enforcement = str(get_review_enforcement() or "")
     contract_fp = str(commit_review_contract_fingerprint() or "")
     rebuttal_sha = str(compute_rebuttal_sha256(request.review_rebuttal) or "")
+    # Identity (b), the logical round, enters both the reuse key (a) and the custody
+    # retry key (c): a new rebuttal/question/brief/revision pair is a new wave and a
+    # new physical operation; a retry of the same round rejoins the old one.
+    round_sha = review_round_sha(frozen, rebuttal_sha=rebuttal_sha, questions=request.author_questions,
+                                 goal=request.goal, scope=request.scope)
     reuse_key = review_reuse_key(
         frozen, rules_sha=str((rules.get("rules_source") or {}).get("sha") or ""), layer=layer,
-        assigned=panel.assigned, enforcement=enforcement, contract_fp=contract_fp, rebuttal_sha=rebuttal_sha)
+        assigned=panel.assigned, enforcement=enforcement, contract_fp=contract_fp, round_sha=round_sha)
     return _Wave(request=request, frozen=frozen, panel=panel, root=root, fact=fact, layer=layer, rules=rules,
                  enforcement=enforcement, contract_fp=contract_fp, rebuttal_sha=rebuttal_sha,
-                 retry_key=review_retry_key(frozen), reuse_key=reuse_key,
+                 retry_key=review_retry_key(frozen, round_sha=round_sha), reuse_key=reuse_key,
                  root_task_id=str(resolve_root_task_id(ctx) or ""), record_id=new_record_id(),
                  label=_wave_label(request, root))
 

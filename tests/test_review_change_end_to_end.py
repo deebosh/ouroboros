@@ -129,6 +129,46 @@ def test_review_change_on_the_system_index_is_the_commit_gates_brief(staged_body
         assert "## Informational context — commit message" in gate_text, slot_id
 
 
+def test_a_new_round_of_the_same_index_is_a_new_physical_review_not_a_replay(staged_body, tmp_path, monkeypatch):
+    """Identities (b) and (c) under the REAL custody layer. The custody layer replays a
+    settled attempt to a caller whose attempt key it already holds (same context, same
+    retry key, same seats) — so a retry key that ignored the round would hand the
+    author's NEW rebuttal the OLD round's answers at $0 of new work. The logical
+    round rides the retry key: a new rebuttal, a new goal or new author questions
+    buy a new wave; the identical request is the settled record, free."""
+    repo = Path(staged_body["repo"])
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "8")  # four paid rounds are bought below
+    sends: list[dict] = []
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", shared.golden_physical_seam(sends))
+    ctx = ToolContext(repo_dir=repo, drive_root=tmp_path / "drive", task_id="task-rounds")
+    ask = dict(root="system_repo", surface="change", goal=GOAL, scope=SCOPE, subject="index")
+
+    first = run_review_change(ctx, **ask, review_rebuttal="Round one: the finding is stale.")
+    second = run_review_change(ctx, **ask, review_rebuttal="Round two: here is the new evidence.")
+    assert first["aggregate"] == second["aggregate"] == "PASS", (first, second)
+    assert first["reused"] is False and second["reused"] is False
+    assert second["record_id"] != first["record_id"]
+    # Six physical sends (three seats per round): the second round was SENT, not
+    # replayed out of the first round's settled custody — under its own retry key.
+    assert sorted(send["slot_id"] for send in sends) == ["s1", "s1", "t1", "t1", "t2", "t2"]
+    assert len({send["retry_key"] for send in sends}) == 2 and all(send["retry_key"] for send in sends)
+    records = [review_ledger.load_record(ctx.drive_root, result["record_id"]) for result in (first, second)]
+    assert records[0]["fingerprints"]["retry_key"] != records[1]["fingerprints"]["retry_key"]
+    assert {send["retry_key"] for send in sends} == {record["fingerprints"]["retry_key"] for record in records}
+    assert records[0]["fingerprints"]["reuse_key"] != records[1]["fingerprints"]["reuse_key"]
+    assert records[0]["subject"] == records[1]["subject"]  # the same bytes, another round
+    # The identical round is the settled record — free, and no seat is sent again.
+    again = run_review_change(ctx, **ask, review_rebuttal="Round two: here is the new evidence.")
+    assert again["reused"] is True and again["record_id"] == second["record_id"] and len(sends) == 6
+    assert again["cost"] == {"usd": 0.0, "unknown": False}
+    # A changed brief or a question for the reviewers is another round again.
+    other_goal = run_review_change(ctx, **{**ask, "goal": "Return the OTHER constant."})
+    assert (other_goal["aggregate"], other_goal["reused"], len(sends)) == ("PASS", False, 9), other_goal
+    asked = run_review_change(ctx, **ask, author_questions=["Does the helper stay pure?"])
+    assert (asked["aggregate"], asked["reused"], len(sends)) == ("PASS", False, 12), asked
+    assert len({send["retry_key"] for send in sends}) == 4
+
+
 def _foreign_project(tmp_path, monkeypatch) -> tuple:
     """The production geometry of a project review: the body and its data under one
     Ouroboros home, the reviewed project elsewhere under the user's files; the project
@@ -239,6 +279,33 @@ def test_an_index_against_another_base_delivers_the_frozen_delta_not_the_live_in
         if brief["slot_id"] in ("t2", "s1"):
             assert brief["session_root"] == subject["checkout"] and brief["index_at_call"].strip() == frozen_diff.strip()
     assert shared.git(project, "diff", "--cached") == live_index  # the live root is untouched
+
+
+def test_two_revisions_of_one_tree_are_two_rounds(tmp_path, monkeypatch):
+    """The resolved ``base``/``head`` the record names are part of the round: a range
+    whose head moved to an empty commit is the same bytes (one ``diff_sha``, one
+    ``tree_sha``) but a new wave — the old record is not handed back for revisions
+    it never named."""
+    ctx, project = _foreign_project(tmp_path, monkeypatch)
+    base = shared.git(project, "rev-parse", "HEAD")
+    (project / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+    shared.git(project, "add", "app.py")
+    shared.git(project, "commit", "-q", "-m", "bump")
+    head = shared.git(project, "rev-parse", "HEAD")
+    shared.git(project, "commit", "-q", "--allow-empty", "-m", "empty")
+    moved = shared.git(project, "rev-parse", "HEAD")
+    sends: list[dict] = []
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", shared.golden_physical_seam(sends))
+
+    ask = dict(subject="base..head", base=base, goal="Bump", scope="app.py")
+    first = run_review_change(ctx, **ask, head=head)
+    second = run_review_change(ctx, **ask, head=moved)
+    assert first["aggregate"] == second["aggregate"] == "PASS", (first, second)
+    assert (first["subject"]["tree_sha"], first["subject"]["diff_sha"]) == (second["subject"]["tree_sha"], second["subject"]["diff_sha"])
+    assert (first["subject"]["head"], second["subject"]["head"]) == (head, moved)
+    assert second["reused"] is False and second["record_id"] != first["record_id"] and len(sends) == 6
+    assert len({send["retry_key"] for send in sends}) == 2
+    assert run_review_change(ctx, **ask, head=moved)["reused"] is True and len(sends) == 6
 
 
 SERVING_RULE = "SERVING-CONSTITUTION-MARKER: the rule that is running."

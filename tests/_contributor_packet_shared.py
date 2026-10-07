@@ -179,31 +179,45 @@ def persist_golden_actors(drive: pathlib.Path) -> tuple[list[dict], dict]:
     return [t1, t2], {"status": "responded", "model_id": "openai/gpt-5.6-sol", "raw_results": [s1]}
 
 
+GOLDEN_USAGE = {
+    "t1": {"provider": "openrouter", "resolved_model": "openai/gpt-5.6-sol",
+           "prompt_tokens": 1200, "completion_tokens": 300, "cost": 0.0125},
+    "t2": {"provider": "claudexor", "delegated_route": "codex", "resolved_model": "gpt-5.6-sol",
+           "applied_profile": "pinned", "applied_access": "readonly", "delegated_run_id": SESSION_RUN_ID,
+           "custody_durable": True, "output_conformance": "passed", "verdict_method": "schema"},
+    "s1": {"provider": "openrouter", "resolved_model": "openai/gpt-5.6-sol",
+           "prompt_tokens": 3000, "completion_tokens": 500, "cost": 0.02},
+}
+
+
+def _golden_rows():
+    """``persist_golden_actors`` once per drive, by seat id (thread-safe)."""
+    import threading
+
+    persisted: dict[str, dict] = {}
+    lock = threading.Lock()
+
+    def rows(drive_root) -> dict[str, dict]:
+        with lock:
+            if not persisted:
+                triad, scope = persist_golden_actors(pathlib.Path(drive_root))
+                persisted.update({row["slot_id"]: row for row in [*triad, *scope["raw_results"]]})
+        return persisted
+
+    return rows
+
+
 def golden_substrate(briefs: list[dict]):
     """A ``review_substrate.run_review_request`` stand-in under the REAL review
     operation: the paid seam only. Each seat answers from ``ANSWERS`` with the golden's
     persisted receipts (``persist_golden_actors``), so the operation's record rows carry
     the pre-move packet's refs; what each seat was GIVEN is appended to ``briefs``."""
-    import threading
     from types import SimpleNamespace
 
-    persisted: dict[str, dict] = {}
-    lock = threading.Lock()
-    usage = {
-        "t1": {"provider": "openrouter", "resolved_model": "openai/gpt-5.6-sol",
-               "prompt_tokens": 1200, "completion_tokens": 300, "cost": 0.0125},
-        "t2": {"provider": "claudexor", "delegated_route": "codex", "resolved_model": "gpt-5.6-sol",
-               "applied_profile": "pinned", "applied_access": "readonly", "delegated_run_id": SESSION_RUN_ID,
-               "custody_durable": True, "output_conformance": "passed", "verdict_method": "schema"},
-        "s1": {"provider": "openrouter", "resolved_model": "openai/gpt-5.6-sol",
-               "prompt_tokens": 3000, "completion_tokens": 500, "cost": 0.02},
-    }
+    rows = _golden_rows()
 
     def run_review_request(request, *, slots, drive_root, llm=None, usage_ctx=None):
-        with lock:
-            if not persisted:
-                triad, scope = persist_golden_actors(pathlib.Path(drive_root))
-                persisted.update({row["slot_id"]: row for row in [*triad, *scope["raw_results"]]})
+        persisted = rows(drive_root)
         # The gate reserves every seat's operation id before any send; an answer
         # that does not carry the reserved id is not that seat's answer.
         reserved = (getattr(usage_ctx, "_review_reserved_operations", None) or {}).get(request.surface) or {}
@@ -215,13 +229,38 @@ def golden_substrate(briefs: list[dict]):
                            "session_root": request.session_root})
             actors.append({
                 "slot_id": slot.slot_id, "model": slot.model, "status": "ok", "raw_text": row["raw_text"],
-                "usage": dict(usage[slot.slot_id]), "prompt_ref": row["prompt_ref"], "response_ref": row["response_ref"],
+                "usage": dict(GOLDEN_USAGE[slot.slot_id]), "prompt_ref": row["prompt_ref"], "response_ref": row["response_ref"],
                 "operation_id": str(reserved.get(slot.slot_id) or f"op-{slot.slot_id}"),
                 "operation_state": "settled", "late_result_pending": False,
             })
         return SimpleNamespace(actors=actors)
 
     return run_review_request
+
+
+def golden_physical_seam(sends: list[dict], *, answer=None):
+    """A ``ReviewCoordinator._run_slot`` stand-in: the PHYSICAL send of one seat, under
+    the REAL custody layer (``review_custody``: attempt keys, settled replays, pending
+    rejoins, the paid stamp). Every send is appended to ``sends`` with the identity the
+    custody layer keyed it by; the seat answers with the golden actor unless ``answer``
+    (``answer(request, slot, actor) -> actor``) says otherwise."""
+    from ouroboros.review_dispatch import invoke_review_paid_stamp
+
+    rows = _golden_rows()
+
+    def run_slot(self, request, slot, *, operation_id="", retry_state=None, logical_deadline_monotonic=None,
+                 pending_invocation_checkpoint=None):
+        invoke_review_paid_stamp(self._review_paid_stamp)  # what a route executor does before its transport
+        row = rows(self.drive_root)[slot.slot_id]
+        sends.append({"slot_id": slot.slot_id, "surface": request.surface, "operation_id": str(operation_id),
+                      "retry_key": str(request.retry_key or ""), "session_root": str(request.session_root or ""),
+                      "retry_state": dict(retry_state or {}), "reconcile_only": bool(request.reconcile_only)})
+        actor = self._error_actor(request, slot, "unused", operation_id=operation_id)
+        actor.status, actor.error, actor.raw_text = "ok", "", row["raw_text"]
+        actor.usage, actor.prompt_ref, actor.response_ref = dict(GOLDEN_USAGE[slot.slot_id]), row["prompt_ref"], row["response_ref"]
+        return answer(request, slot, actor) if answer is not None else actor
+
+    return run_slot
 
 
 def passing_test_runner(ctx, **_kwargs):

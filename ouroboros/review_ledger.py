@@ -703,14 +703,25 @@ def _assigned_rows(assigned: Any) -> List[str]:
 
 
 def reuse_key_digest(*, surface: str, kind: str, root: str, diff_sha: str, tree_sha: str, rules_sha: str, layer: str,
-                     assigned: Any, enforcement: str, contract_fp: str, rebuttal_sha: str = "") -> str:
+                     assigned: Any, enforcement: str, contract_fp: str, round_sha: str = "") -> str:
     """sha256 of the reuse identity (§6 "Subject operation", identity a): surface,
     subject kind/root/diff/tree, the rules source, the checklist layer, the assigned
-    composition, the enforcement and the review contract — plus the rebuttal round."""
+    composition, the enforcement and the review contract — plus the logical round
+    (``review_subject.review_round_sha``: rebuttal, author questions, goal, scope,
+    resolved base/head), so only the IDENTICAL request reuses a settled answer."""
     fields = {"surface": str(surface or ""), "kind": str(kind or ""), "root": str(root or ""),
               "diff_sha": str(diff_sha or ""), "tree_sha": str(tree_sha or ""), "rules_sha": str(rules_sha or ""),
               "layer": str(layer or ""), "assigned": _assigned_rows(assigned), "enforcement": str(enforcement or ""),
-              "contract_fp": str(contract_fp or ""), "rebuttal_sha": str(rebuttal_sha or "")}
+              "contract_fp": str(contract_fp or ""), "round_sha": str(round_sha or "")}
+    return hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def round_sha_of(*, rebuttal_sha: str = "", questions: Any = (), goal: str = "", scope: str = "",
+                 base: str = "", head: str = "") -> str:
+    """The logical-round digest over a record's own fields — the same bytes
+    ``review_subject.review_round_sha`` hashes from a frozen subject."""
+    fields = {"rebuttal_sha": str(rebuttal_sha or ""), "questions": [str(item) for item in (questions or [])],
+              "goal": str(goal or ""), "scope": str(scope or ""), "base": str(base or ""), "head": str(head or "")}
     return hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
@@ -787,7 +798,10 @@ def build_wave_record(facts: Dict[str, Any], *, surface: str, record_id: str = "
     reuse_key = str(facts.get("reuse_key") or structured.get("reuse_key") or "") or reuse_key_digest(
         surface=surface, kind=subject["kind"], root=subject["root"], diff_sha=subject["diff_sha"], tree_sha=subject["tree_sha"],
         rules_sha=checklist["rules_source"]["sha"], layer=checklist["layer"], assigned=rows, enforcement=enforcement,
-        contract_fp=contract_fp, rebuttal_sha=str(facts.get("rebuttal_sha256") or ""))
+        contract_fp=contract_fp, round_sha=round_sha_of(
+            rebuttal_sha=str(facts.get("rebuttal_sha256") or ""), questions=facts.get("author_questions") or [],
+            goal=str(facts.get("goal") or ""), scope=str(facts.get("scope") or ""),
+            base=subject["base"], head=subject["head"]))
     return ReviewLedgerRecord(
         record_id=record_id, state=STATE_PENDING if pending else STATE_SETTLED, ts=utc_now_iso(), task_id=task_id,
         root_task_id=str(facts.get("root_task_id") or ""), review_wave_id=str(facts.get("review_wave_id") or ""),
