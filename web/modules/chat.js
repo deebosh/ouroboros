@@ -3897,6 +3897,10 @@ export function createChatInstance({
         // Unsendable client-side state (staged File objects / an in-flight
         // upload). app.js must hide, not destroy, an instance holding it.
         hasPendingWork: () => pendingAttachments.length > 0 || attachmentsUploading,
+        // app.js, when this room leaves the screen without being destroyed: the
+        // modal a file card opened (reader, file dialog) closes and its read
+        // stops; staged attachments and uploads are untouched.
+        closeTransient: () => chatMedia.closeTransient(),
         // Full teardown (P3): release every resource this instance acquired —
         // ws subscriptions, window/document listeners, the ResizeObserver, all
         // timers — then drop the buffered collections and remove the DOM last.
