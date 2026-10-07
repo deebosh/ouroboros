@@ -386,14 +386,22 @@ def _newest_rows(paths: Iterable[pathlib.Path]) -> Iterator[Dict[str, Any]]:
         yield from reversed([row for row in iter_jsonl_objects(path) if isinstance(row, dict)])
 
 
-def recent_records(drive_root: Any, task_id: str = "", limit: int = 20) -> List[Dict[str, Any]]:
+def archived_segments_exist(drive_root: Any) -> bool:
+    """Whether rotated index segments exist beside the hot index (a directory listing, no row read)."""
+    return bool(_index_segments(drive_root))
+
+
+def recent_records(drive_root: Any, task_id: str = "", limit: int = 20, *, hot_only: bool = False) -> List[Dict[str, Any]]:
     """Newest-first index rows (junction for context assembly): the hot index, then
     archived segments newest-first, one row per record at its highest revision.
-    ``task_id`` matches the record's task OR root task; empty matches all."""
+    ``task_id`` matches the record's task OR root task; empty matches all.
+    ``hot_only`` reads the bounded hot index alone (``INDEX_MAX_BYTES``) and never
+    opens an archived segment: the read a per-task context capture can afford."""
     wanted = max(1, int(limit))
     seen: Dict[str, int] = {}
     out: List[Dict[str, Any]] = []
-    for row in _newest_rows([index_path(drive_root), *reversed(_index_segments(drive_root))]):
+    paths = [index_path(drive_root)] + ([] if hot_only else [*reversed(_index_segments(drive_root))])
+    for row in _newest_rows(paths):
         record_id = str(row.get("record_id") or "")
         if not record_id or (task_id and task_id not in (row.get("task_id"), row.get("root_task_id"))):
             continue

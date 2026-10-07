@@ -12,7 +12,6 @@ import contextlib
 import contextvars
 import json
 import os
-import sys
 from dataclasses import dataclass, replace as dataclass_replace
 from typing import Any, Mapping, Optional
 
@@ -206,20 +205,24 @@ def review_facts_block(snapshot: Optional[TaskSettingsSnapshot] = None, *, drive
 
 
 def _recent_review_records(drive_root: Any, task_id: str) -> tuple[list[dict[str, Any]], Any]:
-    """This task's five newest review-ledger records, in the reader's newest-first order, and how many more
-    exist: no ledger module means none, an unreadable ledger is ``"unknown"`` — never a silent zero. An empty
-    id reads nothing: the reader's empty selector is every task's records."""
+    """This task's five newest review-ledger records from the bounded hot index, in the reader's
+    newest-first order, and whether more exist: ``0`` when the hot index holds nothing else and no
+    archived segment exists, ``"1+"`` when it holds more than the five shown, ``"unknown"`` when an
+    archived segment exists (older records of this task may live there; a context capture never
+    opens the archive) or the ledger is unreadable — never a silent zero. No ledger module means
+    none. An empty id reads nothing: the reader's empty selector is every task's records."""
     try:
-        from ouroboros.review_ledger import recent_records
+        from ouroboros.review_ledger import archived_segments_exist, recent_records
 
-        rows = recent_records(drive_root, task_id=task_id, limit=sys.maxsize) if task_id else []
+        rows = recent_records(drive_root, task_id=task_id, limit=6, hot_only=True) if task_id else []
         shown = [{"record_id": row.get("record_id"), "surface": row.get("surface"),
                   "aggregate": (row.get("verdict") or {}).get("aggregate"), "ts": row.get("ts")} for row in rows[:5]]
+        more: Any = "1+" if len(rows) > 5 else ("unknown" if task_id and archived_segments_exist(drive_root) else 0)
     except ModuleNotFoundError as exc:
         return [], 0 if exc.name == "ouroboros.review_ledger" else "unknown"
     except Exception:
         return [], "unknown"
-    return shown, len(rows) - len(shown)
+    return shown, more
 
 
 def apply_task_start_settings() -> TaskSettingsSnapshot:

@@ -44,9 +44,10 @@ def _block(tmp_path, snapshot=None, task_id: str = "task-1") -> tuple[dict, str]
     return _decode(text), text
 
 
-def _ledger(monkeypatch, recent_records) -> None:
+def _ledger(monkeypatch, recent_records, archived_segments_exist=lambda drive_root: False) -> None:
     module = types.ModuleType("ouroboros.review_ledger")
     module.recent_records = recent_records
+    module.archived_segments_exist = archived_segments_exist
     monkeypatch.setitem(sys.modules, "ouroboros.review_ledger", module)
 
 
@@ -203,7 +204,7 @@ def test_a_fourteen_seat_panel_shrinks_its_rows_and_stays_within_four_kilobytes(
     triad = [{"slot_id": f"t{'s' * 59}{index:04d}", "subagent_id": keys[index]} for index in range(10)]
     scope = [{"slot_id": f"c{'s' * 59}{index:04d}", "subagent_id": keys[index]} for index in range(4)]
     monkeypatch.setenv(REVIEWER_SLOTS_ENV, json.dumps({"triad": triad, "scope": scope}))
-    _ledger(monkeypatch, lambda drive_root, task_id="", limit=20: [
+    _ledger(monkeypatch, lambda drive_root, task_id="", limit=20, hot_only=False: [
         {"record_id": f"rv-{'r' * 40}-{index:02d}", "surface": "commit_gate",
          "ts": f"2026-10-07T12:{index:02d}:00.000000+00:00", "verdict": {"aggregate": "QUORUM_FAILED"}}
         for index in range(7)][:int(limit)])
@@ -211,39 +212,45 @@ def test_a_fourteen_seat_panel_shrinks_its_rows_and_stays_within_four_kilobytes(
     rows = block["panel"]["triad"] + block["panel"]["scope"]
 
     assert len(text.encode("utf-8")) <= 4096
-    assert block["omitted"] == {"rows": 14, "records": 2} and len(block["recent_records"]) == 5
+    assert block["omitted"] == {"rows": 14, "records": "1+"} and len(block["recent_records"]) == 5
     assert len(rows) == 14 and all(set(row) == {"seat_id", "model"} and len(row["seat_id"]) == 64 for row in rows)
     assert all(key not in text for key in keys), "stored keys never become model-facing"
     assert block["full_source"]["panel"] == "GET /api/reviewer-slots"
 
 
-def test_recent_records_are_the_readers_newest_five_of_this_task_with_an_exact_omitted_count(tmp_path, monkeypatch):
+def test_recent_records_are_the_readers_newest_five_of_this_task_from_a_bounded_hot_read(tmp_path, monkeypatch):
     calls = []
     newest_first = [{"record_id": f"r{index}", "surface": "commit_gate", "ts": f"2026-10-07T00:00:0{index}+00:00",
                      "verdict": {"aggregate": "FAIL" if index % 2 else "PASS"}} for index in reversed(range(7))]
 
-    # review_ledger.recent_records' signature: the limit is an int, newest first.
-    def recent_records(drive_root, task_id="", limit=20):
-        calls.append((drive_root, task_id))
+    # review_ledger.recent_records' signature: the limit is an int, newest first; the context
+    # capture reads the hot index only, with a six-row cap (never the whole history).
+    def recent_records(drive_root, task_id="", limit=20, hot_only=False):
+        calls.append((drive_root, task_id, int(limit), hot_only))
         return newest_first[:max(1, int(limit))]
 
     _ledger(monkeypatch, recent_records)
     block, _ = _block(tmp_path, task_id="task-9")
 
-    assert calls == [(tmp_path, "task-9")]
+    assert calls == [(tmp_path, "task-9", 6, True)]
     assert [record["record_id"] for record in block["recent_records"]] == ["r6", "r5", "r4", "r3", "r2"]
     assert block["recent_records"][:2] == [
         {"record_id": "r6", "surface": "commit_gate", "aggregate": "PASS", "ts": "2026-10-07T00:00:06+00:00"},
         {"record_id": "r5", "surface": "commit_gate", "aggregate": "FAIL", "ts": "2026-10-07T00:00:05+00:00"},
     ]
-    assert block["omitted"]["records"] == 2
+    assert block["omitted"]["records"] == "1+", "more rows than shown in the hot index: a bounded fact, not a count"
     calls.clear()
     empty, _ = _block(tmp_path, task_id="")
     assert (empty["recent_records"], empty["omitted"]["records"], calls) == ([], 0, []), "empty selects every task"
+    few = lambda drive_root, task_id="", limit=20, hot_only=False: newest_first[:3]  # noqa: E731
+    _ledger(monkeypatch, few)
+    assert _block(tmp_path, task_id="task-9")[0]["omitted"]["records"] == 0, "nothing else in the hot index, no archive"
+    _ledger(monkeypatch, few, archived_segments_exist=lambda drive_root: True)
+    assert _block(tmp_path, task_id="task-9")[0]["omitted"]["records"] == "unknown", "an archive may hold older records"
 
 
 def test_an_unreadable_ledger_is_unknown_never_a_silent_zero(tmp_path, monkeypatch):
-    def recent_records(drive_root, task_id="", limit=20):
+    def recent_records(drive_root, task_id="", limit=20, hot_only=False):
         raise OSError("index unreadable")
 
     _ledger(monkeypatch, recent_records)

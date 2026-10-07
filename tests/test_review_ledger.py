@@ -91,6 +91,18 @@ def test_corrupt_record_file_is_unreadable_never_absent(tmp_path):
     assert rl.load_record(tmp_path, record.record_id) is None
 
 
+def test_hot_only_reads_never_open_an_archived_segment(tmp_path):
+    record = rl.build_commit_gate_record(_facts(_three(), _scope()), drive_root=tmp_path)
+    rl.write_record(tmp_path, record)
+    assert rl.archived_segments_exist(tmp_path) is False
+    archived = rl.ledger_dir(tmp_path) / "index.20261001T000000.jsonl"
+    older = dict(rl.index_row(tmp_path, rl.load_record(tmp_path, record.record_id)), record_id="rl-older-0001")
+    archived.write_text(json.dumps(older) + "\n", encoding="utf-8")
+    assert rl.archived_segments_exist(tmp_path) is True
+    assert [r["record_id"] for r in rl.recent_records(tmp_path, "task-1", 5)] == [record.record_id, "rl-older-0001"]
+    assert [r["record_id"] for r in rl.recent_records(tmp_path, "task-1", 5, hot_only=True)] == [record.record_id]
+
+
 def test_record_vocabulary_is_enforced(tmp_path):
     record = rl.build_commit_gate_record(_facts(_three(), _scope()))
     bad = record.to_dict()
