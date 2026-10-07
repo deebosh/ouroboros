@@ -12,14 +12,14 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D02 | LLM client, routing & providers | 39 | 0 |
 | D03 | Context assembly, fit & compaction | 15 | 0 |
 | D04 | Tool execution: registry, access & typed results | 22 | 0 |
-| D05 | Tool surfaces: files, code, shell, media, external | 30 | 0 |
+| D05 | Tool surfaces: files, code, shell, media, external | 33 | 0 |
 | D06 | Review stack | 72 | 0 |
 | D07 | Delegation, subagents & Claudexor | 60 | 0 |
 | D08 | Supervisor: queue, workers, events & runtime control | 58 | 0 |
 | D09 | Cancellation, owner control & process custody | 15 | 0 |
 | D10 | Git, update & release machinery | 29 | 0 |
 | D11 | Gateway, server & Web UI | 71 | 0 |
-| D12 | Settings & configuration | 18 | 0 |
+| D12 | Settings & configuration | 19 | 0 |
 | D13 | Safety, guards & runtime mode | 9 | 0 |
 | D14 | Skills & extensions | 56 | 0 |
 | D15 | Memory, knowledge, consciousness & self-evolution | 28 | 0 |
@@ -28,7 +28,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D18 | Launcher, packaging, platform & shared substrate | 22 | 0 |
 | D19 | Frozen contracts (ABI) | 11 | 0 |
 | D20 | Presence | 12 | 0 |
-| **total** | | **657** | **0** |
+| **total** | | **661** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -329,8 +329,11 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/artifacts.py`
 - `ouroboros/browser_policy.py`
 - `ouroboros/chat_uploads.py`
+- `ouroboros/code_import_candidates.py`
 - `ouroboros/code_intelligence.py`
 - `ouroboros/code_intelligence_architecture.py`
+- `ouroboros/code_navigation.py`
+- `ouroboros/code_occurrences.py`
 - `ouroboros/code_search_rg.py`
 - `ouroboros/mcp_client.py`
 - `ouroboros/process_interpreters.py`
@@ -689,6 +692,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/model_slots.py`
 - `ouroboros/onboarding_wizard.py`
 - `ouroboros/review_model_routes.py`
+- `ouroboros/review_run_isolation.py`
 - `ouroboros/runtime_limits.py`
 - `ouroboros/secret_masking.py`
 - `ouroboros/settings_defaults.py`

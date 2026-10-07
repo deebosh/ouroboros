@@ -460,12 +460,10 @@ def current_usage_projection(
             projection = projection_view(txn, root_task_id=root_task_id, billing_group_id=billing_group_id,
                                          degraded=usage_store.integrity_degraded(root))
         return amended_projection(root, billing_group_id or root_task_id, projection, group=bool(billing_group_id))
-    if global_limit_usd is not None:
-        configured_limit = max(0.0, float(global_limit_usd))
-    else:
+    if global_limit_usd is None:
         from ouroboros.settings_setup_contract import resolve_total_budget_usd
-        configured_limit = resolve_total_budget_usd() or 0.0
-    limit = configured_limit if (global_limit_usd is not None or configured_limit > 0) else None
+        global_limit_usd = resolve_total_budget_usd()  # None: no limit; an unreadable run cap is 0.0
+    limit = None if global_limit_usd is None else max(0.0, float(global_limit_usd))
     with usage_store.read(root, allow_stale=allow_stale) as txn:
         return projection_view(txn, limit=limit, include_roots=include_roots,
                                degraded=usage_store.integrity_degraded(root))

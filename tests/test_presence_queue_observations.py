@@ -14,8 +14,8 @@ import pytest
 from ouroboros.presence_continuation import ReviewWaitBinding, reentry_note
 from ouroboros.presence_observations import transport_queue_observation
 from ouroboros.task_results import load_task_result
-from tests.test_presence_continuation import ANSWER, NEW_WORDS, finish, harness, wait_for  # noqa: F401
-from tests.test_presence_continuation_host import _HEADERS, host, poll, turn  # noqa: F401
+from tests.test_presence_continuation import ANSWER, NEW_WORDS, finish, harness as harness, wait_for
+from tests.test_presence_continuation_host import _HEADERS, host as host, poll, turn
 from tests.test_presence_reentry import _read_all
 
 

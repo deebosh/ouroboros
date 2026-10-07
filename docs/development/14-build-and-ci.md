@@ -51,6 +51,9 @@ registry. Registered skips name node/reason. `--temp-parent` (`/tmp` on macOS: s
 worktrees, Deliverables, cache and userbase defaults for pytest, preflight and
 their server children — including `env=None` children; explicit test roots survive. Bare pytest keeps explicitly supplied
 provider/lane controls for integration CI; launcher and preflight scrub them.
+Run identities never pass: bare pytest drops launcher authority and the
+isolated review's run cap and engine attach selection, so no test reaches a
+host engine.
 Under that marker `supervisor/git_ops_reset.py` installs no dependencies for ANY
 caller; production unchanged. C locale/Git ceilings stabilize probes; pytest Deliverables follows synthetic HOME. `MAC_CHROMIUM_TMPDIR` shares the disposable temp root: macOS Chromium ignores `TMPDIR` for initial download staging. Not an OS sandbox. Money scale: [usage store](../USAGE_STORE.md#4-reads).
 
