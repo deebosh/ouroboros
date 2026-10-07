@@ -1261,7 +1261,7 @@ def reviewer_slot_execution_rows(surface: str, actors: Any, slots_by_id: Dict[st
 
 
 def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict[str, Any], *,
-                                    record_id: str = "") -> Dict[str, Dict[str, Any]]:
+                                    record_id: str = "", keep_on: Any = None) -> Dict[str, Dict[str, Any]]:
     """Record each actor's last effective execution (best-effort, atomic) and return
     the rows this call wrote (:func:`reviewer_slot_execution_rows`).
 
@@ -1271,13 +1271,19 @@ def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict
     contributor review's data root IS its review drive, so its markers stay there.
     ``record_id`` names the review ledger record the execution belongs to when the
     caller already holds it; a surface that learns the id only after its wave
-    settled binds it afterwards with ``bind_reviewer_slot_record_id``.
+    settled binds it afterwards with ``bind_reviewer_slot_record_id``. ``keep_on`` (the
+    wave's ctx) receives the same rows as ``_last_review_slot_executions`` for the wave's
+    ledger record, merged under the same lock: the triad and scope halves of one wave
+    record concurrently, and a read-then-replace outside the lock would drop one half.
     """
     from ouroboros.utils import write_text_atomic
 
     rows = reviewer_slot_execution_rows(surface, actors, slots_by_id, record_id=record_id)
     path = _last_execution_path()
     with _LAST_EXECUTION_LOCK:
+        if keep_on is not None and rows:
+            kept = getattr(keep_on, "_last_review_slot_executions", None)
+            setattr(keep_on, "_last_review_slot_executions", {**(kept if isinstance(kept, dict) else {}), **rows})
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):

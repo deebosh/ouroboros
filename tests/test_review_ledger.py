@@ -604,3 +604,71 @@ def test_the_public_commit_outcome_names_the_record_when_the_review_blocks(candi
     record_id = _attempt_rows(ctx)[-1].review_record_id
     assert record_id and rl.load_record(rl.ledger_root(ctx), record_id)["verdict"]["aggregate"] == "FAIL"
     assert f"review_record_id: {record_id}" in result, "the actor-facing outcome names the record the canon promises"
+
+
+def test_concurrent_halves_of_one_wave_both_keep_their_execution_rows(tmp_path, monkeypatch):
+    """Triad and scope record concurrently: both reads may see the same empty stash, so the
+    merge must happen under the shared lock. The ctx below holds every reader at a barrier,
+    which lets two unsynchronized writers read the same snapshot (one row would be lost)."""
+    import threading
+
+    from ouroboros import reviewer_slot_config as cfg
+    monkeypatch.setattr(cfg, "_last_execution_path", lambda: tmp_path / "last.json")
+
+    class RacingCtx:
+        def __init__(self):
+            self._kept, self.barrier = {}, threading.Barrier(2, timeout=1.0)
+
+        @property
+        def _last_review_slot_executions(self):
+            snapshot = self._kept  # read first, then pause: two unsynchronized readers hold the same snapshot
+            try:
+                self.barrier.wait()
+            except threading.BrokenBarrierError:
+                pass
+            return snapshot
+
+        @_last_review_slot_executions.setter
+        def _last_review_slot_executions(self, value):
+            self._kept = value
+
+    def slot(slot_id):
+        return SimpleNamespace(slot_id=slot_id, model="openai/gpt-5", route=SimpleNamespace(value="api_chat"), effort="high",
+                               session_target="", session_profile="", subagent_id="", processing_preference="",
+                               declared_effort="")
+
+    cfg.reviewer_slot_execution_rows("commit_gate", [], {})  # warm the lazy imports so both halves reach the read together
+    ctx = RacingCtx()
+    halves = [("commit_gate", "triad_1"), ("commit_gate", "scope_1")]
+    threads = [threading.Thread(target=cfg.record_reviewer_slot_executions, args=(
+        surface, [SimpleNamespace(slot_id=seat, status="responded", usage={}, operation_state="settled")],
+        {seat: slot(seat)}), kwargs={"keep_on": ctx}) for surface, seat in halves]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+    assert set(ctx._kept) == {"triad_1", "scope_1"}, "both halves of the wave keep their execution rows"
+
+
+def test_a_post_wave_refusal_still_names_the_record_of_the_completed_wave(candidate, monkeypatch):  # noqa: F811
+    from ouroboros.tools import git_review_cycle
+
+    ctx = candidate
+
+    def reviewer(_ctx, message, **kw):
+        ctx._last_triad_raw_results = _three()
+        ctx._last_scope_raw_result = _scope()
+        return None, ScopeReviewResult(blocked=False, status="responded"), "", []
+
+    _wire(ctx, monkeypatch, reviewer)
+    # The staged candidate "changes" only once the wave has answered (the reviewer above set its raw
+    # results): every earlier revalidation passes, the one after the wave refuses.
+    monkeypatch.setattr(git_review_cycle, "_revalidation_outcome", lambda *a, **kw: {
+        "status": "blocked", "block_reason": "revalidation_failed", "message": "REVALIDATION FAILED",
+    } if ctx._last_triad_raw_results else None)
+    import subprocess
+    subprocess.run(["git", "checkout", "-q", "-b", ctx.branch_dev], cwd=ctx.repo_dir, check=True, capture_output=True)
+    result = git._repo_commit_push(ctx, "Review changed candidate", skip_tests=True, skip_advisory_pre_review=True)
+    assert result.startswith("REVALIDATION FAILED")
+    record_id = result.rsplit("review_record_id: ", 1)[1].strip()
+    assert rl.load_record(rl.ledger_root(ctx), record_id)["verdict"]["aggregate"] == "PASS", "the completed wave's record"

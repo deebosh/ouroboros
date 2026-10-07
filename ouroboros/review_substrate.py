@@ -420,16 +420,10 @@ class ReviewCoordinator:
             # the row REALLY ran as last time. Disclosure only; best-effort.
             from ouroboros.reviewer_slot_config import record_reviewer_slot_executions
 
-            rows = record_reviewer_slot_executions(request.surface, actors, slots_by_id)
+            # The wave keeps its OWN rows on its ctx for its ledger record (``keep_on``).
+            record_reviewer_slot_executions(request.surface, actors, slots_by_id, keep_on=self.usage_ctx)
         except Exception:
-            rows = {}
             log.debug("reviewer-slot last-execution write failed", exc_info=True)
-        if rows and self.usage_ctx is not None:  # the wave keeps its OWN rows for its ledger record
-            stash = getattr(self.usage_ctx, "_last_review_slot_executions", None)
-            try:
-                self.usage_ctx._last_review_slot_executions = {**(stash if isinstance(stash, dict) else {}), **rows}
-            except Exception:
-                log.debug("review slot executions could not be kept on the ctx", exc_info=True)
 
         from ouroboros.review_actor_aggregation import aggregate_review_actors
 
