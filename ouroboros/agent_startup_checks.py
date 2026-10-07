@@ -803,23 +803,23 @@ def hot_store_growth_notes(env: Any) -> list:
                 f"WARNING: HOT STORE GROWTH — {rel} is {size / 1_000_000:.1f} MB "
                 f"(threshold {threshold // 1_000_000} MB). {remediation}"
             )
-    try:
-        archive_size = sum(
-            path.stat().st_size for path in (drive_root / "archive").glob("chat_*.jsonl")
-            if path.is_file()
-        )
-    except OSError:
-        archive_size = 0
-    from ouroboros.context_budget import CHAT_ARCHIVE_SCAN_WARN_BYTES
-    if archive_size > CHAT_ARCHIVE_SCAN_WARN_BYTES:
-        notes.append(
-            "WARNING: HOT STORE GROWTH — archive/chat_*.jsonl totals "
-            f"{archive_size / 1_000_000:.1f} MB (threshold "
-            f"{CHAT_ARCHIVE_SCAN_WARN_BYTES // 1_000_000} MB). Ordinary context reads "
-            "only rows after the legacy frontier; explicit chat_history, memory_read(rows=true) "
-            "and page covers replay this chain. "
-            "Investigate archive indexing/compaction without shortening the memory horizon."
-        )
+    # Append-only chains whose total size reaches a replaying reader: one row per chain.
+    from ouroboros.context_budget import CHAT_ARCHIVE_SCAN_WARN_BYTES, REVIEW_LEDGER_INDEX_WARN_BYTES
+    for folder, pattern, threshold, remediation in (
+        ("archive", "chat_*.jsonl", CHAT_ARCHIVE_SCAN_WARN_BYTES,
+         "Ordinary context reads only rows after the legacy frontier; explicit chat_history, memory_read(rows=true) "
+         "and page covers replay this chain. Investigate archive indexing/compaction without shortening the memory horizon."),
+        ("state/review_ledger", "index*.jsonl", REVIEW_LEDGER_INDEX_WARN_BYTES,
+         "Task context reads only the rotating hot index; readers that walk the rotated segments replay this chain — "
+         "move old segments and the records they name to cold storage, never delete the newest."),
+    ):
+        try:
+            total = sum(path.stat().st_size for path in (drive_root / folder).glob(pattern) if path.is_file())
+        except OSError:
+            total = 0
+        if total > threshold:
+            notes.append(f"WARNING: HOT STORE GROWTH — {folder}/{pattern} totals {total / 1_000_000:.1f} MB "
+                         f"(threshold {threshold // 1_000_000} MB). {remediation}")
     # Custody replay walks the whole events chain (live + rotated segments), so
     # the pre-rotation 100MB replay-degradation signal now watches the chain.
     try:
@@ -862,22 +862,6 @@ def hot_store_growth_notes(env: Any) -> list:
             f"state/headless_tasks and task_drives total {retained_drive_count} "
             f"(threshold {RETAINED_EXECUTION_DRIVES_WARN_COUNT}). Terminal-task retention "
             "or pruning is lagging; inspect lifecycle GC without recursively sizing drives."
-        )
-    try:
-        ledger_size = sum(
-            path.stat().st_size for path in (drive_root / "state" / "review_ledger").glob("index*.jsonl")
-            if path.is_file()
-        )
-    except OSError:
-        ledger_size = 0
-    from ouroboros.context_budget import REVIEW_LEDGER_INDEX_WARN_BYTES
-    if ledger_size > REVIEW_LEDGER_INDEX_WARN_BYTES:
-        notes.append(
-            "WARNING: HOT STORE GROWTH — state/review_ledger/index*.jsonl totals "
-            f"{ledger_size / 1_000_000:.1f} MB (threshold "
-            f"{REVIEW_LEDGER_INDEX_WARN_BYTES // 1_000_000} MB). Task context reads only the "
-            "rotating hot index; readers that walk the rotated segments replay this chain — move old "
-            "segments and the records they name to cold storage, never delete the newest."
         )
     return notes
 
