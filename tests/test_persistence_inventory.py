@@ -685,7 +685,11 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # tool_results also gains acceptance_tool_trajectory. Existing section-7 rows
 # cover these immutable sources; no stale-row or unresolved-path exemption.
 # Own-body candidates add two existing-owner state paths alongside the retained source store.
-EXPECTED_SCAN_PATHS = 339
+# 339 -> 345 (review ledger): ``state/review_ledger`` with its per-wave ``<record_id>.json``
+# records, the hot ``index.jsonl`` and its rotated ``index.<stamp>[_n].jsonl`` segments
+# (``ouroboros/review_ledger.py``; one section-4 row), plus ``locks/review_ledger.lock``,
+# which the existing ``locks/**`` sidecar row covers.
+EXPECTED_SCAN_PATHS = 345
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

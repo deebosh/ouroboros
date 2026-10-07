@@ -52,6 +52,7 @@ from ouroboros.tools.commit_gate import (
     _invalidate_advisory,  # noqa: F401
     _record_commit_attempt,
     record_bound_commit_success, prepare_author_commit_request,
+    record_commit_gate_refusal, name_review_record,
     check_identical_verdict_refusal,
     check_review_cycles_ceiling,
     classify_review_block,  # noqa: F401
@@ -202,6 +203,9 @@ def _free_cycle_gate(
         pass
     if _authorized_managed_update_resolver(ctx):
         _repair_managed_merge_head(ctx)
+    # A free refusal is still a review outcome: its NOT_DISPATCHED ledger record names why nothing was reviewed.
+    record_id = record_commit_gate_refusal(ctx, commit_message, goal=goal, scope=scope, pre_fingerprint=pre_fingerprint,
+                                           kind=reason, message=message)
     _record_commit_attempt(
         ctx,
         commit_message,
@@ -213,11 +217,13 @@ def _free_cycle_gate(
         pre_review_fingerprint=str(fp),
         rebuttal_sha256=rebuttal_sha,
         review_contract_fingerprint=contract_fp,
+        review_record_id=record_id,
     )
     return {
         "status": "blocked",
         "message": message,
         "block_reason": reason,
+        "review_record_id": record_id,
     }
 
 
@@ -1155,6 +1161,11 @@ def _publish_reviewed_commit(
     return _publish_post_commit_test_fact(ctx, result + ci_note, test_warning)
 
 
+def _commit_reviewed(ctx: ToolContext, commit_message: str, *args: Any, **kwargs: Any) -> str:
+    """The public commit handler: an outcome of a call that wrote a review record names it."""
+    return name_review_record(ctx, _repo_commit_push(ctx, commit_message, *args, **kwargs))
+
+
 def _repo_commit_push(ctx: ToolContext, commit_message: str,
                        paths: Optional[List[str]] = None,
                        skip_tests: bool = False,
@@ -1495,9 +1506,9 @@ def get_tools() -> List[ToolEntry]:
     }
     return [
         ToolEntry("commit_reviewed", {"name": "commit_reviewed", "description": reviewed_commit_description,
-            "parameters": {"type": "object", "properties": commit_properties, "required": ["commit_message"]}}, _repo_commit_push, is_code_tool=True),
+            "parameters": {"type": "object", "properties": commit_properties, "required": ["commit_message"]}}, _commit_reviewed, is_code_tool=True),
         ToolEntry("vcs_commit_reviewed", {"name": "vcs_commit_reviewed", "description": reviewed_commit_description,
-            "parameters": {"type": "object", "properties": commit_properties, "required": ["commit_message"]}}, _repo_commit_push, is_code_tool=True),
+            "parameters": {"type": "object", "properties": commit_properties, "required": ["commit_message"]}}, _commit_reviewed, is_code_tool=True),
         ToolEntry("vcs_status", {
             "name": "vcs_status",
             "description": "git status --porcelain for the selected repository.",
