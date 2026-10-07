@@ -787,14 +787,15 @@ export function renderSettingsPage() {
                         <div class="settings-section-copy">
                             While this client is running, Ouroboros can pull you back to a question or a
                             finished task. Notifications arrive whether or not this window has focus, and
-                            clicking one opens its source. The desktop app shows them as system notifications
-                            where the system allows it, with the system's own sound; otherwise a browser banner
-                            or an alert inside the app. Sound off sends them silently, except a Windows
-                            balloon, which follows Windows' own sound setting.
+                            clicking one opens its source where the system supports it. The desktop app hands
+                            them to the system's own notifications where the system allows it, and that system
+                            decides their sound; otherwise a browser banner or an alert inside the app. Sound off
+                            asks for them silently. Test asks the system for permission when it has not been asked yet.
                             <br><strong>Per device, not per account:</strong> like the theme above, these choices
                             are stored by this client alone and never sent to the server.
-                            Where this system exposes no notifications, or permission is denied, alerts appear
-                            inside the app instead. Do Not Disturb and OS permissions still decide what you see.
+                            Where this system exposes no notifications, or permission is denied, alerts fall back
+                            to a browser banner this client allows, or to the app. Do Not Disturb and OS
+                            permissions still decide what you see.
                         </div>
                         <div class="settings-effort-card">
                             <label class="local-toggle ui-field ui-field-inline">

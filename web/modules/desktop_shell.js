@@ -12,6 +12,10 @@
      Apps before 7.2.0 start the WebView in pywebview's private mode, which erases
      website data whenever a window opens, so Theme and Notifications come back
      as defaults after every launch; Settings says so instead of pretending.
+   - a `shell_info` call that fails is read like a missing one: only the stamped
+     version is left, and nothing else is inferred from the failure. Whether the
+     app can send system notifications is the notifier's own check of its method,
+     never a version, so a failed call cannot make a current app look old.
 
    A browser tab has no desktop bridge and none of these facts apply to it. */
 
@@ -33,14 +37,14 @@ function before(version, floor) {
     return false;
 }
 
-/** Pure: what the bridge (`info`, or null for an app without `shell_info`) and the server said. */
+/** Pure: what the bridge (`info`: `shell_info()`'s answer, or null when the app has no such
+ *  method or its call failed) and the server said. */
 export function describeShell({ bridge = false, info = null, appVersion = '' } = {}) {
     if (!bridge) return { desktop: false };
     if (info && typeof info === 'object') {
         const native = info.native_notifications;
         return {
             desktop: true,
-            legacy: false,
             version: String(info.shell_version || appVersion || ''),
             persistentStorage: typeof info.persistent_storage === 'boolean' ? info.persistent_storage : null,
             native: native && typeof native === 'object' ? { ...native } : null,
@@ -49,17 +53,13 @@ export function describeShell({ bridge = false, info = null, appVersion = '' } =
     const parsed = parseAppVersion(appVersion);
     return {
         desktop: true,
-        // No shell_info plus no stamped version is an observation gap, not proof
-        // that this is an old launcher. A failed bridge call can leave a current
-        // launcher looking legacy if we collapse the two cases.
-        legacy: parsed ? true : null,
         version: String(appVersion || ''),
         persistentStorage: parsed ? !before(parsed, PERSISTENT_STORAGE_SINCE) : null,
         native: null,
     };
 }
 
-const appName = (shell, start = 'This') => `${start} desktop app${shell?.version ? ` (${shell.version})` : ''}`;
+const appName = (shell) => `This desktop app${shell?.version ? ` (${shell.version})` : ''}`;
 
 /** One line for Settings → Appearance, or '' when there is nothing to disclose. */
 export function shellStorageText(shell) {
@@ -67,12 +67,6 @@ export function shellStorageText(shell) {
     return `${appName(shell)} erases this window's saved data every time it starts, so Theme and `
         + 'Notifications return to their defaults after a restart. Install the current Ouroboros app to keep '
         + 'them: updates inside Ouroboros replace its core, not the app around it.';
-}
-
-/** The legacy-app sentence for notifications (owner decision 3A: fall back, and say why). */
-export function legacyNotifyText(shell) {
-    return `System notifications need the current Ouroboros desktop app; ${appName(shell, 'this')} `
-        + 'predates them, so alerts appear in the app instead. Updates inside Ouroboros do not replace the app itself.';
 }
 
 async function serverAppVersion() {

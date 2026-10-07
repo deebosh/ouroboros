@@ -40,6 +40,7 @@ INDICATOR_WAIT_SEC = 3.0
 PERSISTENT_WEBVIEW_STORAGE = True
 STATUS_POLL_SEC = 15.0
 _active = None  # the started indicator, for the exit and Panic paths
+_notifier = None  # the system-notification adapter, for the same paths (Windows' icons outlive a process)
 
 
 def indicator_class():
@@ -111,22 +112,23 @@ def activate_running_instance(lock_path) -> bool:
 
 
 def request_tray_cleanup() -> None:
-    """Panic: start removing the icon without waiting for it."""
-    if _active is not None:
-        try:
-            _active.stop(wait=0)
-        except Exception:
-            log.warning("Indicator cleanup request failed; Panic continues.", exc_info=True)
+    """Panic: start removing the icons without waiting for them."""
+    for owner in (_active, _notifier):
+        if owner is not None:
+            try:
+                owner.stop(wait=0)
+            except Exception:
+                log.warning("Icon cleanup request failed; Panic continues.", exc_info=True)
 
 
 def stop_tray_before_exit(release_lock, *, wait: float = 0.5) -> None:
-    """Remove the icon before an ordinary exit (bounded); Panic passes ``wait=0``."""
-    indicator = _active
-    if indicator is not None:
-        try:
-            indicator.stop(wait=wait)
-        except Exception:
-            log.warning("Indicator cleanup failed before process exit.", exc_info=True)
+    """Remove the icons before an ordinary exit (bounded each); Panic passes ``wait=0``."""
+    for owner in (_active, _notifier):
+        if owner is not None:
+            try:
+                owner.stop(wait=wait)
+            except Exception:
+                log.warning("Icon cleanup failed before process exit.", exc_info=True)
     release_lock()
 
 
@@ -263,9 +265,8 @@ class Indicator:
     def _shown(self) -> None:
         pass
 
-    def notify(self, title: str, body: str, token: str = "") -> bool:
-        """Show a native banner for an alert; False when there is none (the caller plays the sound).
-        ``token``: the page's click token of a system notification (``Background.open_notification``)."""
+    def notify(self, title: str, body: str, sound: bool = True) -> bool:
+        """Show a native banner for an alert; False when there is certainly none (the caller plays the sound)."""
         return False
 
     def set_status(self, text: str) -> None:
@@ -287,8 +288,8 @@ class Background:
         self.window = None
         self.native_ready = False
         self.indicator = cls(self) if cls is not None else None
-        self.notifications = native_notifier(self, self.open_notification,
-                                             lambda: request_native_attention(None, sound=True))
+        global _notifier
+        self.notifications = _notifier = native_notifier(self.open_notification)
         self._asking = threading.Lock()
         self._poller = None
         # An open request (a second launch) can arrive during the boot, before the window exists: it is
@@ -405,7 +406,8 @@ class Background:
         will show its own browser banner asks first with ``cue_when_visible=False``: a visible
         window then gets nothing from here (that banner owns the sound) and answers "visible"."""
         if self.indicator is not None and self.indicator.hidden:
-            banner = self.indicator.notify(title or "Ouroboros", body or "Something needs your attention.")
+            banner = self.indicator.notify(title or "Ouroboros", body or "Something needs your attention.",
+                                           bool(sound))
             cue = request_native_attention(None, sound=bool(sound) and not banner)
             return {"ok": bool(banner or cue.get("ok")), "status": "background", "banner": bool(banner),
                     "sound_played": bool(cue.get("sound_played"))}
@@ -499,11 +501,14 @@ class DesktopApi:
                 "native_notifications": self._notifier_answer("status")}
 
     def request_native_notifications(self) -> dict:
-        """The system's one permission question, asked from the owner's own gesture (enabling, the test)."""
+        """The system's one permission question. The page asks it only from the owner's own gesture
+        (switching notifications on, the Test button); a notification never does."""
         return self._notifier_answer("ask")
 
     def show_native_notification(self, title: str = "", body: str = "", sound: bool = True, token: str = "") -> dict:
-        """One system notification; ``delivered`` means the system owns it and its sound (no page tone)."""
+        """One system notification: ``submitted`` (the system took it and owns its sound: no page tone),
+        ``unknown`` (handed over, unanswered: it may still appear, so the page adds nothing) or a typed
+        refusal on which the page falls back."""
         notifier = getattr(self._background, "notifications", None)
         if notifier is None:
             return refused(platform_name(), UNAVAILABLE, "no_platform_adapter")

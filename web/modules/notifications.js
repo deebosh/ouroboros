@@ -26,12 +26,16 @@
    posts them.
 
    System notifications come first where the desktop app offers them
-   (`show_native_notification`, launcher_background.DesktopApi): the OS shows the
-   alert even while the window is in front and owns its sound, so the page adds no
-   tone and no toast; its click hands back a token that opens the same source a
-   browser banner would. Any other answer — not yet allowed, denied, unavailable,
-   failed, or an app too old to have the method — falls back to the browser banner
-   or the in-app toast, and Settings names which one this client is using.
+   (`show_native_notification`, launcher_background.DesktopApi). `submitted` means
+   the system took the alert, in front or not, and owns its sound, so the page adds
+   no tone and no toast; its click hands back a token that opens the same source a
+   browser banner would. `unknown` means it was handed over and not answered in
+   time: it may still appear, so the page adds nothing and keeps its click target.
+   A refusal — not yet allowed, denied, unavailable, failed — or an app too old to
+   have the method falls back to the browser banner or the in-app toast. Settings
+   keeps the system's permission and what became of the last alert apart, so a
+   failed hand-off never reads as a withdrawn permission. Only the owner's gesture
+   (switching notifications on, Test) asks the system for permission.
 
    Not claimed: no OS permission prompt, Do Not Disturb setting or platform
    limit is bypassed. Where the Notification API is missing or denied, delivery
@@ -78,8 +82,8 @@ const BODY_CHARS = 140;
    later; that is the disclosed tradeoff against unbounded growth. */
 const SEEN_LIMIT = 2000;
 const LINEAGE_LIMIT = 2000;
-/* Click tokens of system notifications still on screen; a click after a reload
-   (or past this bound) only opens the window, which the app already does. */
+/* Click tokens of system notifications that were submitted or may have been; a
+   click after a reload (or past this bound) only opens the window. */
 const NATIVE_LIMIT = 200;
 /* The web owner thread. A frame with no chat id at all is legacy Main traffic,
    exactly as the chat log gate reads it. */
@@ -357,30 +361,53 @@ export function attentionStatusText({ enabled = true, nativeAttention = false, s
     return 'This client has no native attention bridge; alerts stay inside the app.';
 }
 
-/** The system-notification line for a desktop app, or '' when the browser line applies. Pure. */
-export function nativeStatusText({ enabled = true, shell = null, capability = null } = {}) {
+/** The system-notification line for a desktop app, or '' when the browser line applies. Pure.
+ *  `native`: the app has `show_native_notification` (its absence, not a version, makes an app too old);
+ *  `capability`: the system's permission as last answered, with any `limits` its server reported;
+ *  `outcome`: what became of the last alert; `banner`: this client may show a browser banner, so a
+ *  fallback is that banner or the in-app toast, never claimed as one of them. */
+export function nativeStatusText({ enabled = true, shell = null, native = false, capability = null, outcome = null, banner = false } = {}) {
     if (!enabled || !shell?.desktop) return '';
     const app = `this desktop app${shell.version ? ` (${shell.version})` : ''}`;
-    if (shell.legacy) {
+    const fallback = banner ? 'a browser banner or the app' : 'the app';
+    if (!native) {
         // Owner decision 3A: an app without the native method falls back, and says why.
         return `System notifications need the current Ouroboros desktop app; ${app} predates them, so alerts `
-            + 'appear in the app instead. Updates inside Ouroboros do not replace the app itself.';
+            + `fall back to ${fallback}. Updates inside Ouroboros do not replace the app itself.`;
     }
     const status = text(capability?.status);
-    if (status === 'authorized') {
-        return 'System notifications are on: the system shows each alert, even while this window is in front, '
-            + 'and plays its own sound.';
+    const why = (fact) => (text(fact?.reason) ? ` (${text(fact.reason)})` : '');
+    if (status === 'not_determined' && text(capability?.reason)) {
+        // The system's own error to its question: not the owner's denial (desktop_notifications.MacNotifier).
+        return `The system could not ask whether Ouroboros may show notifications${why(capability)}, `
+            + `so alerts fall back to ${fallback}.`;
     }
     if (status === 'not_determined') {
-        return 'The system asks once whether Ouroboros may show notifications; until it is allowed, alerts appear in the app.';
+        return 'The system has not been asked yet whether Ouroboros may show notifications; Test asks it. '
+            + `Until it is allowed, alerts fall back to ${fallback}.`;
     }
     if (status === 'denied') {
-        return 'The system denied notifications for Ouroboros, so alerts appear in the app instead. '
+        return `The system denied notifications for Ouroboros, so alerts fall back to ${fallback}. `
             + 'Allow Ouroboros in the system notification settings to get them.';
     }
     if (status === 'unavailable') {
-        const why = text(capability?.reason);
-        return `System notifications are unavailable to ${app} here${why ? ` (${why})` : ''}, so alerts appear in the app instead.`;
+        return `System notifications are unavailable to ${app} here${why(capability)}, so alerts fall back to ${fallback}.`;
+    }
+    const last = text(outcome?.status);
+    if (last === 'failed') {
+        return `The last alert could not be handed to the system${why(outcome)}, so it fell back to ${fallback}.`;
+    }
+    if (last === 'unknown') {
+        return 'The system did not confirm the last alert in time; it may still appear there, so the app did not repeat it.';
+    }
+    if (status === 'authorized' || last === 'submitted') {
+        // A server that lacks an optional capability says so (Linux: `sound`, `actions`).
+        const limits = Array.isArray(capability?.limits) ? capability.limits : [];
+        const lacks = [limits.includes('no_sound') && 'plays no sound for them',
+            limits.includes('no_click') && 'cannot open their source when clicked'].filter(Boolean);
+        return 'System notifications are on: alerts go to the system, whose notification settings, Focus or '
+            + 'Do Not Disturb decide how they appear and sound.'
+            + (lacks.length ? ` This system's notification server ${lacks.join(' and ')}.` : '');
     }
     return '';
 }
@@ -407,6 +434,7 @@ export function createNotifier({
     let attentionStatus = '';
     let shell = null; // the desktop app's own facts (desktop_shell.js), handed in by Settings
     let nativeCapability = null; // its system-notification permission, as last answered
+    let nativeOutcome = null; // what became of the last alert handed to the system
     let tokenSeq = 0;
     const nativeTargets = new Map();
     const seen = new Set();
@@ -494,13 +522,33 @@ export function createNotifier({
         return typeof api?.show_native_notification === 'function' ? api : null;
     };
 
-    function noteNative(answer) {
+    const PERMISSION_STATES = ['authorized', 'not_determined', 'denied', 'unavailable'];
+
+    function noteCapability(answer) {
         const status = text(answer?.status);
-        if (status === 'delivered') nativeCapability = { ...nativeCapability, status: 'authorized', reason: '' };
-        else if (['authorized', 'not_determined', 'denied', 'unavailable'].includes(status)) {
-            nativeCapability = { ...nativeCapability, status, reason: text(answer?.reason) };
+        if (PERMISSION_STATES.includes(status)) {
+            const limits = Array.isArray(answer?.limits) ? answer.limits.map(text) : [];
+            nativeCapability = { ...nativeCapability, status, reason: text(answer?.reason), limits };
         }
         syncSettings();
+    }
+
+    /* One alert's answer: `submitted`, `unknown`, or `failed` for everything that never reached the
+       system — a refusal, a broken bridge call, an answer this page cannot read. */
+    function noteDelivery(answer) {
+        const status = text(answer?.status);
+        let outcome = 'failed';
+        if (answer?.ok === true && status === 'submitted') {
+            outcome = 'submitted';
+            nativeCapability = { ...nativeCapability, status: 'authorized', reason: '' };
+        } else if (status === 'unknown') {
+            outcome = 'unknown';
+        } else if (PERMISSION_STATES.includes(status)) {
+            nativeCapability = { ...nativeCapability, status, reason: text(answer?.reason) };
+        }
+        nativeOutcome = { status: outcome, reason: outcome === 'submitted' ? '' : text(answer?.reason) };
+        syncSettings();
+        return outcome;
     }
 
     function deliver(decision) {
@@ -511,11 +559,11 @@ export function createNotifier({
         if (nativeTargets.size > NATIVE_LIMIT) nativeTargets.delete(nativeTargets.keys().next().value);
         const settle = (answer) => {
             if (destroyed) return;
-            noteNative(answer);
-            // Delivered: the system shows it and owns its sound (1A), in front or not (2A).
-            if (answer?.ok === true && answer.status === 'delivered') return;
+            // Submitted, or handed over without an answer: the system may show it, in front or not (2A),
+            // and owns its sound (1A), so nothing else is shown and the click target stays.
+            if (noteDelivery(answer) !== 'failed') return;
             nativeTargets.delete(token);
-            deliverInPage(decision); // not allowed, denied, unavailable or failed: the typed fallback
+            deliverInPage(decision); // never reached the system: the typed fallback
         };
         try {
             void Promise.resolve(api.show_native_notification(
@@ -535,9 +583,18 @@ export function createNotifier({
         return true;
     }
 
+    /* A legacy `notify_owner` bridge without `show_native_notification` cannot keep Sound off: hidden,
+       (`request_attention` is the same method there) shows a Windows balloon with Windows' sound
+       whatever the page asks, and a core update cannot change that frozen launcher. A silent alert
+       therefore never asks it: the browser banner or the in-app toast, without a sound. */
+    const attentionBridge = (decision) => {
+        const api = bridge();
+        return !decision.sound && !nativeHost() && typeof api?.notify_owner === 'function' ? null : api;
+    };
+
     function deliverInPage(decision) {
         const banner = supported() && permission() === 'granted';
-        const api = bridge();
+        const api = attentionBridge(decision);
         if (banner && typeof api?.notify_owner === 'function') {
             // A launcher that can hide its window on purpose answers first: hidden, its own native
             // signal is the one that opens the window (focus() cannot undo a hide); visible, it does
@@ -615,9 +672,12 @@ export function createNotifier({
             // owner's choices stay visible rather than being reset.
             if (key !== 'enabled') input.disabled = !prefs.enabled;
         }
-        const facts = shell || (nativeHost() ? { desktop: true, legacy: false } : null);
-        const nativeLine = storageAvailable
-            ? nativeStatusText({ enabled: prefs.enabled, shell: facts, capability: nativeCapability }) : '';
+        const native = Boolean(nativeHost());
+        const facts = shell || (native ? { desktop: true } : null);
+        const nativeLine = storageAvailable ? nativeStatusText({
+            enabled: prefs.enabled, shell: facts, native, capability: nativeCapability, outcome: nativeOutcome,
+            banner: supported() && permission() === 'granted',
+        }) : '';
         for (const node of root.querySelectorAll('[data-notify-status]')) {
             const next = nativeLine || notifyStatusText({
                 enabled: prefs.enabled,
@@ -629,8 +689,11 @@ export function createNotifier({
         }
         for (const node of root.querySelectorAll('[data-notify-attention-status]')) {
             const api = bridge();
-            // While the system shows the alerts, the attention cue is only their fallback: no second line.
-            const next = text(nativeCapability?.status) === 'authorized' ? '' : attentionStatusText({
+            // While alerts go to the system, the attention cue is only their fallback: no second line
+            // until an alert actually fell back to it.
+            const systemOwns = native && text(nativeCapability?.status) === 'authorized'
+                && text(nativeOutcome?.status) !== 'failed';
+            const next = systemOwns ? '' : attentionStatusText({
                 enabled: prefs.enabled,
                 nativeAttention,
                 supported: supported(),
@@ -648,7 +711,7 @@ export function createNotifier({
         const api = nativeHost();
         if (typeof api?.request_native_notifications === 'function') {
             // The desktop app's own question (macOS asks once); the browser API is not asked as well.
-            try { noteNative(await api.request_native_notifications()); } catch { /* the in-app path remains */ }
+            try { noteCapability(await api.request_native_notifications()); } catch { /* the in-app path remains */ }
             return text(nativeCapability?.status) || 'unavailable';
         }
         if (!supported() || permission() === 'granted' || permission() === 'denied') return permission();
@@ -683,7 +746,11 @@ export function createNotifier({
             target: {},
         }, { ...prefs, important: true, show_text: true }, null);
         if (!decision.deliver) return null;
-        return { ...decision, surface: deliver(decision) };
+        if (typeof nativeHost()?.request_native_notifications !== 'function') return { ...decision, surface: deliver(decision) };
+        // The Test click is the owner's gesture: the system may ask its one question first, then the
+        // alert goes the ordinary way. A live alert never asks.
+        void requestPermission().then(() => { if (!destroyed) deliver(decision); });
+        return { ...decision, surface: 'native' };
     }
 
     const onChange = (event) => {

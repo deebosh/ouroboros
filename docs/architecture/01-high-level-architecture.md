@@ -323,9 +323,9 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── launcher_onboarding.py ← First-run onboarding as the desktop launcher presents it (serves the gateway /onboarding page; §2)
       ├── launcher_server_reaper.py ← POSIX same-install server discovery, pre-signal descendant capture, root-first termination, live identity revalidation; PID-lock-owning launcher only (Runtime topology below)
       ├── launcher_windows_runtime.py ← Windows-only pythonnet/pywebview runtime preparation
-      ├── launcher_background.py ← Desktop background mode: close vs quit, the one consent question, quiet start, the way back, second-launch activation (§9)
+      ├── launcher_background.py ← Desktop background mode: close vs quit, the one consent question, quiet start, the way back, second-launch activation (§9); `DesktopApi`, the bridge's alert half `MainApi` inherits: attention cue, `shell_info`, system notifications (§3)
       ├── launcher_tray.py, launcher_tray_macos.py ← Its indicators: Windows notification-area icon on an STA thread (FormClosing sees the close reason); macOS menu-bar item, Dock reopen, quit marking (§9)
-      ├── desktop_notifications.py ← System notifications for the desktop window: macOS `UNUserNotificationCenter`, Windows notification-area balloon, Linux freedesktop D-Bus; typed answers, click token back to the page (§3, DESIGN §9)
+      ├── desktop_notifications.py ← System notifications for the desktop window: macOS `UNUserNotificationCenter`, Windows balloon on one icon per notification until its click (`launcher_tray.NotificationIcon`), Linux freedesktop D-Bus; submitted/unknown/typed refusal, click token back to the page (§3, DESIGN §9)
       ├── desktop_autostart.py, windows_autostart.py ← Host sign-in adapter table; packaged-launcher gate, Windows registry, macOS LaunchAgent and Linux systemd/XDG state (Runtime topology below)
       ├── plan_review_facts.py ← Bounded plan-review facts for the learning surfaces: the reflection's plan-review slice and the late-settlement reflection row, with a source pointer and named omissions, never a score (§6 Post-task reflection)
       ├── provider_models.py   ← Model-ID helpers; the `ACTIVE_MODEL_SETTING_KEYS` vs `LEGACY_MODEL_SETTING_KEYS` split keeps Heavy out of startup/Provider Test/new consumers while migration/history still read it

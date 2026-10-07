@@ -303,11 +303,14 @@ are excluded from the settings-dirty tracker, never reach `/api/settings` or
 prompt to discard unsaved settings (`tests/test_notifications_static.py` asserts
 these causes, not just effects). Delivery degrades instead of disappearing;
 the status line identifies this client's surface. Feature-detect the optional
-desktop bridge per call at delivery: only `show_native_notification`'s `delivered`
-is a delivery (the OS owns its sound, so no page tone follows); attention results
-are capability evidence. It may raise the existing window and request one system
-sound; no scheduler, persistence or background process. Importance adds no host
-field, text heuristic or second model call.
+desktop bridge per call at delivery: only `show_native_notification`'s `submitted`
+is a delivery and its `unknown` may still be one (the OS owns the sound, so no page
+tone or second surface follows); attention results are capability evidence, and
+delivery never asks for OS permission. Sound off skips legacy `notify_owner`
+when `show_native_notification` is absent: its balloon cannot be silenced. It
+may raise the existing window and request one system sound; no scheduler,
+persistence or background process.
+Importance adds no host field, text heuristic or second model call.
 
 ### Invariant: UI resources carry a disposer
 

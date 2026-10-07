@@ -22,7 +22,7 @@ test('a browser tab has no desktop facts to disclose', () => {
 test('an app without shell_info is judged by the version its launcher stamped', () => {
     assert.deepEqual(PERSISTENT_STORAGE_SINCE, [7, 2, 0]);
     const old = describeShell({ bridge: true, appVersion: '6.82.0' });
-    assert.equal(old.legacy, true);
+    assert.equal('legacy' in old, false, 'notification support is the notifier\'s check of the method, never a version');
     assert.equal(old.persistentStorage, false, 'pywebview private mode erases website data at every launch');
     assert.equal(old.native, null);
     const text = shellStorageText(old);
@@ -48,7 +48,7 @@ test('a current app reports itself and its notification permission', () => {
         appVersion: 'ignored',
     });
     assert.deepEqual(shell, {
-        desktop: true, legacy: false, version: '7.7.0', persistentStorage: true,
+        desktop: true, version: '7.7.0', persistentStorage: true,
         native: { available: true, status: 'authorized', platform: 'macos', reason: '' },
     });
     assert.equal(shellStorageText(shell), '');
@@ -64,7 +64,7 @@ test('loading prefers the app\'s own answer and never throws', async () => {
     assert.equal(healthAsked, 0, 'a browser never asks the server about an app it is not in');
 
     const legacy = await loadDesktopShell({ win: win({ request_attention() {} }), appVersion });
-    assert.equal(legacy.legacy, true);
+    assert.equal(legacy.persistentStorage, false);
     assert.equal(legacy.version, '6.82.0');
     assert.equal(healthAsked, 1);
 
@@ -72,8 +72,17 @@ test('loading prefers the app\'s own answer and never throws', async () => {
         win: win({ shell_info: async () => ({ shell_version: '7.7.0', persistent_storage: true, native_notifications: null }) }),
         appVersion,
     });
-    assert.equal(current.legacy, false);
+    assert.equal(current.version, '7.7.0');
     assert.equal(healthAsked, 1, 'the app answered for itself');
+
+    for (const failing of [async () => { throw new Error('bridge gone'); }, async () => null]) {
+        const failed = await loadDesktopShell({
+            win: win({ shell_info: failing, show_native_notification() {}, request_native_notifications() {} }),
+            appVersion: async () => '7.7.0',
+        });
+        assert.deepEqual(failed, { desktop: true, version: '7.7.0', persistentStorage: true, native: null },
+            'a failed call leaves its facts unknown and claims nothing about the app\'s age');
+    }
 
     const broken = await loadDesktopShell({
         win: win({ shell_info: async () => { throw new Error('bridge gone'); } }),
