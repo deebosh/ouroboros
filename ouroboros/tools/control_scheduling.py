@@ -687,13 +687,18 @@ def _child_workspace(ctx, metadata, params):
 def child_copies_serving_body(ctx, params) -> bool:
     """Whether a self_worktree child scheduled now copies the serving checkout: this
     selection names it, or names nothing and the supervisor copies the system repository.
-    The body-candidate seam asks before scheduling, so such a child copies the candidate."""
+    The body-candidate seam asks before scheduling, so such a child copies the candidate.
+    A named selection is pinned to the checkout it resolved to here: binding moves the
+    parent folder a relative spelling (``../repo``) is read from, not the selected source."""
     from ouroboros.body_candidate import serving_repo_dir_for
     from ouroboros.workspace_copies import same_directory
 
     metadata = getattr(ctx, "task_metadata", None)
     source, _mode, _parent, error = _child_workspace(ctx, metadata if isinstance(metadata, dict) else {}, params)
-    return not error and (not source or same_directory(source, serving_repo_dir_for(ctx)))
+    copies = not error and (not source or same_directory(source, serving_repo_dir_for(ctx)))
+    if copies and str(params.get("workspace_root") or "").strip():
+        params["workspace_root"] = source
+    return copies
 
 
 def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, **params: Any) -> str:

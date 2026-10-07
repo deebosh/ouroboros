@@ -1,8 +1,6 @@
 """Cold-entry replacement, adoption identity and current shutdown evidence."""
 import pathlib
 import shutil
-import subprocess
-import sys
 
 import pytest
 

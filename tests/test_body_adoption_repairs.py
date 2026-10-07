@@ -8,10 +8,7 @@ preserving and the refusing branch of the repaired seam. Real Git throughout.
 from __future__ import annotations
 
 import json
-import os
 import pathlib
-import subprocess
-import sys
 from types import SimpleNamespace
 
 import pytest

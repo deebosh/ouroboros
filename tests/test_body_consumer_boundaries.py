@@ -76,7 +76,7 @@ def test_patch_add_delete_keep_serving_targets_and_real_nested_paths(body, prepa
 
 @pytest.mark.parametrize("prepared", [False, True])
 @pytest.mark.parametrize("external", [False, True])
-@pytest.mark.parametrize("spelling", ["absolute", "relative", "symlink"])
+@pytest.mark.parametrize("spelling", ["absolute", "relative", "sibling", "symlink"])
 def test_explicit_serving_child_source_is_copied_from_candidate(body, monkeypatch, tmp_path, prepared, external, spelling):
     from ouroboros.tools.control_scheduling import _child_workspace
     from ouroboros.workspace_copies import admitted_copy_metadata
@@ -90,9 +90,13 @@ def test_explicit_serving_child_source_is_copied_from_candidate(body, monkeypatc
     if prepared:
         body_candidate.prepare(ctx)
     selected = str(serving)
-    if spelling == "relative":
+    if spelling in {"relative", "sibling"}:
         import os
-        selected = os.path.relpath(serving, ctx.workspace_root or ctx.repo_dir)
+        base = ctx.workspace_root or ctx.repo_dir
+        # ``sibling`` names the checkout through its parent (``../repo`` from an unbound
+        # parent), the spelling whose meaning the first binding would otherwise move.
+        selected = (os.path.relpath(serving, base) if spelling == "relative"
+                    else os.path.join(os.path.relpath(serving.parent, base), serving.name))
     elif spelling == "symlink":
         alias = tmp_path / "serving-alias"
         alias.symlink_to(serving, target_is_directory=True)
@@ -158,7 +162,7 @@ def test_unavailable_project_focus_keeps_own_body_child_on_the_candidate(body, m
 
 
 @pytest.mark.parametrize("parent", ["folderless_project", "metadata_serving", "metadata_foreign", "explicit_foreign",
-                                    "explicit_missing"])
+                                    "explicit_missing", "explicit_sibling"])
 def test_own_body_child_source_is_the_schedulers_own_selection(body, monkeypatch, tmp_path, parent):
     """The seam binds exactly when the scheduler's selection copies the serving checkout."""
     import ouroboros.safety as safety
@@ -174,6 +178,8 @@ def test_own_body_child_source_is_the_schedulers_own_selection(body, monkeypatch
         ctx.task_metadata["workspace_root"] = str(serving if parent == "metadata_serving" else foreign)
     options = {"workspace_root": str(foreign / "absent" if parent == "explicit_missing" else foreign)
                } if parent.startswith("explicit_") else {}
+    if parent == "explicit_sibling":  # read from the unbound parent's serving folder, before the seam binds
+        options = {"workspace_root": f"../{serving.name}"}
     result = registry(ctx).execute_result("schedule_subagent", {
         "subagent_id": configure_test_subagent(monkeypatch), "objective": "Body work", "expected_output": "Patch",
         "write_surface": "self_worktree", **options})
