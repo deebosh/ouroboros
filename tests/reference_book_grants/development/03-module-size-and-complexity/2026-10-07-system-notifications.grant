@@ -1,0 +1,2 @@
+89
+The notifications invariant names the one delivery claim the bridge may make (show_native_notification's delivered, which owns the sound); the old capability-evidence sentence is replaced, not appended.

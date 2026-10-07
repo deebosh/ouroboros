@@ -6,8 +6,9 @@ decided in the form's own FormClosing handler, the one place that sees its Close
 ask, while sign-out, shutdown and Task Manager closes always quit. The named auto-reset
 kernel event behind a manual second launch exists only while its owning launcher holds
 a handle; its name derives from the installation's PID-lock path, so it is not a
-persistent file and a crashed owner cannot leave a stale request. WinForms and Win32
-load only on Windows.
+persistent file and a crashed owner cannot leave a stale request. ``NotificationIcon`` shows a
+system notification's balloon while background mode has no icon (``desktop_notifications``).
+WinForms and Win32 load only on Windows.
 """
 
 import hashlib
@@ -105,6 +106,7 @@ class WindowsTray(Indicator):
         self._icon = None
         self._disposed = threading.Event()
         self._balloons = queue.SimpleQueue()
+        self._balloon_token = ""  # the shown balloon's click token ("" for an attention banner: open only)
         self._status = "Ouroboros"
 
     def attach_native(self, window):
@@ -121,10 +123,10 @@ class WindowsTray(Indicator):
 
         window.native.FormClosing += form_closing
 
-    def notify(self, title, body):
+    def notify(self, title, body, token=""):
         if not self.ready.is_set():
             return False
-        self._balloons.put((title, body))  # shown by the STA tick; the OS plays the banner's sound
+        self._balloons.put((title, body, token))  # shown by the STA tick; the OS plays the banner's sound
         return True
 
     def set_status(self, text):
@@ -155,6 +157,11 @@ class WindowsTray(Indicator):
 
         def restore(sender=None, args=None):
             background.show_window()
+
+        def balloon_clicked(sender, args):
+            # A system notification's balloon carries the page's token: open the window AND its source.
+            token, self._balloon_token = self._balloon_token, ""
+            threading.Thread(target=background.open_notification, args=(token,), daemon=True).start()
 
         def dispose_icon():
             icon = self._icon
@@ -210,7 +217,7 @@ class WindowsTray(Indicator):
                         restore()
 
                 icon.MouseClick += mouse_click
-                icon.BalloonTipClicked += restore
+                icon.BalloonTipClicked += balloon_clicked
                 context = ApplicationContext()
                 timer = Timer()
                 timer.Interval = 200
@@ -224,7 +231,7 @@ class WindowsTray(Indicator):
                         state_item.Text = self._status
                         icon.Text = self._status[:63]  # the notification-area tooltip limit
                     while not self._balloons.empty():
-                        title, body = self._balloons.get_nowait()
+                        title, body, self._balloon_token = self._balloons.get_nowait()
                         icon.ShowBalloonTip(5000, title, body, ToolTipIcon.Info)
                     if icon.Visible:
                         self.ready.set()
@@ -257,3 +264,94 @@ class WindowsTray(Indicator):
         thread.SetApartmentState(ApartmentState.STA)
         thread.Start()
         return True
+
+
+class NotificationIcon:
+    """The icon behind a system notification while background mode has no icon of its own.
+
+    Windows 10/11 present a notification-area balloon as a system notification with Windows' own
+    sound; the icon is visible only while its balloon is pending, so no permanent second icon appears.
+    Its own STA pump, like ``WindowsTray``; a click hands the balloon's token to ``on_click``."""
+
+    def __init__(self, on_click):
+        self._on_click = on_click
+        self._queue = queue.SimpleQueue()
+        self._lock = threading.Lock()
+        self._tried = False
+        self._alive = threading.Event()  # the pump runs: a queued balloon will be shown
+
+    def show(self, title, body, token) -> bool:
+        with self._lock:
+            if not self._tried:
+                self._tried = True
+                self._start()
+        if not self._alive.is_set():
+            return False
+        self._queue.put((title, body, token))
+        return True
+
+    def _start(self) -> None:
+        if sys.platform != "win32":
+            return
+        try:
+            import clr
+
+            clr.AddReference("System.Windows.Forms")
+            clr.AddReference("System.Drawing")
+            from System.Drawing import Icon, SystemIcons
+            from System.Threading import ApartmentState, Thread, ThreadStart
+            from System.Windows.Forms import Application, ApplicationContext, NotifyIcon, Timer, ToolTipIcon
+
+            from ouroboros.platform_layer import bundled_resource_bases
+        except Exception:
+            log.warning("Notification-area balloons are unavailable here.", exc_info=True)
+            return
+        settled = threading.Event()
+
+        def pump():
+            try:
+                icon = NotifyIcon()
+                icon.Icon = SystemIcons.Application
+                for base in bundled_resource_bases():
+                    if (base / "assets" / "icon.ico").is_file():
+                        icon.Icon = Icon(str(base / "assets" / "icon.ico"))
+                        break
+                icon.Text = "Ouroboros"
+                pending = {"token": ""}
+
+                def clicked(sender, args):
+                    icon.Visible = False
+                    self._on_click(pending["token"])  # on_click starts its own thread
+
+                def closed(sender, args):
+                    icon.Visible = False
+
+                def tick(sender, args):
+                    try:
+                        while not self._queue.empty():
+                            title, body, pending["token"] = self._queue.get_nowait()
+                            icon.Visible = True
+                            icon.ShowBalloonTip(5000, title, body, ToolTipIcon.Info)
+                    except Exception:
+                        log.warning("A notification balloon could not be shown.", exc_info=True)
+
+                icon.BalloonTipClicked += clicked
+                icon.BalloonTipClosed += closed
+                timer = Timer()
+                timer.Interval = 200
+                timer.Tick += tick
+                timer.Start()
+                self._alive.set()
+                settled.set()
+                Application.Run(ApplicationContext())
+            except Exception:
+                log.warning("Notification-area balloon pump failed.", exc_info=True)
+            finally:
+                self._alive.clear()  # later notifications answer unavailable: the page falls back
+                settled.set()
+
+        thread = Thread(ThreadStart(pump))
+        thread.SetApartmentState(ApartmentState.STA)
+        thread.IsBackground = True  # never keeps the launcher alive
+        thread.Start()
+        settled.wait(3.0)

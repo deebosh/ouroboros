@@ -25,6 +25,14 @@
    server, and the controls carry no `s-` id, so the Settings collector never
    posts them.
 
+   System notifications come first where the desktop app offers them
+   (`show_native_notification`, launcher_background.DesktopApi): the OS shows the
+   alert even while the window is in front and owns its sound, so the page adds no
+   tone and no toast; its click hands back a token that opens the same source a
+   browser banner would. Any other answer — not yet allowed, denied, unavailable,
+   failed, or an app too old to have the method — falls back to the browser banner
+   or the in-app toast, and Settings names which one this client is using.
+
    Not claimed: no OS permission prompt, Do Not Disturb setting or platform
    limit is bypassed. Where the Notification API is missing or denied, delivery
    degrades to the in-app toast and says so in Settings. */
@@ -70,6 +78,9 @@ const BODY_CHARS = 140;
    later; that is the disclosed tradeoff against unbounded growth. */
 const SEEN_LIMIT = 2000;
 const LINEAGE_LIMIT = 2000;
+/* Click tokens of system notifications still on screen; a click after a reload
+   (or past this bound) only opens the window, which the app already does. */
+const NATIVE_LIMIT = 200;
 /* The web owner thread. A frame with no chat id at all is legacy Main traffic,
    exactly as the chat log gate reads it. */
 const MAIN_CHAT_ID = 1;
@@ -346,6 +357,34 @@ export function attentionStatusText({ enabled = true, nativeAttention = false, s
     return 'This client has no native attention bridge; alerts stay inside the app.';
 }
 
+/** The system-notification line for a desktop app, or '' when the browser line applies. Pure. */
+export function nativeStatusText({ enabled = true, shell = null, capability = null } = {}) {
+    if (!enabled || !shell?.desktop) return '';
+    const app = `this desktop app${shell.version ? ` (${shell.version})` : ''}`;
+    if (shell.legacy) {
+        // Owner decision 3A: an app without the native method falls back, and says why.
+        return `System notifications need the current Ouroboros desktop app; ${app} predates them, so alerts `
+            + 'appear in the app instead. Updates inside Ouroboros do not replace the app itself.';
+    }
+    const status = text(capability?.status);
+    if (status === 'authorized') {
+        return 'System notifications are on: the system shows each alert, even while this window is in front, '
+            + 'and plays its own sound.';
+    }
+    if (status === 'not_determined') {
+        return 'The system asks once whether Ouroboros may show notifications; until it is allowed, alerts appear in the app.';
+    }
+    if (status === 'denied') {
+        return 'The system denied notifications for Ouroboros, so alerts appear in the app instead. '
+            + 'Allow Ouroboros in the system notification settings to get them.';
+    }
+    if (status === 'unavailable') {
+        const why = text(capability?.reason);
+        return `System notifications are unavailable to ${app} here${why ? ` (${why})` : ''}, so alerts appear in the app instead.`;
+    }
+    return '';
+}
+
 /* ---------------------------------------------------------------- shell ---- */
 
 export function createNotifier({
@@ -366,6 +405,10 @@ export function createNotifier({
     let toast = showToast;
     let nativeAttention = false;
     let attentionStatus = '';
+    let shell = null; // the desktop app's own facts (desktop_shell.js), handed in by Settings
+    let nativeCapability = null; // its system-notification permission, as last answered
+    let tokenSeq = 0;
+    const nativeTargets = new Map();
     const seen = new Set();
     /* Task lineage as the WIRE states it. A finished child and a finished root
        share one log shape with no lineage field
@@ -445,9 +488,56 @@ export function createNotifier({
         }
     }
 
+    const bridge = () => hostApi || shellBridgeApi(globalThis);
+    const nativeHost = () => {
+        const api = bridge();
+        return typeof api?.show_native_notification === 'function' ? api : null;
+    };
+
+    function noteNative(answer) {
+        const status = text(answer?.status);
+        if (status === 'delivered') nativeCapability = { ...nativeCapability, status: 'authorized', reason: '' };
+        else if (['authorized', 'not_determined', 'denied', 'unavailable'].includes(status)) {
+            nativeCapability = { ...nativeCapability, status, reason: text(answer?.reason) };
+        }
+        syncSettings();
+    }
+
     function deliver(decision) {
+        const api = nativeHost();
+        if (!api) return deliverInPage(decision);
+        const token = `n${tokenSeq += 1}-${Date.now().toString(36)}`;
+        nativeTargets.set(token, decision);
+        if (nativeTargets.size > NATIVE_LIMIT) nativeTargets.delete(nativeTargets.keys().next().value);
+        const settle = (answer) => {
+            if (destroyed) return;
+            noteNative(answer);
+            // Delivered: the system shows it and owns its sound (1A), in front or not (2A).
+            if (answer?.ok === true && answer.status === 'delivered') return;
+            nativeTargets.delete(token);
+            deliverInPage(decision); // not allowed, denied, unavailable or failed: the typed fallback
+        };
+        try {
+            void Promise.resolve(api.show_native_notification(
+                decision.title, decision.body || '', Boolean(decision.sound), token,
+            )).then(settle, () => settle(null));
+        } catch { settle(null); }
+        return 'native';
+    }
+
+    /** The desktop app hands back a clicked system notification's token (launcher_background.open_notification). */
+    function activateNative(token) {
+        const key = text(token);
+        const decision = nativeTargets.get(key);
+        if (!decision) return false;
+        nativeTargets.delete(key);
+        try { activate?.(decision.target, decision); } catch { /* navigation is best-effort */ }
+        return true;
+    }
+
+    function deliverInPage(decision) {
         const banner = supported() && permission() === 'granted';
-        const api = hostApi || shellBridgeApi(globalThis);
+        const api = bridge();
         if (banner && typeof api?.notify_owner === 'function') {
             // A launcher that can hide its window on purpose answers first: hidden, its own native
             // signal is the one that opens the window (focus() cannot undo a hide); visible, it does
@@ -525,8 +615,11 @@ export function createNotifier({
             // owner's choices stay visible rather than being reset.
             if (key !== 'enabled') input.disabled = !prefs.enabled;
         }
+        const facts = shell || (nativeHost() ? { desktop: true, legacy: false } : null);
+        const nativeLine = storageAvailable
+            ? nativeStatusText({ enabled: prefs.enabled, shell: facts, capability: nativeCapability }) : '';
         for (const node of root.querySelectorAll('[data-notify-status]')) {
-            const next = notifyStatusText({
+            const next = nativeLine || notifyStatusText({
                 enabled: prefs.enabled,
                 supported: supported(),
                 permission: permission(),
@@ -535,8 +628,9 @@ export function createNotifier({
             if (node.textContent !== next) node.textContent = next;
         }
         for (const node of root.querySelectorAll('[data-notify-attention-status]')) {
-            const api = hostApi || shellBridgeApi(globalThis);
-            const next = attentionStatusText({
+            const api = bridge();
+            // While the system shows the alerts, the attention cue is only their fallback: no second line.
+            const next = text(nativeCapability?.status) === 'authorized' ? '' : attentionStatusText({
                 enabled: prefs.enabled,
                 nativeAttention,
                 supported: supported(),
@@ -551,6 +645,12 @@ export function createNotifier({
     }
 
     async function requestPermission() {
+        const api = nativeHost();
+        if (typeof api?.request_native_notifications === 'function') {
+            // The desktop app's own question (macOS asks once); the browser API is not asked as well.
+            try { noteNative(await api.request_native_notifications()); } catch { /* the in-app path remains */ }
+            return text(nativeCapability?.status) || 'unavailable';
+        }
         if (!supported() || permission() === 'granted' || permission() === 'denied') return permission();
         try {
             const result = await notificationCtor.requestPermission?.();
@@ -664,9 +764,14 @@ export function createNotifier({
         handleFrame,
         test,
         mountSettings: syncSettings,
-        configure({ onActivate: nextActivate, showToast: nextToast } = {}) {
+        activateNative,
+        configure({ onActivate: nextActivate, showToast: nextToast, shell: nextShell } = {}) {
             if (nextActivate) activate = nextActivate;
             if (nextToast) toast = nextToast;
+            if (nextShell) {
+                shell = nextShell;
+                if (shell.native) nativeCapability = { ...shell.native };
+            }
             syncSettings();
         },
         destroy() {
@@ -678,6 +783,7 @@ export function createNotifier({
             try { audioCtx?.close?.(); } catch { /* nothing to close */ }
             audioCtx = null;
             seen.clear();
+            nativeTargets.clear();
         },
     };
 }
@@ -687,11 +793,16 @@ export function createNotifier({
 let singleton = null;
 
 export function getNotifier(options) {
-    if (!singleton) singleton = createNotifier(options);
+    if (!singleton) {
+        singleton = createNotifier(options);
+        // The desktop app calls this when one of its system notifications is clicked.
+        globalThis.ouroNotifications = { activate: (token) => Boolean(singleton?.activateNative(token)) };
+    }
     return singleton;
 }
 
 export function resetNotifier() {
     singleton?.destroy?.();
     singleton = null;
+    delete globalThis.ouroNotifications;
 }

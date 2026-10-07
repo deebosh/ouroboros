@@ -303,8 +303,9 @@ are excluded from the settings-dirty tracker, never reach `/api/settings` or
 prompt to discard unsaved settings (`tests/test_notifications_static.py` asserts
 these causes, not just effects). Delivery degrades instead of disappearing;
 the status line identifies this client's surface. Feature-detect the optional
-desktop bridge per call at delivery: its result is capability evidence, not a
-banner/delivery claim. It may raise the existing window and request one system
+desktop bridge per call at delivery: only `show_native_notification`'s `delivered`
+is a delivery (the OS owns its sound, so no page tone follows); attention results
+are capability evidence. It may raise the existing window and request one system
 sound; no scheduler, persistence or background process. Importance adds no host
 field, text heuristic or second model call.
 

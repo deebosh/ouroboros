@@ -26,9 +26,13 @@ server setting. Existing saved Light/Dark choices keep their meaning. Storage
 failures are visible; clearing site data returns the choice to System. Switching
 repaints mounted charts and diagrams without rebuilding views or losing drafts.
 Independent iframe interiors remain author-owned, not automatically recoloured.
-Desktop persistence requires a launcher built with persistent WebView storage;
-server restart alone cannot verify survival across full quit/relaunch. Mechanism
-and deployment limits: ARCHITECTURE §3 “Navigation and shared UI contracts”.
+Desktop persistence requires a desktop app (launcher) built with persistent
+WebView storage, 7.2.0 or later; in-app updates replace the core, never that app.
+An older app opens its WebView in private mode, which erases website data each
+time its window opens, so Settings → Appearance names that app by its own version
+and says the choices reset at restart, instead of presenting them as kept. Server
+restart alone cannot verify survival across full quit/relaunch. Mechanism and
+deployment limits: ARCHITECTURE §3 “Navigation and shared UI contracts”.
 
 ---
 
@@ -1505,15 +1509,34 @@ not notify, so the task's real completion still can.
 task are one event, not two: whichever arrives first rings, and the other is
 collapsed. The same holds for the several wire shapes a finished task has.
 
-**One sound.** At most one sound per event. Where the system shows a banner, the
-system owns the sound; where a desktop bridge is available, the launcher owns
-one system sound (or reports that it could not play one); otherwise the app
-plays one short tone. Never both, and the Sound choice remains authoritative,
-with one stated exception: the banner the Windows notification-area icon shows
-while the window is hidden in background mode sounds by Windows' own
+**System notifications first.** Where the desktop app offers them, an alert is
+the operating system's own notification: shown even while the window is in
+front, titled with the kind of event, sounding with the system's own sound, and
+kept where that system keeps notifications. macOS uses `UNUserNotificationCenter`
+and asks its one permission question when notifications are switched on (or at
+the first alert after an update brought the capability); Windows shows a
+notification-area balloon, which Windows 10/11 present as a system notification
+(through the background icon while it is live, otherwise an icon that appears
+only while its balloon is pending); Linux uses the freedesktop notification
+service when the desktop runs one. Not yet allowed, denied, unavailable or failed
+is a typed answer, never silence: that alert falls back to the browser banner or
+the in-app toast, and Settings says which surface this client is using. In-app
+updates do not replace the desktop app, so an app built before this capability
+falls back and Settings says that system notifications need the current app.
+Android's host keeps its own channel for its own service; its page has no system
+notifications and says so.
+
+**One sound.** At most one sound per event. A system notification owns its
+sound: the operating system plays it under its own volume and Do Not Disturb,
+and the page plays nothing after it. Without one, where the browser shows a
+banner, the banner owns the sound; where a desktop bridge is available, the
+launcher owns one system sound (or reports that it could not play one);
+otherwise the app plays one short tone. Never both, and the Sound choice remains
+authoritative (Sound off sends a system notification silently), with one stated
+exception: a Windows notification-area balloon sounds by Windows' own
 notification settings (the WinForms balloon call has no silent form), so
-turning Sound off silences the page tone, the macOS sound and the Windows beep,
-not that balloon.
+turning Sound off silences the page tone, the macOS and Linux sounds and the
+Windows beep, not that balloon.
 
 **Each open window is its own client.** Settings, permission and the
 duplicate-collapsing that keeps one event to one notification all belong to one
@@ -1523,17 +1546,18 @@ honest consequence of per-client settings, not a bug we have hidden.
 
 **Click goes to the source.** A notification opens the question or the result it
 is about — the Project room and the exact question when it has one, otherwise
-the conversation. No reply is composed from the banner. The one exception is the
-banner the desktop indicator itself shows while the window is hidden in
-background mode (Windows): its click opens the window as it was left and does not
-navigate.
+the conversation. A system notification first opens the window, hidden or not,
+then the same source. No reply is composed from the banner. The one exception is
+the fallback banner the desktop indicator shows while the window is hidden in
+background mode (Windows, when no system notification was shown): its click
+opens the window as it was left and does not navigate.
 
 **Content is private by default.** Only the kind of event is shown until the
 owner turns message text on, because a banner can appear on a shared screen.
 
 **Deliberately absent.** No numeric badge, no repeated reminder, no inline
-reply, no Telegram escalation, and no promise of a native Notification
-Center/toast banner or attention after the application quits. When the packaged
+reply, no Telegram escalation, and no notification or attention after the
+application quits. When no system notification was shown and the packaged
 desktop launcher exposes its optional `request_attention` bridge, a live
 notification may raise a visible window and ask the operating system for one
 standard sound. A window the owner hid in background mode is never raised by an
@@ -1550,7 +1574,10 @@ the browser banner or in-app toast and report that capability honestly.
 block, and are stored per client exactly like the appearance choice: the desktop
 window and each browser keep their own, nothing reaches the server. A test
 button is the honest way to see what this system actually does with a
-notification, including a denied permission.
+notification, including a denied permission. The status line names the surface
+this client is using — the system's notifications, a browser banner or the
+in-app toast — and, in an older desktop app, says that system notifications need
+the current app.
 
 **Known limits of this version**, stated rather than discovered later:
 
@@ -1567,7 +1594,14 @@ notification, including a denied permission.
   first observed frame is its terminal — it would notify once.
 - An event that happens while the socket is down never rings: reconnect replays
   history, and history is deliberately silent.
-- The Windows notification-area balloon shown while the window is hidden in
-  background mode follows Windows' own sound setting; the client's Sound choice
-  does not silence it. A silent native send needs a direct shell call that this
-  version does not make.
+- A Windows notification-area balloon follows Windows' own sound setting; the
+  client's Sound choice does not silence it. A silent native send needs a direct
+  shell call that this version does not make. A balloon shown through the
+  temporary icon leaves the notification list when that icon goes away.
+- A system notification clicked after its page reloaded only opens the window:
+  click targets live as long as the page that sent them, with no stored ledger.
+- What a system notification looks like is the system's choice: macOS's style
+  for Ouroboros (banners, alerts or none), Focus and Do Not Disturb, Windows'
+  notification settings, and a Linux server's optional actions (without them a
+  click cannot open the source) and sound (without it the desktop's sound theme
+  plays the one sound).

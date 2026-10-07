@@ -1,0 +1,2 @@
+246
+The module tree gains the desktop_notifications.py row: the launcher-owned system-notification adapters (macOS, Windows, Linux) are a new module with no older row to replace.

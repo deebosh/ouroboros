@@ -778,6 +778,7 @@ export function renderSettingsPage() {
                             <label class="theme-choice-label" id="s-appearance-theme-label">Theme</label>
                             <div data-theme-control aria-labelledby="s-appearance-theme-label"></div>
                             <div class="settings-inline-note theme-status" data-theme-status role="status" aria-live="polite"></div>
+                            <div class="settings-inline-note" data-shell-storage-status role="status" aria-live="polite"></div>
                         </div>
                     </div>
 
@@ -786,9 +787,10 @@ export function renderSettingsPage() {
                         <div class="settings-section-copy">
                             While this client is running, Ouroboros can pull you back to a question or a
                             finished task. Notifications arrive whether or not this window has focus, and
-                            clicking one opens its source; a banner from the tray or menu-bar indicator
-                            opens the window as you left it. Sound silences this client's tone and the
-                            macOS sound; a Windows tray balloon follows Windows' own sound setting.
+                            clicking one opens its source. The desktop app shows them as system notifications
+                            where the system allows it, with the system's own sound; otherwise a browser banner
+                            or an alert inside the app. Sound off sends them silently, except a Windows
+                            balloon, which follows Windows' own sound setting.
                             <br><strong>Per device, not per account:</strong> like the theme above, these choices
                             are stored by this client alone and never sent to the server.
                             Where this system exposes no notifications, or permission is denied, alerts appear
