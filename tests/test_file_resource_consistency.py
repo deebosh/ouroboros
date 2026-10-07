@@ -553,11 +553,18 @@ def test_parent_runtime_read_rules_follow_physical_files_across_root_labels(tmp_
             pytest.fail('project-store source was read before admission')
         return original_open(path, *args, **kwargs)
 
+    # A bare-symbol owner_of reads the inventory through that same admission.
+    (repo / 'ouroboros').mkdir()
+    (repo / 'ouroboros' / 'domains.toml').write_text(
+        '[domains]\nD01 = "Synthetic"\n\n[modules]\n"ouroboros/owned.py" = "D01"\n', encoding='utf-8')
+    (repo / 'ouroboros' / 'owned.py').write_text('def owned_fact():\n    pass\n', encoding='utf-8')
     monkeypatch.setattr(pathlib.Path, 'open', permitted_open)
-    for op, options in [('symbols', {}), ('digest', {}), ('structural', {'query': 'FunctionDef'})]:
+    for op, options in [('symbols', {}), ('digest', {}), ('structural', {'query': 'FunctionDef'}),
+                        ('architecture', {'query': 'owner_of owned_fact'})]:
         result = registry.execute('query_code', {'op': op, **options})
         assert 'hidden_project_fact' not in result
         assert 'projects/other/hidden.py' not in result
+        assert op != 'architecture' or 'ouroboros/owned.py -> D01 (Synthetic) [symbol_definition]' in result, result
     assert cached.read_bytes() == cache_before
 
 

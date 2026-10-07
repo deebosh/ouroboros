@@ -63,7 +63,8 @@ outline; their text can still contribute occurrence evidence.
 usable grammar can still contribute text evidence. Text evidence is line-level:
 the first match on a line without syntax context anchors that line, so one long
 line may hold further raw matches. `callers` selects recognized callee positions
-and does not promote text matches to calls. A computed callee such as
+and does not promote text matches to calls. A qualified callee keeps its final
+name, so PHP `\A\B\foo()` is a `foo` call. A computed callee such as
 `getters[key]()` has no callee name; its receiver and index stay ordinary
 references. Go spells type arguments with the same brackets, so syntax alone
 cannot tell `handlers[i]()` from the generic call `Make[int]()`: tree-sitter-go
@@ -72,7 +73,10 @@ expression index is unambiguous; a one-argument `Make[T](x)` parses as a
 generic-type conversion and stays a reference. `callees` retains the local call view within the chosen outline
 ranges, which describe the bytes the inventory hashed in its line model. A file
 changed since then, or a Python file whose bare CR makes AST outline lines differ
-from parser rows, contributes no callee rows and marks the reply incomplete.
+from parser rows, contributes no callee rows. The reply is marked incomplete when
+the current parse still finds calls in such a file; when it finds none, nothing
+remains to misattribute and the mismatch is not disclosed, although the listed
+definition ranges still describe the inventory's bytes.
 Grammar coverage and
 syntax errors can limit those views; an empty caller list does not prove that a
 symbol has no runtime callers.
@@ -153,7 +157,7 @@ that a sibling in another language cannot silently erase ambiguity.
 
 ## Local cache and consumers
 
-`code_intelligence.py` keeps a schema-4, hash-keyed cache of local file facts:
+`code_intelligence.py` keeps a schema-5, hash-keyed cache of local file facts:
 outlines, display import facts, calls, routes, coverage and a separate bounded
 import syntax projection. That projection stores specifiers, line/column anchors,
 parser slots and enclosing names, with method/completeness metadata. Valid Python
@@ -172,10 +176,14 @@ obtained at query time, and import joins are recomputed against current paths,
 so adding or removing a target can change impact without editing its importer.
 Older caches rebuild on first use; the cache remains disposable derived data.
 
-Local calls continue to feed digest's `Calls:` view. `symbol_definitions` remains
+Local calls continue to feed digest's `Calls:` view. Tree-sitter call facts use the
+callee positions `callers` recognizes, so a computed callee such as `getters[key]()`
+records no call; schema 5 discards caches written by the earlier extractor.
+`symbol_definitions` remains
 available to architecture ownership queries. A bare-symbol `owner_of` reads a
-fresh inventory; population modules without an indexed outline (enumeration or
-time limits, skipped files, syntax errors) are named as a coverage limit, so an
+current inventory with the same file admission and exclusions as the other
+inventory operations; population modules without an indexed outline (enumeration
+or time limits, skipped or excluded files, syntax errors) are named as a coverage limit, so an
 empty or short owner list is not reported as absence. Module-path and dotted
 lookups read only the manifest. The existing import-text and
 relative-import helpers remain available to their architecture/review consumers.

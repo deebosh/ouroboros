@@ -79,35 +79,6 @@ def _slot(node: Any) -> str:
     return parent.type
 
 
-def _callee_leaf(node: Any) -> Any:
-    """Only the terminal identifier of a syntactic callee, never its receiver.
-
-    Member/name fields lead to the called name. Otherwise only a sole unlabelled
-    operand, as inside parentheses or a non-null assertion, continues. Several
-    operands (``getters[key]``, a conditional) form a computed callee: none of
-    them is promoted, so they remain ordinary references.
-    """
-    target = None
-    for name in ("function", "name", "method"):
-        target = node.child_by_field_name(name)
-        if target is not None:
-            break
-    while target is not None:
-        if target.child_count == 0:
-            return target if target.type in ci._TS_NAME_TYPES else None
-        child = None
-        for name in ("attribute", "property", "field", "name", "function"):
-            child = target.child_by_field_name(name)
-            if child is not None:
-                break
-        if child is None:
-            operands = [i for i, c in enumerate(target.children) if c.is_named]
-            if len(operands) == 1 and target.field_name_for_child(operands[0]) is None:
-                child = target.children[operands[0]]
-        target = child
-    return None
-
-
 def _source_lines(text: str, *, python_ast: bool = False) -> list[str]:
     """Lines in the coordinate model of the anchor being rendered.
 
@@ -151,7 +122,7 @@ def _tree_rows(tree: Any, file: Any, text: str, query: str | None, mode: str,
                                         _source(lines, line + 1, col + 1), "import?",
                                         " / ".join(ancestors[-2:]), specifier, file.language))
         if mode != "imports" and node.type in ci._TS_CALL_TYPES:
-            callee = _callee_leaf(node)
+            callee = ci._ts_callee_leaf(node)
             if callee is not None:
                 callees.add((callee.start_byte, callee.end_byte))
         if mode != "imports" and node.child_count == 0 and node.is_named:

@@ -354,6 +354,31 @@ def _query_code(
 
     view = NavigationView()
     deadline = time.monotonic() + _structural_wall_budget()
+
+    def admitted(target: pathlib.Path) -> bool:
+        return _visible_file(ctx, repo_root, target.relative_to(repo_root).as_posix(), binding, runtime_check)
+
+    def admitted_inventory(scope: str):
+        """This resource view's inventory; every inventory consumer shares its admission."""
+        from ouroboros.code_intelligence import build_code_inventory
+        from ouroboros.protected_artifacts import protected_artifact_paths
+        from ouroboros.tools.core_secret_paths import is_restricted_subagent_profile
+
+        exclude_paths: list[pathlib.Path] = list(protected_artifact_paths(ctx, binding))
+        # Do not cache an external/ephemeral user_files target's inventory in the
+        # live code-intel cache. Cache writes retain their existing actor/mode
+        # contract independently of file visibility; Cyber acting tasks may persist.
+        persist = not (exclude_paths or normalized_root == "user_files" or is_restricted_subagent_profile(ctx))
+        inventory = build_code_inventory(
+            repo_root, drive_root=pathlib.Path(ctx.drive_root), persist=persist, exclude_paths=exclude_paths,
+            scope=scope, path_allowed=admitted,
+        )
+        inventory.files = [
+            file for file in inventory.files
+            if _visible_file(ctx, repo_root, file.path, binding, runtime_check)
+        ]
+        return inventory
+
     try:
         if op == "architecture":
             # Architecture facts (CPL-3) are defined over the Ouroboros repo's
@@ -367,7 +392,8 @@ def _query_code(
             from ouroboros.code_intelligence_architecture import ARCHITECTURE_LIMIT_MARKER, architecture_fact_rows
 
             try:
-                rows = architecture_fact_rows(repo_root, query)
+                # A bare-symbol owner_of reads source through the same admission.
+                rows = architecture_fact_rows(repo_root, query, inventory=lambda: admitted_inventory(""))
                 view.notes = ["method: pinned architecture carriers; scope: repository; path targets are in query"]
             except ValueError as exc:
                 return f"⚠️ TOOL_ARG_ERROR (query_code): {exc}"
@@ -388,41 +414,17 @@ def _query_code(
             view.incomplete = bool(markers)
             rows = [row for row in rows if row not in markers]
         else:
-            from ouroboros.code_intelligence import build_code_inventory
-            from ouroboros.protected_artifacts import protected_artifact_paths
-
-            exclude_paths: list[pathlib.Path] = list(protected_artifact_paths(ctx, binding))
-            persist = True
-            if exclude_paths or normalized_root == "user_files":
-                # Do not cache an external/ephemeral user_files target's inventory
-                # in the live code-intel cache.
-                persist = False
-            from ouroboros.tools.core_secret_paths import is_restricted_subagent_profile
-
-            # Cache writes retain their existing actor/mode contract independently
-            # of file visibility; Cyber acting tasks may persist as before.
-            if is_restricted_subagent_profile(ctx):
-                persist = False
             inventory_scope = scoped_path
             if op == "impact" or (op in {"references", "callers"} and (repo_root / scoped_path).is_file()):
                 inventory_scope = ""
-            inventory = build_code_inventory(
-                repo_root, drive_root=pathlib.Path(ctx.drive_root), persist=persist, exclude_paths=exclude_paths,
-                scope=inventory_scope,
-                path_allowed=lambda target: _visible_file(ctx, repo_root, target.relative_to(repo_root).as_posix(), binding, runtime_check),
-            )
-            inventory.files = [
-                file for file in inventory.files
-                if _visible_file(ctx, repo_root, file.path, binding, runtime_check)
-            ]
+            inventory = admitted_inventory(inventory_scope)
             from ouroboros.code_navigation import inventory_view
 
             if op == "impact" and ("/" in query or "\\" in query):
                 query = _safe_path(repo_root, query)
             view = inventory_view(
                 inventory, op=op, query=query, path=scoped_path, kind=kind, lang=lang,
-                depth=depth, deadline=deadline,
-                path_allowed=lambda target: _visible_file(ctx, repo_root, target.relative_to(repo_root).as_posix(), binding, runtime_check),
+                depth=depth, deadline=deadline, path_allowed=admitted,
             )
             rows = view.rows
     except ValueError as exc:

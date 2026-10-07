@@ -1,4 +1,5 @@
 """Public-consumer regressions for syntax evidence, scope, pages and fresh joins."""
+import json
 import subprocess
 
 import pytest
@@ -209,6 +210,61 @@ def test_go_bracket_calls_keep_the_grammar_ambiguity_visible(project):
         "x.go:4:2 call_expression.function call? in run | \tMake[int]()"]
     assert "x.go:5:2 index_expression.operand" in body(query("references", query="handlers"))
     assert "x.go:6:2 generic_type.type" in body(query("references", query="Make"))
+
+
+def test_digest_calls_name_only_syntactic_callee_leaves(project):
+    from ouroboros import code_intelligence as ci
+
+    repo, ctx = project
+    # Digest call facts name the callee positions that callers recognizes: the
+    # computed getters[key]() names nothing, so neither receiver nor index is a
+    # call. Direct, member, generic and Go bracket-ambiguous calls keep the leaf.
+    write(repo, "x.ts", "function run(getters, key, obj) {\n  getters[key]();\n  obj.target!();\n"
+          "  make<T>();\n  (wrapped)();\n}\n")
+    write(repo, "x.go", "package main\nfunc run() {\n\thandlers[i]()\n\tMake[int]()\n"
+          "\thandlers[0]()\n\tpkg.Target()\n}\n")
+    query = public(repo, ctx)
+
+    def calls(path):
+        return [line for line in query("digest", path=path).splitlines() if line.startswith("  Calls:")]
+
+    assert calls("x.ts") == ["  Calls: target, make, wrapped"]
+    assert calls("x.go") == ["  Calls: handlers, Make, Target"]
+    # A schema-4 cache from the earlier extractor holds receiver/index facts for
+    # unchanged bytes; the schema revision discards it instead of reusing them.
+    # Only an unscoped inventory persists the shared cache.
+    assert "Calls: target, make, wrapped" in query("digest")
+    cache = ci.inventory_cache_path(repo, ctx.drive_root)
+    raw = json.loads(cache.read_text(encoding="utf-8"))
+    raw["schema_version"] = 4
+    for file in raw["files"]:
+        if file["path"] == "x.ts":
+            file["call_sites"].insert(0, {"name": "key", "line": 2, "enclosing": "run"})
+    cache.write_text(json.dumps(raw), encoding="utf-8")
+    assert calls("x.ts") == ["  Calls: target, make, wrapped"]
+
+
+def test_php_qualified_callees_keep_their_final_name(project):
+    repo, ctx = project
+    # A qualified name is a name rather than a computed operand: after its
+    # labelled namespace prefix, the final name is the callee. The subscript and
+    # string-built callees beside them still name nothing.
+    write(repo, "x.php", "<?php\nfunction run($getters, $k) {\n  \\A\\B\\first();\n  A\\second();\n"
+          "  namespace\\third();\n  (\\A\\fourth)();\n  $getters[$k]();\n  ${'a' . 'b'}();\n}\n")
+    query = public(repo, ctx)
+
+    digest = query("digest", path="x.php").splitlines()
+    assert [line for line in digest if line.startswith("  Calls:")] == ["  Calls: first, second, third, fourth"]
+    assert body(query("callers", query="first")).splitlines() == [
+        "x.php:3:8 qualified_name call? in run |   \\A\\B\\first();"]
+    assert body(query("callees", query="run")).splitlines() == [
+        "x.php:3:8 qualified_name call? in run |   \\A\\B\\first();",
+        "x.php:4:5 qualified_name call? in run |   A\\second();",
+        "x.php:5:13 relative_name call? in run |   namespace\\third();",
+        "x.php:6:7 qualified_name call? in run |   (\\A\\fourth)();"]
+    for prefix in ("A", "B"):
+        assert not body(query("callers", query=prefix)), prefix
+    assert "x.php:3:4 namespace_name in run" in body(query("references", query="A"))
 
 
 def test_unknown_grammar_event_config_and_comment_source(project):

@@ -221,7 +221,7 @@ def test_old_or_missing_import_projection_rebuilds_once(project, monkeypatch, ve
             file.pop(key)
     cache.write_text(json.dumps(raw), encoding="utf-8")
     rebuilt = ci.build_code_inventory(repo, drive_root=data)
-    assert rebuilt.schema_version == 4
+    assert rebuilt.schema_version == 5
     assert [f.specifier for f in rebuilt.files[0].import_facts] == [".", ".child"]
 
     monkeypatch.setattr(ci, "_file_fact", lambda *args: pytest.fail("warm cache should be reused"))

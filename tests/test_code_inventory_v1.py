@@ -45,7 +45,7 @@ def test_code_inventory_indexes_python_symbols_imports_and_no_raw_source_cache(t
     rendered_cache = json.dumps(cached)
     assert "INVENTORY_RAW_SOURCE_SENTINEL" not in rendered_cache
     assert "return CONST" not in rendered_cache
-    assert cached["schema_version"] == 4
+    assert cached["schema_version"] == 5
 
 
 def test_code_inventory_classifies_sensitive_and_symlink_escape(tmp_path):
@@ -88,9 +88,9 @@ def test_code_inventory_rebuilds_old_cache(tmp_path):
     cache_file.write_text(json.dumps(cached), encoding="utf-8")
 
     rebuilt = build_code_inventory(repo, drive_root=data, persist=True)
-    assert rebuilt.schema_version == 4
+    assert rebuilt.schema_version == 5
     rebuilt_cache = json.loads(cache_file.read_text(encoding="utf-8"))
-    assert rebuilt_cache["schema_version"] == 4
+    assert rebuilt_cache["schema_version"] == 5
     app = {file.path: file for file in rebuilt.files}["app.py"]
     assert hasattr(app, "call_sites")
 
@@ -107,7 +107,7 @@ def test_v2_cache_cannot_reintroduce_cross_file_joins(tmp_path):
     raw["files"][0]["resolved_import_paths"] = ["deleted.py"]
     cache.write_text(json.dumps(raw))
     rebuilt = ci.build_code_inventory(repo, drive_root=tmp_path / "data")
-    assert rebuilt.schema_version == 4
+    assert rebuilt.schema_version == 5
     assert "references" not in rebuilt.to_json()["files"][0]
     assert "resolved_import_paths" not in rebuilt.to_json()["files"][0]
     assert rebuilt.files[0].imports == ["helper"]

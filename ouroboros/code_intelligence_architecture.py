@@ -27,7 +27,7 @@ import ast
 import pathlib
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Tuple
 
 from ouroboros.code_intelligence import CodeInventory, _resolve_relative_import
 
@@ -147,7 +147,7 @@ def owner_of(
     repo_root: pathlib.Path,
     query: str,
     *,
-    inventory: CodeInventory | None = None,
+    inventory: CodeInventory | Callable[[], CodeInventory] | None = None,
 ) -> Tuple[DomainOwner, ...]:
     """Domain owner(s) of a module path, dotted module, or defined symbol.
 
@@ -156,13 +156,15 @@ def owner_of(
     each definition inside the manifest population reports its owner. A target
     outside the runtime module population returns ``()`` — no domain owns it.
     A symbol answer covers only population modules with an indexed outline in
-    that inventory; ``architecture_fact_rows`` discloses the others.
+    that inventory; ``architecture_fact_rows`` discloses the others. A callable
+    ``inventory`` is called only for a bare symbol, so a tool can supply its own
+    admitted resource view without building it for manifest lookups.
     """
     return _owner_lookup(repo_root, query, inventory)[0]
 
 
 def _owner_lookup(
-    repo_root: pathlib.Path, query: str, inventory: CodeInventory | None,
+    repo_root: pathlib.Path, query: str, inventory: CodeInventory | Callable[[], CodeInventory] | None,
 ) -> Tuple[Tuple[DomainOwner, ...], Tuple[str, ...]]:
     """``owner_of`` rows plus the population modules a symbol lookup could not read."""
     manifest = load_domain_manifest(repo_root)
@@ -188,6 +190,8 @@ def _owner_lookup(
         from ouroboros.code_intelligence import build_code_inventory
 
         inventory = build_code_inventory(pathlib.Path(repo_root), persist=False)
+    elif callable(inventory):
+        inventory = inventory()
     from ouroboros.code_intelligence import symbol_definitions
 
     owners = {
@@ -583,7 +587,7 @@ def architecture_fact_rows(
     repo_root: pathlib.Path,
     query: str,
     *,
-    inventory: CodeInventory | None = None,
+    inventory: CodeInventory | Callable[[], CodeInventory] | None = None,
 ) -> List[str]:
     """Render one architecture fact as compact tool rows.
 

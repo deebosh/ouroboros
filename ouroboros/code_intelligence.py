@@ -1,4 +1,4 @@
-"""Internal deterministic code inventory v4.
+"""Internal deterministic code inventory v5.
 
 No embeddings, no LSP, no SQLite, and no raw source cache. This is a compact
 structural projection used by digest/review context builders and read-only
@@ -25,7 +25,7 @@ from typing import Any, Callable, Dict, Iterable, List
 from ouroboros.code_import_candidates import import_specs, is_import_node
 from ouroboros.utils import atomic_write_json, utc_now_iso
 
-CODE_INTELLIGENCE_SCHEMA_VERSION = 4
+CODE_INTELLIGENCE_SCHEMA_VERSION = 5
 
 SKIP_DIRS = frozenset({
     ".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
@@ -624,20 +624,20 @@ def _ts_node_name(node: Any) -> str:
     return ""
 
 
-def _ts_callee_name(node: Any) -> str:
-    for field_name in ("function", "name", "method"):
-        target = node.child_by_field_name(field_name)
-        if target is not None:
-            if target.type in _TS_NAME_TYPES and target.text:
-                return target.text.decode("utf-8", "replace").rsplit(".", 1)[-1].rsplit("::", 1)[-1]
-            # member/scoped call (obj.method(), pkg.Func(), a::b()): the callee is
-            # the FINAL identifier (the method/function), not the receiver/namespace.
-            # Iterate in reverse so `obj.doThing()` -> doThing, `fmt.Sprintf()` ->
-            # Sprintf (matches the Python ast path and the former JS regex).
-            for child in reversed(target.children):
-                if child.type in _TS_NAME_TYPES and child.text:
-                    return child.text.decode("utf-8", "replace")
-    return ""
+def _ts_callee_leaf(node: Any) -> Any:
+    """Terminal identifier of a syntactic callee, never its receiver. Past member/name fields only a sole unlabelled
+    operand (parentheses, `x!`) or a final name after labelled qualifiers (PHP ``\\A\\foo``) continues; ``getters[key]`` names none."""
+    target = next((t for t in map(node.child_by_field_name, ("function", "name", "method")) if t is not None), None)
+    while target is not None:
+        if target.child_count == 0:
+            return target if target.type in _TS_NAME_TYPES else None
+        child = next((c for c in map(target.child_by_field_name, ("attribute", "property", "field", "name", "function")) if c is not None), None)
+        if child is None:
+            labels = [target.field_name_for_child(i) for i, c in enumerate(target.children) if c.is_named]
+            if labels[-1:] == [None] and None not in labels[:-1] and (len(labels) == 1 or target.named_children[-1].type in _TS_NAME_TYPES):
+                child = target.named_children[-1]
+        target = child
+    return None
 
 
 def _treesitter_facts(text: str, lang: str, *, raw: bytes | None = None,
@@ -689,9 +689,9 @@ def _treesitter_facts(text: str, lang: str, *, raw: bytes | None = None,
                 symbols.append(SymbolFact(name, declaration_kind, node.start_point[0] + 1, node.end_point[0] + 1, sig))
                 child_enclosing = name
         elif ntype in _TS_CALL_TYPES:
-            callee = _ts_callee_name(node)
-            if callee:
-                calls.append(CallSiteFact(callee, node.start_point[0] + 1, enclosing))
+            callee = _ts_callee_leaf(node)
+            if callee is not None and callee.text:
+                calls.append(CallSiteFact(callee.text.decode("utf-8", "replace"), node.start_point[0] + 1, enclosing))
         elif ntype in _TS_IMPORT_TYPES and node.text:
             spec = (node.text.decode("utf-8", "replace").splitlines() or [""])[0].strip()[:200]
             if spec:
