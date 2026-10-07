@@ -229,9 +229,10 @@ def advisory_governance_context(
 
     Both advisory deliveries retrieve, so the tiers are asked for the
     ``retrieving`` delivery: the applicable checklist section, ``BIBLE.md`` and
-    the standing disclosures arrive in full, the rules this change class
-    activates arrive within the inline share, and the reference books arrive as
-    navigation the reviewer reads with its own ``read_file``.
+    the standing disclosures arrive in full (a repository review also carries
+    the shared repository section; a skill review does not), the rules this
+    change class activates arrive within the inline share, and the reference
+    books arrive as navigation the reviewer reads with its own ``read_file``.
 
     The share is taken against the window this brief is actually sent in: the
     native episode's transcript bound (``review_native_transcript_bound`` — the
@@ -254,6 +255,7 @@ def advisory_governance_context(
         usable_window_tokens=max(0, int(bound) // _CHARS_PER_ESTIMATED_TOKEN),
         delivery="retrieving",
         checklist_section_text=checklist_section_text,
+        repository_rules=review_surface != "skill",
     )
 
 

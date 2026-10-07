@@ -1034,6 +1034,10 @@ and what enforces each.
   and canonical split-root verification receipts. Zero exit is positive, absence
   unknown; unrelated passes erase no failure. Deliver content and recover the same
   snapshot. `OWNER_DELIVERY_TOOL_NAMES` counts sends, never global skill state.
+  Transport receipts stay out of that snapshot: only a newly written reflection reads
+  them, once after admission (`presence_delivery.task_delivery_receipts`), with a captured
+  window, named gaps, a NONEXHAUSTIVE disclosure and labelled bindings; no fold, wait or
+  store (`test_reflection_delivery_receipts.py`).
   `host_task_facts` is free; paid reflection/Pattern Register use `chat_observed` custody.
   Plan-review facts reach the reflection as ONE bounded slice with a source pointer
   (`plan_review_facts.py`), never a score; a panel that settles after the task ended
