@@ -64,6 +64,7 @@ def test_shipped_sections_load():
     assert "## Skill Review Checklist" not in SHARED and "| # | item |" not in SHARED
 
 
+@pytest.mark.serial
 def test_triad_packet_and_session_carry_the_shared_section_in_their_stable_head(candidate, tmp_path, monkeypatch):
     from ouroboros.tools import review
 
@@ -92,6 +93,7 @@ def test_triad_packet_and_session_carry_the_shared_section_in_their_stable_head(
         assert row["tier"] == 1 and row["disposition"] == "inline" and row["chars"] == len(SHARED)
 
 
+@pytest.mark.serial
 @pytest.mark.parametrize("delegated", [False, True], ids=["native", "session"])
 def test_scope_brief_carries_the_shared_section_beside_its_checklist(candidate, monkeypatch, delegated):
     from ouroboros.tools import scope_review_session as session
@@ -111,6 +113,7 @@ def test_scope_brief_carries_the_shared_section_beside_its_checklist(candidate, 
     assert row["disposition"] == "inline" and row["chars"] == len(SHARED)
 
 
+@pytest.mark.serial
 def test_advisory_repository_brief_carries_it_and_skill_brief_does_not(candidate):
     import ouroboros.tools.claude_advisory_review as advisory
 
