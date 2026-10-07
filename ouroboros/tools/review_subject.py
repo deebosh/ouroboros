@@ -546,27 +546,33 @@ def build_triad_session_task(*, goal_section: str, scope_section: str,
                              architecture_text: str = "",
                              governance_repo_dir: Optional[Any] = None,
                              governance: Optional[Any] = None,
-                             subject: Optional[ManagedReviewSubject] = None) -> str:
+                             subject: Optional[ManagedReviewSubject] = None,
+                             layer: str = "body",
+                             subject_root: Optional[Any] = None) -> str:
     """The commit-triad task in SESSION delivery (5.2/5.3): the SAME preamble,
     calibration, checklist and goal/scope/history the api pack carries — but no
     assembled evidence. The subject is a pointer (the session takes the staged
     diff itself) — except for a managed resolution, whose authoritative delta
     artifact is inlined. Governance uses the same inline rules and navigation
-    tiers as the other review deliveries."""
+    tiers as the other review deliveries. ``layer`` is the checklist layer
+    (`review_body_fact.layer_for`): the core layer carries no Ouroboros
+    constitution, handbook or book maps — the subject (``subject_root``) is
+    not the body."""
     from ouroboros.context_layout import book_navigation, generate_doc_nav_map
     from ouroboros.reference_books import BOOK_ENTRYPOINTS, load_reference_book
     from ouroboros.tools.review_helpers import (
         CRITICAL_FINDING_CALIBRATION,
         REPO_ANTI_PATTERN_LOCK_GUARD,
-        REVIEW_PREAMBLE,
+        review_preamble,
     )
 
+    body_layer = layer == "body"
     if governance is None and governance_repo_dir is not None:
         from ouroboros.tools.governance_context import governance_context
 
         governance = governance_context(
             governance_repo_dir, surface="triad", delivery="retrieving",
-            checklist_section_text=checklist_section)
+            checklist_section_text=checklist_section, layer=layer, subject_root=subject_root)
     # Historical callers without a repository can supply standalone book texts.
     # Live callers hand in the shared governance context, including tier 1.
     # The supplied texts are the COMPOSED books, so mapping them against the
@@ -579,7 +585,7 @@ def build_triad_session_task(*, goal_section: str, scope_section: str,
         ("development", BOOK_ENTRYPOINTS["development"], "DEVELOPMENT.md", dev_guide_text),
         ("architecture", BOOK_ENTRYPOINTS["architecture"], "ARCHITECTURE.md", architecture_text),
     ):
-        if governance is not None:
+        if governance is not None or not body_layer:  # the books are the body's
             break
         if not str(text or "").strip():
             continue
@@ -590,8 +596,24 @@ def build_triad_session_task(*, goal_section: str, scope_section: str,
             except (OSError, ValueError):
                 pass  # Fall back to the supplied text rather than drop the doc.
         nav_maps.append(generate_doc_nav_map(text, title=title, rel_path=rel))
+    if governance is not None:
+        governance_fallback = ""
+    elif body_layer:
+        governance_fallback = (
+            "## Governance context (navigation maps)\n"
+            "Read BIBLE.md and docs/DESIGN.md in full from the repository root "
+            "(DESIGN.md is short). The maps below index "
+            "the other governance docs by line range; the paths are relative to the "
+            "repository root — read the sections you need with your own tools.")
+    else:
+        governance_fallback = (
+            "## Governance context (core layer)\n"
+            "The Change Review Checklist above is the whole rule set: this subject is "
+            "not the Ouroboros body, so no constitution, handbook or architecture map "
+            "of another project applies to it. The subject's own documents are "
+            "evidence of what it promises — read them with your own tools.")
     return "\n\n".join(part for part in [
-        REVIEW_PREAMBLE,
+        review_preamble(layer),
         CRITICAL_FINDING_CALIBRATION,
         REPO_ANTI_PATTERN_LOCK_GUARD,
         checklist_section,
@@ -603,10 +625,6 @@ def build_triad_session_task(*, goal_section: str, scope_section: str,
         rebuttal_section,
         review_history_section,
         _session_subject_section(subject),
-        "" if governance is not None else "## Governance context (navigation maps)\n"
-        "Read BIBLE.md and docs/DESIGN.md in full from the repository root "
-        "(DESIGN.md is short). The maps below index "
-        "the other governance docs by line range; the paths are relative to the "
-        "repository root — read the sections you need with your own tools.",
+        governance_fallback,
         *nav_maps,
     ] if str(part or "").strip())

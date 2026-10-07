@@ -142,21 +142,24 @@ def test_managed_resolver_subject_reaches_the_retrieving_brief(tmp_path, monkeyp
 # ---------------------------------------------------------------------------
 
 class TestChecklistSectionLoader:
-    def test_loads_repo_commit_section(self):
+    def test_loads_change_review_sections_by_layer(self):
         mod = _get_module("ouroboros.tools.review_helpers")
-        section = mod.load_checklist_section("Repo Commit Checklist")
-        assert "## Repo Commit Checklist" in section
-        assert "bible_compliance" in section
+        core = mod.load_checklist_section("Change Review Checklist")
+        assert "## Change Review Checklist" in core
+        assert "secrets_check" in core and "bible_compliance" not in core
+        body = mod.load_checklist_section("Ouroboros Body Layer")
+        assert "bible_compliance" in body
         # Must NOT contain scope checklist
-        assert "Intent / Scope Review Checklist" not in section
+        assert "Intent / Scope Review Checklist" not in core + body
 
     def test_loads_scope_section(self):
         mod = _get_module("ouroboros.tools.review_helpers")
         section = mod.load_checklist_section("Intent / Scope Review Checklist")
         assert "## Intent / Scope Review Checklist" in section
         assert "intent_alignment" in section
-        # Must NOT contain repo commit checklist items
-        assert "## Repo Commit Checklist" not in section
+        # Must NOT contain change-review checklist items
+        assert "## Change Review Checklist" not in section
+        assert "## Ouroboros Body Layer" not in section
 
     def test_raises_on_missing_section(self):
         mod = _get_module("ouroboros.tools.review_helpers")

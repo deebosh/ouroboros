@@ -1099,6 +1099,10 @@ def test_the_brief_of_a_three_file_change_on_the_real_tree_is_measured(tmp_path)
     # ceiling, so the repository index alone (+~1k chars: the interface-language modules,
     # their tests and the per-chapter grant files) crossed it; still a measured sum, raised
     # by what those files are, not by aspiration.
-    assert without_diff < 205_000, without_diff
+    # 205_000 -> 210_000 (checklist layers, 2026-10-07): the base measured 203,286; the
+    # split of the commit checklist grew the tier-1 inline (the archive's renumbering
+    # note and the shared-section intro, +1.5k) and the DEVELOPMENT governance chapter
+    # that names scope_review.py (+1.9k), to 206,750 — the same measured sum, re-read.
+    assert without_diff < 210_000, without_diff
     assert sections["repository_index"] > 20_000          # the index really ran
     assert sections["governance_stable_inline"] > 40_000  # BIBLE really inline

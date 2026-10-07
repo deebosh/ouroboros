@@ -32,8 +32,8 @@ P7 makes context fit a maintenance constraint, not a line-count aesthetic.
   A cap-driven bucket, a one-caller passthrough, or bytes bought by deleting
   contract-bearing comments, docstrings, messages or tests is a defect, not
   paydown — report the conflict instead (BIBLE P7 «first simplify what
-  exists»). Enforcement: Repo Commit Checklist item 31 `size_cap_paydown`,
-  advisory when applicable.
+  exists»). Enforcement: Ouroboros Body Layer item 31 `size_cap_paydown`
+  (`docs/CHECKLISTS.md`), advisory when applicable.
 - Methods above 150 lines and more than eight parameters are decomposition
   signals (BIBLE P7, CHECKLISTS item 2(c)), not deterministic gates; existing
   baseline debt is not retroactively a failing tree.
@@ -145,7 +145,8 @@ the answer.
   task-event SSE v2 cursor discipline, whose rules are stated once in
   ARCHITECTURE §3 "Chat and Projects".
 
-Enforcement: Repo Commit Checklist item 24 (advisory) triggers on diffs that
+Enforcement: Change Review Checklist item 9 `perf_lifecycle` (advisory; its
+body addresses point here) triggers on diffs that
 change data readers, startup/shutdown or other batch operations, or an
 endpoint/poller/subscription/timer; the deterministic runtime tripwire is
 `agent_startup_checks.py::hot_store_growth_notes`, surfaced by
@@ -338,7 +339,7 @@ disposer for its observers and pending frame.
 
 Enforcement (honest disclosure): the deterministic leak test runs in the
 release-tier `ui_browser` lane, not at commit tier; commit-tier coverage is
-the advisory Repo Commit Checklist item 24. The class is closed
+the advisory Change Review Checklist item 9 `perf_lifecycle`. The class is closed
 deterministically for the instrumented surfaces and advisorily for future
 ones.
 
@@ -370,7 +371,7 @@ where missing or malformed job status is an immediate protocol error while an
 unknown non-empty in-progress label remains a bounded pending state for
 producer compatibility.
 
-Enforcement: Repo Commit Checklist item 24 points lifecycle changes here
+Enforcement: Change Review Checklist item 9 `perf_lifecycle` points lifecycle changes here
 instead of re-deriving a second domain-specific rule; the widget
 geometry/refresh contracts are pinned in `tests/test_widgets_ui_static.py` and
 `tests/test_extension_surfaces.py`.

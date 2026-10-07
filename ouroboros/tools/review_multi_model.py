@@ -87,27 +87,35 @@ def _review_output_budget() -> int:
     return max(8192, min(raw, 65536))
 
 
-def triad_api_messages(prompt: str, stable_prefix_len: int, content: str) -> tuple:
+def triad_api_messages(prompt: str, stable_prefix_len: int, content: str,
+                       *, layer: str = "body") -> tuple:
     """The exact api-row message pair of a triad panel, and the BIBLE text it
-    carries ("" when BIBLE.md could not be loaded).
+    carries ("" when BIBLE.md could not be loaded, or when the checklist
+    ``layer`` is ``core``: a subject that is not the Ouroboros body is not
+    governed by the constitution, so the head carries no constitutional
+    preamble and no BIBLE — `review_body_fact.layer_for`).
 
     One builder for both consumers: the fan-out sends these messages, and the
     commit gate's wave admission measures them — a reservation priced on
     anything else would admit a wave the ledger then refuses seat by seat.
     """
-    bible_text = _rev().load_governance_doc(_rev()._REPO_ROOT, "BIBLE.md", on_missing="explicit")
-    if bible_text:
-        stable_head = (
-            _CONSTITUTIONAL_PREAMBLE
-            + "### BIBLE.md (Full Text)\n\n" + bible_text
-            + "\n\n---\n\n## REVIEW INSTRUCTIONS\n\n"
-        )
+    bible_text = ""
+    if layer != "body":
+        stable_head = "## REVIEW INSTRUCTIONS\n\n"
     else:
-        log.warning("Proceeding without BIBLE.md — constitutional compliance cannot be guaranteed")
-        stable_head = (
-            _CONSTITUTIONAL_PREAMBLE
-            + "(BIBLE.md could not be loaded)\n\n## REVIEW INSTRUCTIONS\n\n"
-        )
+        bible_text = _rev().load_governance_doc(_rev()._REPO_ROOT, "BIBLE.md", on_missing="explicit")
+        if bible_text:
+            stable_head = (
+                _CONSTITUTIONAL_PREAMBLE
+                + "### BIBLE.md (Full Text)\n\n" + bible_text
+                + "\n\n---\n\n## REVIEW INSTRUCTIONS\n\n"
+            )
+        else:
+            log.warning("Proceeding without BIBLE.md — constitutional compliance cannot be guaranteed")
+            stable_head = (
+                _CONSTITUTIONAL_PREAMBLE
+                + "(BIBLE.md could not be loaded)\n\n## REVIEW INSTRUCTIONS\n\n"
+            )
     # System content is split at the caller-declared stable/dynamic boundary so
     # the byte-stable prefix (constitutional preamble + BIBLE + the prompt's own
     # stable governance head) carries a provider cache marker; per-round evidence

@@ -80,6 +80,22 @@ REVIEW_PREAMBLE = (
 )
 
 
+# The core layer: the subject is a repository that is NOT Ouroboros's body, so
+# the preamble names neither the constitution nor the handbook — the universal
+# checklist is the whole rule set and the subject's own documents are evidence.
+REVIEW_PREAMBLE_CORE = (
+    "You are a pre-commit reviewer for a change that Ouroboros, an AI agent, is\n"
+    "landing in a repository that is not its own body. Judge the change by the\n"
+    "universal checklist below and by what the subject repository itself promises\n"
+    "in its documents and tests; no other project's rules apply to it.\n"
+)
+
+
+def review_preamble(layer: str = "body") -> str:
+    """The reviewer preamble for a checklist layer (`review_body_fact.layer_for`)."""
+    return REVIEW_PREAMBLE if layer == "body" else REVIEW_PREAMBLE_CORE
+
+
 REVIEW_THOROUGHNESS_BLOCK = """\
 - Do NOT stop after finding the first issue. Check EVERY item in the checklist.
 - Report every distinct, evidenced problem you find; zero, one, or many findings are all valid.

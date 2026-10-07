@@ -38,7 +38,8 @@ from ouroboros.reviewer_window import reviewer_context_window, window_scaled_res
 from ouroboros.tools.review_synthesis import quorum_input_token_limit as _quorum_input_token_limit  # noqa: F401
 from ouroboros.tools.review_helpers import (
     REPO_ROOT as _REPO_ROOT,
-    load_checklist_section as _load_checklist_section_precise,
+    load_checklist_section as _load_checklist_section_precise,  # noqa: F401 -- retained test/facade patch seam
+    load_checklist_layers,
     load_governance_doc,  # noqa: F401 -- retained test/facade patch seam
     build_touched_file_pack,
     triad_pack_exclusions,
@@ -469,22 +470,28 @@ def _owner_deadline_at(ctx: Any) -> str:
 
 # Unified pre-commit review gate.
 
-def _load_checklist_section() -> str:
-    """Load Repo Commit Checklist, fail-closed if missing/malformed.
+def _load_checklist_section(layer: str = "body") -> str:
+    """Load the change-review checklist for ``layer`` (`review_helpers.
+    load_checklist_layers`), fail-closed if missing/malformed.
 
-    The standing-disclosure archive rides along: packet-only (api) reviewers
-    have no repository tools, so a bare pointer to docs/CHECKLISTS_ARCHIVE.md
-    would be unresolvable for them and settled owner-accepted narrowings could
-    be re-raised (#447 stage-3 wave). The archive is small and binding — the
-    extraction slimmed the live checklist FILE, not the reviewer's contract."""
+    For the body layer the standing-disclosure archive rides along: packet-only
+    (api) reviewers have no repository tools, so a bare pointer to
+    docs/CHECKLISTS_ARCHIVE.md would be unresolvable for them and settled
+    owner-accepted narrowings could be re-raised (#447 stage-3 wave). The
+    archive is small and binding — the extraction slimmed the live checklist
+    FILE, not the reviewer's contract. The core layer (a subject that is not
+    the Ouroboros body) carries neither the body items nor the archive: its
+    disclosures are about Ouroboros's own surfaces."""
     try:
-        section = _load_checklist_section_precise("Repo Commit Checklist")
+        section = load_checklist_layers(layer)
     except (FileNotFoundError, ValueError):
         raise
     except Exception as e:
         raise FileNotFoundError(
             f"docs/CHECKLISTS.md not found or malformed: {e}"
         ) from e
+    if layer != "body":
+        return section
     archive_path = _REPO_ROOT / "docs" / "CHECKLISTS_ARCHIVE.md"
     try:
         archive = archive_path.read_text(encoding="utf-8").strip()
@@ -502,8 +509,8 @@ def _load_checklist_section() -> str:
 
 
 # The triad prompt is assembled STABLE-FIRST for provider prompt caching:
-# fixed instructions plus the tier-1 governance rules (the Repo Commit Checklist,
-# the standing disclosures, and BIBLE.md through the constitutional head) form a
+# fixed instructions plus the tier-1 governance rules (the layered Change Review
+# Checklist, the standing disclosures, and BIBLE.md through the constitutional head) form a
 # byte-stable prefix reused across review rounds AND across commits (marked with
 # a cache breakpoint at dispatch). The change-class governance selection
 # (`tools/governance_context.py` tiers 2 and 3) and the navigation maps open the
@@ -586,8 +593,8 @@ def _preflight_check(commit_message: str, staged_files: str,
     substring test matched "conversion") and the ".py under ouroboros/ or
     supervisor/ requires tests/ staged" predicate (it refused comment-only
     diffs and accepted tests/README.md as coverage). Both duties now live in
-    the semantic checklist: docs/CHECKLISTS.md item 6 (tests_affected) and
-    item 8 (version_bump).
+    the semantic checklist: docs/CHECKLISTS.md Change Review Checklist item 4
+    (tests_affected) and Ouroboros Body Layer item 12 (version_bump).
     """
     import string as _string
 
@@ -956,18 +963,27 @@ def _triad_governance_usable_window(api_models: list, api_slots: list) -> int:
 
 def _triad_governance_context(ctx: ToolContext, touched_paths: list,
                               checklist_section: str, api_models: list, api_slots: list,
-                              *, delivery: str = "packet"):
+                              *, delivery: str = "packet", layer: str = "body",
+                              subject_root: Optional[pathlib.Path] = None):
     """The triad's shared governance tiers for either delivery class.
 
-    ``BIBLE.md`` is inlined by every api row's constitutional head and the
-    standing disclosures ride the checklist section, so both are declared as
-    already delivered: the manifest records them as tier-1 inline without a
-    second copy in the prompt. Retrieving rows have no constitutional head, so
-    their task receives BIBLE.md inline from this shared builder."""
+    Body layer: ``BIBLE.md`` is inlined by every api row's constitutional head
+    and the standing disclosures ride the checklist section, so both are
+    declared as already delivered: the manifest records them as tier-1 inline
+    without a second copy in the prompt. Retrieving rows have no constitutional
+    head, so their task receives BIBLE.md inline from this shared builder.
+    Core layer (the subject is not the Ouroboros body): neither document is
+    owed, so nothing is declared already inline; ``subject_root`` is the
+    reviewed repository whose own documents the navigation names."""
     from ouroboros.tools.governance_context import GovernanceContext, governance_context
 
     if not api_models:
         return GovernanceContext()
+    if layer == "body":
+        already_inline = (("BIBLE.md", "docs/CHECKLISTS_ARCHIVE.md") if delivery == "packet"
+                          else ("docs/CHECKLISTS_ARCHIVE.md",))
+    else:
+        already_inline = ()
     return governance_context(
         pathlib.Path(ctx.repo_dir),
         surface="triad",
@@ -975,8 +991,9 @@ def _triad_governance_context(ctx: ToolContext, touched_paths: list,
         usable_window_tokens=_triad_governance_usable_window(api_models, api_slots),
         delivery=delivery,
         checklist_section_text=checklist_section,
-        already_inline=(("BIBLE.md", "docs/CHECKLISTS_ARCHIVE.md") if delivery == "packet"
-                        else ("docs/CHECKLISTS_ARCHIVE.md",)),
+        already_inline=already_inline,
+        layer=layer,
+        subject_root=subject_root,
     )
 
 

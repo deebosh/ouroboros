@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
+import hashlib
 import json
 import logging
 import os
@@ -513,6 +514,40 @@ def load_checklist_section(section_name: str, checklist_path: Optional[Path] = N
     return text[start:next_header]
 
 
+# The change-review checklist is layered (docs/CHECKLISTS.md): the universal
+# core every reviewed change carries, and the Ouroboros body layer appended
+# only when the subject IS the body (`review_body_fact.layer_for`).
+CORE_CHECKLIST_SECTION = "Change Review Checklist"
+BODY_CHECKLIST_SECTION = "Ouroboros Body Layer"
+CHECKLIST_LAYERS = ("core", "body")
+CHECKLIST_RELATIVE_PATH = "docs/CHECKLISTS.md"
+
+
+def load_checklist_layers(layer: str, checklist_path: Optional[Path] = None) -> str:
+    """The change-review checklist for one layer: ``core`` is the universal
+    `Change Review Checklist`; ``body`` appends the `Ouroboros Body Layer` as
+    the contiguous file slice (its items continue the core numbering)."""
+    if layer not in CHECKLIST_LAYERS:
+        raise ValueError(f"unknown checklist layer {layer!r}; expected one of {CHECKLIST_LAYERS}")
+    core = load_checklist_section(CORE_CHECKLIST_SECTION, checklist_path)
+    if layer == "core":
+        return core
+    return f"{core}\n{load_checklist_section(BODY_CHECKLIST_SECTION, checklist_path)}"
+
+
+def checklist_fingerprint(layer: str, checklist_path: Optional[Path] = None) -> dict:
+    """Which rules ran: ``checklist_hash`` is the sha256 of the layered text,
+    ``rules_source.sha`` the git blob id of the checklist file as read from
+    the install (HEAD's blob on a clean tree — the installed body's rules
+    execute, D31), computed from the bytes themselves without a git call."""
+    path = Path(checklist_path) if checklist_path else REPO_ROOT / "docs" / "CHECKLISTS.md"
+    raw = path.read_bytes()
+    blob_sha = hashlib.sha1(b"blob %d\0" % len(raw) + raw).hexdigest()
+    text_hash = hashlib.sha256(load_checklist_layers(layer, path).encode("utf-8")).hexdigest()
+    return {"checklist_hash": text_hash,
+            "rules_source": {"path": CHECKLIST_RELATIVE_PATH, "sha": blob_sha}}
+
+
 def build_blocking_findings_json_section(
     open_obligations: list,
     blocking_history: list,
@@ -835,6 +870,7 @@ from ouroboros.tools.review_prompt_text import (  # noqa: E402, F401 -- intentio
     CRITICAL_FINDING_CALIBRATION,
     REPO_ANTI_PATTERN_LOCK_GUARD,
     REVIEW_PREAMBLE,
+    REVIEW_PREAMBLE_CORE,
     REVIEW_REPAIR_JUDGMENT,
     REVIEW_SEVERITY_THRESHOLDS,
     REVIEW_THOROUGHNESS_BLOCK,
@@ -858,6 +894,7 @@ from ouroboros.tools.review_prompt_text import (  # noqa: E402, F401 -- intentio
     normalize_reviewer_items,
     normalize_reviewer_obligation_id,
     redact_prompt_secrets,
+    review_preamble,
     single_line,
     strip_obligation_suffix,
 )
