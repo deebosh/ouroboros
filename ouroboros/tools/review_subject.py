@@ -35,16 +35,30 @@ resolution-delta artifact for the authorized managed resolver.
 This module also renders the triad SESSION task (``build_triad_session_task``):
 the session delivery of the same subject, where the managed artifact is inlined
 instead of asking the session to retrieve ``git diff --cached`` itself.
+
+The second half of the module is the review subject AS AN OBJECT
+(ARCHITECTURE §6 "Subject operation"): ``ReviewSubjectSpec`` states WHAT is
+reviewed (root, kind ``index`` | ``worktree`` | ``base..head``, the governance
+root that is ALWAYS the installed body), ``freeze_subject`` pins its bytes and
+trees once, ``isolated_checkout`` gives the retrieving deliveries a frozen tree
+under the install's data root, and the three review identities
+(``review_reuse_key``, the rebuttal round, ``review_retry_key``) are derived
+from the frozen subject — never from the live index of whatever repository the
+process happens to run in.
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import hashlib
 import logging
 import os
 import pathlib
+import shutil
 import subprocess
-from typing import Any, List, Optional, Tuple
+import uuid
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from ouroboros.tools import review_binary_context as _rbc
 from ouroboros.tools.review_binary_context import StagedDiffUnavailable
@@ -628,3 +642,278 @@ def build_triad_session_task(*, goal_section: str, scope_section: str,
         governance_fallback,
         *nav_maps,
     ] if str(part or "").strip())
+
+
+# ---------------------------------------------------------------------------
+# The review subject as an object (§6 "Subject operation").
+# ---------------------------------------------------------------------------
+
+SUBJECT_KIND_INDEX, SUBJECT_KIND_WORKTREE, SUBJECT_KIND_RANGE = "index", "worktree", "base..head"
+SUBJECT_KINDS = (SUBJECT_KIND_INDEX, SUBJECT_KIND_WORKTREE, SUBJECT_KIND_RANGE)
+ROOT_KIND_SYSTEM, ROOT_KIND_WORKSPACE = "system_repo", "active_workspace"
+ROOT_KINDS = (ROOT_KIND_SYSTEM, ROOT_KIND_WORKSPACE)
+# Isolated checkouts live under the install's data root (never a foreign repo,
+# never the process temp dir): ``state/review_checkouts/<token>/repo``.
+CHECKOUT_SUBDIR = "review_checkouts"
+_BINARY_PATCH_FLAGS = ("--binary", "--no-ext-diff", "--no-textconv")
+
+
+@dataclasses.dataclass(frozen=True)
+class ReviewSubjectSpec:
+    """WHAT is reviewed, as the caller (gate, tool, script) states it.
+
+    ``governance_root`` is ALWAYS the installed body's system repository whatever
+    root the subject lives in; empty means the context's system repo and is
+    filled by ``freeze_subject``. ``base``/``head`` are required for
+    ``base..head`` and empty otherwise (the root's HEAD is the parent). ``layer``
+    is the governance layer the rules module derives from ``body_fact``."""
+
+    root_kind: str
+    root: str
+    kind: str
+    base: str = ""
+    head: str = ""
+    governance_root: str = ""
+    surface: str = "change"
+    body_fact: str = "unknown"
+    body_how: str = ""
+    layer: str = "core"
+
+
+@dataclasses.dataclass(frozen=True)
+class FrozenSubject:
+    """One frozen subject: the diff the reviewers read and the trees it binds.
+
+    ``diff_text`` is the prompt rendering (hardened staged-diff capture or the
+    managed resolution artifact); ``diff_sha`` identifies the binary patch
+    ``parent_sha``→``tree_sha`` (for a system-repo ``index`` subject the digest
+    the gate's binding pins). ``checkout`` is the isolated checkout the reviewers
+    read, ``""`` meaning the live root; ``managed`` is the authorized resolver's
+    artifact when the subject is one."""
+
+    spec: ReviewSubjectSpec
+    diff_text: str
+    diff_sha: str
+    tree_sha: str
+    parent_sha: str
+    checkout: str = ""
+    name_status: Tuple[Tuple[str, str], ...] = ()
+    patch: bytes = dataclasses.field(default=b"", repr=False, compare=False)
+    managed: Optional[ManagedReviewSubject] = dataclasses.field(default=None, repr=False, compare=False)
+
+    @property
+    def review_root(self) -> str:
+        """Where the reviewers READ: the isolated checkout, else the live root."""
+        return self.checkout or self.spec.root
+
+    @property
+    def is_system_index(self) -> bool:
+        """The installed body's own staged index — the commit gate's subject. The
+        wave reads it through the gate's own capture (``managed_review_subject`` /
+        ``capture_staged_diff`` on the reading root), byte-identical to today, so
+        the gate's tree assertion and per-attempt memo see exactly what they did."""
+        return self.spec.kind == SUBJECT_KIND_INDEX and self.spec.root_kind == ROOT_KIND_SYSTEM
+
+    # Duck-typed twins of the managed subject's pinned-tree fields, so the
+    # scope path helpers (``scope_required_sources``) read the FROZEN trees of
+    # a worktree/base..head subject instead of the live index of its root.
+    @property
+    def staged_tree(self) -> str:
+        return self.tree_sha
+
+    @property
+    def m0_tree(self) -> str:
+        return self.parent_sha
+
+    def render_prompt_diff(self, unified: int = 3) -> str:
+        """Re-render THIS subject's pinned trees at another context width (the
+        -U0 fit rung), never a fresh capture of whatever the root holds now."""
+        if self.managed is not None:
+            return self.managed.render_prompt_diff(unified=unified)
+        if self.spec.kind == SUBJECT_KIND_INDEX:
+            return _rbc.capture_staged_diff(pathlib.Path(self.review_root), unified=unified)
+        return _tree_delta_diff(self.spec.root, self.parent_sha, self.tree_sha, unified)
+
+    def record_subject(self) -> Dict[str, Any]:
+        """The review ledger record's ``subject`` block."""
+        return {"root_kind": self.spec.root_kind, "root": self.spec.root, "kind": self.spec.kind,
+                "base": self.parent_sha, "head": self.spec.head, "tree_sha": self.tree_sha,
+                "diff_sha": self.diff_sha, "checkout": self.checkout}
+
+
+def _rev_parse(root, rev: str) -> str:
+    rc, raw, err = _git_bytes(root, ["rev-parse", "--verify", "-q", rev])
+    sha = raw.decode("ascii", "replace").strip()
+    if rc != 0 or not sha:
+        raise ValueError(f"{rev!r} does not name an object in {root}: {err or 'no detail'}")
+    return sha
+
+
+def _patch(root, *refs: str) -> Tuple[bytes, str]:
+    """The binary patch between two tree-ish (or ``--cached``) and its identity:
+    sha256 of the patch TEXT, stripped — the digest ``_fingerprint_staged_diff``
+    binds (``run_cmd`` strips its text), so one subject has one identity."""
+    rc, raw, err = _git_bytes(root, ["diff", *_BINARY_PATCH_FLAGS, *refs])
+    if rc != 0:
+        raise StagedDiffUnavailable(f"binary patch capture failed (rc {rc}): {err or 'no detail'}")
+    return raw, hashlib.sha256(raw.decode("utf-8", "replace").strip().encode("utf-8")).hexdigest()
+
+
+def _resolve_range(root, base: str, head: str) -> Tuple[str, str]:
+    """``(base_sha, head_sha)`` of a committed proposal whose base is an ancestor of
+    its head — otherwise the diff would attribute the target's own progress to it."""
+    if not str(base or "").strip() or not str(head or "").strip():
+        raise ValueError("a base..head subject names both base and head")
+    base_sha, head_sha = _rev_parse(root, f"{base}^{{commit}}"), _rev_parse(root, f"{head}^{{commit}}")
+    rc, _raw, _err = _git_bytes(root, ["merge-base", "--is-ancestor", base_sha, head_sha])
+    if rc != 0:
+        raise ValueError(f"{base} ({base_sha[:12]}) is not an ancestor of {head} ({head_sha[:12]}); "
+                         "rebase the proposal onto its target before review")
+    return base_sha, head_sha
+
+
+def _normalized_spec(ctx: Any, spec: ReviewSubjectSpec) -> ReviewSubjectSpec:
+    if spec.kind not in SUBJECT_KINDS:
+        raise ValueError(f"review subject kind {spec.kind!r} is not one of {SUBJECT_KINDS}")
+    if spec.root_kind not in ROOT_KINDS:
+        raise ValueError(f"review subject root_kind {spec.root_kind!r} is not one of {ROOT_KINDS}")
+    if not str(spec.root or "").strip():
+        raise ValueError("a review subject names its root")
+    governance = str(spec.governance_root or "").strip()
+    if not governance:
+        from ouroboros.tools.tool_resolution import system_repo_dir_for
+
+        governance = str(system_repo_dir_for(ctx))
+    # The governance root is resolved like the scope path's today; the subject
+    # root stays as the caller spelled it (the gate's ``ctx.repo_dir``).
+    return dataclasses.replace(spec, root=str(spec.root),
+                               governance_root=str(pathlib.Path(governance).resolve(strict=False)))
+
+
+def freeze_subject(ctx: Any, spec: ReviewSubjectSpec, *, checkout: str = "") -> FrozenSubject:
+    """Pin the subject once: prompt diff, binary-patch identity, tree and parent.
+
+    ``index`` of the system repo goes through the gate's own path (the authorized
+    resolver's ``managed_review_subject(surface="gate")``, else
+    ``capture_staged_diff``), so the bytes equal today's commit gate. ``worktree``
+    serializes the live tree through a private index (the advisory snapshot) and
+    reads HEAD→snapshot. ``base..head`` is frozen only through
+    ``isolated_checkout``: its reviewers read the head tree, never the live root."""
+    spec = _normalized_spec(ctx, spec)
+    root, managed = spec.root, None
+    if spec.kind == SUBJECT_KIND_INDEX:
+        if spec.root_kind == ROOT_KIND_SYSTEM:
+            managed = managed_review_subject(ctx, pathlib.Path(root), surface="gate")
+        diff_text = (managed.render_prompt_diff() if managed is not None
+                     else _rbc.capture_staged_diff(pathlib.Path(root)))
+        tree_sha = managed.staged_tree if managed is not None else _real_index_tree(root)
+        parent_sha = _rev_parse(root, "HEAD^{commit}")
+        patch, diff_sha = _patch(root, "--cached")
+        name_status = managed.name_status if managed is not None else _tree_delta_name_status(root, parent_sha, tree_sha)
+    elif spec.kind == SUBJECT_KIND_WORKTREE:
+        from supervisor.update_candidate import worktree_snapshot_tree
+
+        tree_sha, tree_error = worktree_snapshot_tree("HEAD", cwd=root)
+        if not tree_sha:
+            raise StagedDiffUnavailable(f"live worktree could not be serialized: {tree_error}")
+        parent_sha = _rev_parse(root, "HEAD^{commit}")
+        diff_text = _tree_delta_diff(root, parent_sha, tree_sha, 3)
+        patch, diff_sha = _patch(root, parent_sha, tree_sha)
+        name_status = _tree_delta_name_status(root, parent_sha, tree_sha)
+    else:
+        if not checkout:
+            raise ValueError("a base..head subject is frozen through isolated_checkout(): its reviewers "
+                             "read the head tree in an isolated checkout, never the live root")
+        parent_sha, head_sha = _resolve_range(root, spec.base, spec.head)
+        spec = dataclasses.replace(spec, base=parent_sha, head=head_sha)
+        tree_sha = _rev_parse(root, f"{head_sha}^{{tree}}")
+        diff_text = _tree_delta_diff(root, parent_sha, head_sha, 3)
+        patch, diff_sha = _patch(root, parent_sha, head_sha)
+        name_status = _tree_delta_name_status(root, parent_sha, head_sha)
+    return FrozenSubject(spec=spec, diff_text=diff_text, diff_sha=diff_sha, tree_sha=tree_sha, parent_sha=parent_sha,
+                         checkout=str(checkout or ""), name_status=tuple(name_status), patch=patch, managed=managed)
+
+
+@contextlib.contextmanager
+def isolated_checkout(ctx: Any, spec: ReviewSubjectSpec) -> Iterator[FrozenSubject]:
+    """A detached worktree at the subject's parent with its patch applied to the
+    index, under the install's data root (``state/review_checkouts/<token>/repo``);
+    the yielded subject reads there, so edits in the primary worktree during the
+    run cannot change what the reviewers see. The checkout's ``write-tree`` must
+    equal the frozen ``tree_sha`` or the subject is refused; removed on exit."""
+    from ouroboros.tool_access_paths import canonical_data_root
+
+    spec = _normalized_spec(ctx, spec)
+    if spec.kind == SUBJECT_KIND_RANGE:
+        parent_sha, _head = _resolve_range(spec.root, spec.base, spec.head)
+    else:
+        parent_sha = _rev_parse(spec.root, "HEAD^{commit}")
+    checkout_root = canonical_data_root(ctx) / "state" / CHECKOUT_SUBDIR / uuid.uuid4().hex[:12]
+    checkout = checkout_root / "repo"
+    checkout_root.mkdir(parents=True, exist_ok=True)
+    try:
+        rc, _raw, err = _git_bytes(spec.root, ["worktree", "add", "--detach", str(checkout), parent_sha])
+        if rc != 0:
+            raise StagedDiffUnavailable(f"isolated checkout could not be created: {err or 'no detail'}")
+        frozen = freeze_subject(ctx, spec, checkout=str(checkout))
+        if frozen.patch.strip():
+            # Capture and apply stay byte-paired (bytes in, bytes out): a text
+            # round trip could normalize line endings the patch describes.
+            try:
+                applied = subprocess.run(
+                    ["git", "apply", "--index", "--whitespace=nowarn", "--binary"], cwd=str(checkout),
+                    input=frozen.patch, capture_output=True, timeout=300)
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise StagedDiffUnavailable(f"patch did not apply to the isolated checkout: {exc!r}") from exc
+            if applied.returncode != 0:
+                raise StagedDiffUnavailable("patch did not apply to the isolated checkout: "
+                                            + (applied.stderr or b"").decode("utf-8", "replace").strip())
+        applied_tree = _real_index_tree(checkout)
+        if applied_tree != frozen.tree_sha:
+            raise StagedDiffUnavailable(f"isolated checkout tree {applied_tree[:12]} is not the frozen "
+                                        f"subject tree {frozen.tree_sha[:12]}")
+        yield frozen
+    finally:
+        _git_bytes(spec.root, ["worktree", "remove", "--force", str(checkout)])
+        shutil.rmtree(checkout_root, ignore_errors=True)
+
+
+def assigned_seats(triad_seat_ids: Any, scope_seat_ids: Any) -> Tuple[Tuple[str, str], ...]:
+    """The planned composition in the form the reuse identity hashes: one
+    ``(seat_id, part)`` row per seat, triad seats answering ``change``, scope
+    seats ``coupling`` — the same rows a settled record's ``rows[]`` yield."""
+    return tuple([(str(s), "change") for s in triad_seat_ids] + [(str(s), "coupling") for s in scope_seat_ids])
+
+
+def review_reuse_key(frozen: FrozenSubject, *, rules_sha: str, layer: str, assigned: Any, enforcement: str,
+                     contract_fp: str, rebuttal_sha: str = "") -> str:
+    """Identity (a): the settled-record reuse key of one subject under one set of
+    rules, one composition and one contract. A new ``review_rebuttal`` (its sha)
+    is the logical round — identity (b) — and makes a NEW key: one more paid
+    review of the same subject; repeating the same rebuttal reuses that round."""
+    from ouroboros.review_ledger import reuse_key_digest
+
+    return reuse_key_digest(surface=frozen.spec.surface, kind=frozen.spec.kind, root=frozen.spec.root,
+                            diff_sha=frozen.diff_sha, tree_sha=frozen.tree_sha, rules_sha=rules_sha, layer=layer,
+                            assigned=assigned, enforcement=enforcement, contract_fp=contract_fp,
+                            rebuttal_sha=rebuttal_sha)
+
+
+def reuse_or_none(drive_root: Any, key: str) -> Optional[Dict[str, Any]]:
+    """The settled, dispatched record this reuse key already has — returned instead
+    of a wave (``reused=True``, $0) — or ``None`` when the wave must run."""
+    from ouroboros.review_ledger import find_reusable
+
+    record = find_reusable(drive_root, key)
+    if record is None:
+        return None
+    return {"reused": True, "record_id": str(record.get("record_id") or ""), "record": record, "usd": 0.0}
+
+
+def review_retry_key(frozen: FrozenSubject) -> str:
+    """Identity (c): the custody retry key of one physical review of one subject,
+    stable across a crash or timeout so a rejoin never pays twice."""
+    from ouroboros.review_state import make_repo_key
+
+    root_key = make_repo_key(pathlib.Path(frozen.spec.root))
+    return f"review:{root_key}:{frozen.spec.kind}:{frozen.diff_sha}:{frozen.spec.surface}"

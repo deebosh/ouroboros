@@ -1326,6 +1326,7 @@ def _review_ledger_facts(ctx: ToolContext, commit_message: str, *, goal: str, sc
         "binding": dict(pre_fingerprint.get("binding") or {}),
         "binding_fingerprint": str(pre_fingerprint.get("fingerprint") or ""),
         "review_contract_fingerprint": str(getattr(ctx, "_current_review_contract_fingerprint", "") or ""),
+        "rebuttal_sha256": str(getattr(ctx, "_current_review_rebuttal_sha256", "") or ""),
         "enforcement": enforcement, "mode": mode, "enforcement_blocks": bool(review_enforcement_blocks(enforcement)),
         "structured": dict(getattr(ctx, "_last_review_structured", {}) or {}), "slot_executions": executions,
         "triad_raw": list(getattr(ctx, "_last_triad_raw_results", []) or []),

@@ -337,6 +337,7 @@ def index_row(drive_root: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
         "verdict": {k: verdict.get(k) for k in ("aggregate", "per_question", "quorum", "degraded_reasons")},
         "panel": {k: panel.get(k) for k in ("seats", "distinct_models", "distinct_engines", "single_model_panel")},
         "cost": payload.get("cost"), "dispatch_refusal": payload.get("dispatch_refusal"),
+        "reuse_key": str((payload.get("fingerprints") or {}).get("reuse_key") or ""),
         "source_ref": {"kind": "review_ledger_record", "path": f"state/{LEDGER_SUBDIR}/{payload['record_id']}.json"},
         "heavy_stripped": resolvable,
     }
@@ -643,22 +644,81 @@ def _retain_wave_sources(drive_root: Any, task_id: str, record_id: str, rows: Li
                                                           role="response", part=seat["parts"][0], text=seat["raw_text"]))
 
 
-def _checklist_facts(repo_dir: Any) -> Dict[str, Any]:
+def _checklist_facts(repo_dir: Any, *, layer: str = "", body_fact: str = "", how: str = "") -> Dict[str, Any]:
+    """The rules the wave was judged by: the governance root's checklist digest plus
+    the subject's layer and body fact (``unknown`` when nobody established them)."""
     facts = _empty_checklist()
     try:
         digest = hashlib.sha256((pathlib.Path(repo_dir) / "docs" / "CHECKLISTS.md").read_bytes()).hexdigest()
         facts.update(checklist_hash=digest, rules_source={"path": "docs/CHECKLISTS.md", "sha": digest})
     except (OSError, TypeError):
         pass
+    facts.update({k: v for k, v in (("layer", layer), ("body_fact", body_fact), ("how", how)) if str(v or "").strip()})
     return facts
 
 
-def build_commit_gate_record(facts: Dict[str, Any], *, record_id: str = "", drive_root: Any = None) -> ReviewLedgerRecord:
-    """One commit-gate wave → one record. ``facts`` is the plain mapping the gate hook
-    assembles from its context (``commit_gate._review_ledger_facts``); with a
-    ``drive_root`` the briefs and raw answers are retained first."""
+def _assigned_rows(assigned: Any) -> List[str]:
+    """Canonical ``seat:part`` rows of a composition given as ``(seat, part)`` pairs
+    or as seat dicts (``seat_id``/``slot_id`` with ``parts``)."""
+    rows: List[str] = []
+    for item in assigned or ():
+        if isinstance(item, dict):
+            seat = str(item.get("seat_id") or item.get("slot_id") or "")
+            rows.extend(f"{seat}:{part}" for part in (item.get("parts") or []))
+        else:
+            seat, part = item
+            rows.append(f"{seat}:{part}")
+    return sorted(rows)
+
+
+def reuse_key_digest(*, surface: str, kind: str, root: str, diff_sha: str, tree_sha: str, rules_sha: str, layer: str,
+                     assigned: Any, enforcement: str, contract_fp: str, rebuttal_sha: str = "") -> str:
+    """sha256 of the reuse identity (§6 "Subject operation", identity a): surface,
+    subject kind/root/diff/tree, the rules source, the checklist layer, the assigned
+    composition, the enforcement and the review contract — plus the rebuttal round."""
+    fields = {"surface": str(surface or ""), "kind": str(kind or ""), "root": str(root or ""),
+              "diff_sha": str(diff_sha or ""), "tree_sha": str(tree_sha or ""), "rules_sha": str(rules_sha or ""),
+              "layer": str(layer or ""), "assigned": _assigned_rows(assigned), "enforcement": str(enforcement or ""),
+              "contract_fp": str(contract_fp or ""), "rebuttal_sha": str(rebuttal_sha or "")}
+    return hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def find_reusable(drive_root: Any, reuse_key: str) -> Optional[Dict[str, Any]]:
+    """The newest SETTLED, DISPATCHED record carrying this reuse key, else ``None``.
+    A pending record, a refusal (``NOT_DISPATCHED``) or an unperformed wave is never
+    reused: the author is owed a real wave, not a replayed gap."""
+    key = str(reuse_key or "").strip()
+    if not key:
+        return None
+    for row in _newest_rows([index_path(drive_root), *reversed(_index_segments(drive_root))]):
+        if str(row.get("reuse_key") or "") != key:
+            continue
+        try:
+            record = load_record(drive_root, str(row.get("record_id") or ""))
+        except ValueError:
+            continue
+        if (record is not None and record.get("state") == STATE_SETTLED
+                and str((record.get("fingerprints") or {}).get("reuse_key") or "") == key
+                and (record.get("verdict") or {}).get("aggregate") in (VERDICT_PASS, VERDICT_FAIL)):
+            return record
+    return None
+
+
+def build_wave_record(facts: Dict[str, Any], *, surface: str, record_id: str = "",
+                      drive_root: Any = None) -> ReviewLedgerRecord:
+    """One review wave of one subject → one record, for every surface.
+
+    ``facts`` is the plain mapping the surface's hook assembles from its context
+    (``commit_gate._review_ledger_facts`` for the gate); with a ``drive_root`` the
+    briefs and raw answers are retained first. The ``subject`` block is the frozen
+    subject's (``facts["subject"]``, ``FrozenSubject.record_subject``) when the wave
+    was run on one, else the gate's binding (``index`` of the system repo, parent as
+    ``base``). ``fingerprints.reuse_key`` is the caller's pre-wave key when given,
+    else the same digest computed from the record's own fields."""
     from ouroboros.review_model_routes import adaptive_quorum
 
+    if surface not in SURFACES:
+        raise ValueError(f"review ledger surface {surface!r} is not a known surface")
     record_id = record_id or new_record_id()
     rows = build_rows(facts)
     task_id = str(facts.get("task_id") or "")
@@ -679,35 +739,51 @@ def build_commit_gate_record(facts: Dict[str, Any], *, record_id: str = "", driv
     known_costs = [float(s["usd"]) for s in rows if isinstance(s.get("usd"), (int, float))]
     for seat in rows:
         seat.pop("raw_text", None)  # retained as a source above; the row names it, never copies it
-    binding = dict(facts.get("binding") or {})
-    parents = binding.get("parents")
+    frozen = dict(facts.get("subject") or structured.get("subject") or {})
+    if frozen:
+        subject = {k: str(frozen.get(k) or "") for k in ("root_kind", "root", "kind", "base", "head", "tree_sha", "diff_sha", "checkout")}
+    else:
+        binding = dict(facts.get("binding") or {})
+        parents = binding.get("parents")
+        subject = {"root_kind": "system_repo", "root": str(facts.get("repo_dir") or ""), "kind": "index",
+                   "base": str(parents[0]) if isinstance(parents, list) and parents else str(parents or ""), "head": "",
+                   "tree_sha": str(binding.get("tree_sha") or ""), "diff_sha": str(binding.get("diff_sha256") or "")}
+    subject["candidate_branch"] = str(facts.get("candidate_branch") or "")
+    checklist = _checklist_facts(facts.get("governance_root") or facts.get("repo_dir"),
+                                 layer=str(facts.get("layer") or structured.get("layer") or ""),
+                                 body_fact=str(facts.get("body_fact") or ""), how=str(facts.get("body_how") or ""))
+    enforcement, contract_fp = str(facts.get("enforcement") or ""), str(facts.get("review_contract_fingerprint") or "")
+    reuse_key = str(facts.get("reuse_key") or structured.get("reuse_key") or "") or reuse_key_digest(
+        surface=surface, kind=subject["kind"], root=subject["root"], diff_sha=subject["diff_sha"], tree_sha=subject["tree_sha"],
+        rules_sha=checklist["rules_source"]["sha"], layer=checklist["layer"], assigned=rows, enforcement=enforcement,
+        contract_fp=contract_fp, rebuttal_sha=str(facts.get("rebuttal_sha256") or ""))
     return ReviewLedgerRecord(
         record_id=record_id, state=STATE_PENDING if pending else STATE_SETTLED, ts=utc_now_iso(), task_id=task_id,
         root_task_id=str(facts.get("root_task_id") or ""), review_wave_id=str(facts.get("review_wave_id") or ""),
-        surface="commit_gate",
-        subject={"root_kind": "system_repo", "root": str(facts.get("repo_dir") or ""), "kind": "index",
-                 "base": str(parents[0]) if isinstance(parents, list) and parents else str(parents or ""), "head": "",
-                 "tree_sha": str(binding.get("tree_sha") or ""), "diff_sha": str(binding.get("diff_sha256") or ""),
-                 "candidate_branch": str(facts.get("candidate_branch") or "")},
+        surface=surface, subject=subject,
         brief={"goal": str(facts.get("goal") or ""), "scope": str(facts.get("scope") or ""),
                "parts": [part for part in PARTS if verdict["per_question"][part] != QUESTION_NOT_PERFORMED],
-               "author_questions": list(facts.get("author_questions") or []),
-               "checklist": _checklist_facts(facts.get("repo_dir"))},
-        enforcement=str(facts.get("enforcement") or ""), mode=str(facts.get("mode") or ""),
+               "author_questions": list(facts.get("author_questions") or []), "checklist": checklist},
+        enforcement=enforcement, mode=str(facts.get("mode") or ""),
         enforcement_blocks=bool(facts.get("enforcement_blocks")), panel=panel_facts(rows), rows=rows, verdict=verdict,
         tests=dict(facts.get("tests") or {"policy": "NOT_RUN", "result": UNKNOWN}),
         preflight=dict(facts.get("preflight") or {"status": "not_performed", "record_id": ""}),
         dispatch_refusal=dict(refusal) if isinstance(refusal, dict) else None,
         cost={"usd": round(sum(known_costs), 6), "unknown": len(known_costs) < len(rows)},
-        fingerprints={"review_contract": str(facts.get("review_contract_fingerprint") or ""),
-                      "binding": str(facts.get("binding_fingerprint") or "")},
+        fingerprints={"review_contract": contract_fp, "binding": str(facts.get("binding_fingerprint") or ""),
+                      "reuse_key": reuse_key, "retry_key": str(facts.get("retry_key") or structured.get("retry_key") or "")},
     )
 
 
+def build_commit_gate_record(facts: Dict[str, Any], *, record_id: str = "", drive_root: Any = None) -> ReviewLedgerRecord:
+    """One commit-gate wave → one record (``build_wave_record`` on the gate surface)."""
+    return build_wave_record(facts, surface="commit_gate", record_id=record_id, drive_root=drive_root)
+
+
 __all__ = [
-    "REVIEW_LEDGER_SCHEMA_VERSION", "ReviewLedgerRecord", "build_commit_gate_record", "build_rows",
-    "distinct_model_facts", "index_path", "index_row", "ledger_dir", "ledger_root", "load_record", "new_record_id",
-    "normalize_model_name", "note_author_decision", "panel_facts", "read_source", "recent_records", "record_path",
-    "record_sources_resolvable", "reduce_verdict", "retain_text_source", "revise_record", "source_ref_resolvable",
-    "write_record",
+    "REVIEW_LEDGER_SCHEMA_VERSION", "ReviewLedgerRecord", "build_commit_gate_record", "build_rows", "build_wave_record",
+    "distinct_model_facts", "find_reusable", "index_path", "index_row", "ledger_dir", "ledger_root", "load_record",
+    "new_record_id", "normalize_model_name", "note_author_decision", "panel_facts", "read_source", "recent_records",
+    "record_path", "record_sources_resolvable", "reduce_verdict", "retain_text_source", "reuse_key_digest",
+    "revise_record", "source_ref_resolvable", "write_record",
 ]

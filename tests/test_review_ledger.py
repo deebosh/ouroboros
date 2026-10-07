@@ -67,7 +67,13 @@ def test_record_round_trip_schema_version_and_read_by_id(tmp_path):
     assert loaded["brief"]["parts"] == ["change", "coupling"] and loaded["brief"]["checklist"]["body_fact"] == "unknown"
     assert loaded["brief"]["checklist"]["how"] == "unknown"
     assert loaded["panel"]["composition"] == "configured" and loaded["panel"]["chosen_by"] == "owner"
-    assert loaded["fingerprints"] == {"review_contract": "cf", "binding": "fp"}
+    fingerprints = loaded["fingerprints"]
+    assert fingerprints["review_contract"] == "cf" and fingerprints["binding"] == "fp"
+    # The reuse key is derived from the record's own fields when the gate hook gives none;
+    # the gate's retry key rides the structured facts into the record.
+    assert len(fingerprints["reuse_key"]) == 64 and fingerprints["retry_key"] == ""
+    assert set(fingerprints) == {"review_contract", "binding", "reuse_key", "retry_key"}
+    assert rl.recent_records(tmp_path, "task-1", 5)[0]["reuse_key"] == fingerprints["reuse_key"]
     assert loaded["review_wave_id"] == "wave-1" and loaded["state"] == "settled"
     assert json.loads(rl.record_path(tmp_path, record.record_id).read_text(encoding="utf-8")) == loaded
     assert rl.load_record(tmp_path, "rl-missing") is None and rl.load_record(tmp_path, "../evil") is None

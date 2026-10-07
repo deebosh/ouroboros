@@ -929,14 +929,15 @@ def _build_preflight_staged(target_repo: str, fallback: str = "") -> str:
 from ouroboros.tools.review_admission import fit_triad_prompt as _fit_triad_prompt
 
 
-def _triad_session_task(ctx: ToolContext, **sections) -> str:
+def _triad_session_task(ctx: ToolContext, governance_root=None, **sections) -> str:
     """Compat shim over ``review_subject.build_triad_session_task`` (5.2/5.3):
     same session task text; a managed subject inlines its authoritative delta."""
     from ouroboros.tools.review_subject import build_triad_session_task
 
-    # Governance always comes from the system repository, and the nav maps must
-    # address the physical chapter a section lives in.
-    governance_root = getattr(ctx, "repo_dir", None)
+    # Governance always comes from the system repository (a frozen subject names
+    # it explicitly), and the nav maps must address the physical chapter a
+    # section lives in.
+    governance_root = governance_root or getattr(ctx, "repo_dir", None)
     return build_triad_session_task(
         governance_repo_dir=pathlib.Path(governance_root) if governance_root else None,
         **sections,
@@ -963,18 +964,20 @@ def _triad_governance_usable_window(api_models: list, api_slots: list) -> int:
 
 def _triad_governance_context(ctx: ToolContext, touched_paths: list,
                               checklist_section: str, api_models: list, api_slots: list,
-                              *, delivery: str = "packet", layer: str = "body",
-                              subject_root: Optional[pathlib.Path] = None):
+                              *, delivery: str = "packet", governance_root=None,
+                              layer: str = "body", subject_root: Optional[pathlib.Path] = None):
     """The triad's shared governance tiers for either delivery class.
 
-    Body layer: ``BIBLE.md`` is inlined by every api row's constitutional head
-    and the standing disclosures ride the checklist section, so both are
-    declared as already delivered: the manifest records them as tier-1 inline
-    without a second copy in the prompt. Retrieving rows have no constitutional
-    head, so their task receives BIBLE.md inline from this shared builder.
-    Core layer (the subject is not the Ouroboros body): neither document is
-    owed, so nothing is declared already inline; ``subject_root`` is the
-    reviewed repository whose own documents the navigation names."""
+    ``governance_root`` is the installed body (a frozen subject names it; the
+    rules are always the installed body's). Body layer: ``BIBLE.md`` is inlined
+    by every api row's constitutional head and the standing disclosures ride
+    the checklist section, so both are declared as already delivered: the
+    manifest records them as tier-1 inline without a second copy in the
+    prompt. Retrieving rows have no constitutional head, so their task
+    receives BIBLE.md inline from this shared builder. Core layer (the subject
+    is not the Ouroboros body): neither document is owed, so nothing is
+    declared already inline; ``subject_root`` is the reviewed repository whose
+    own documents the navigation names."""
     from ouroboros.tools.governance_context import GovernanceContext, governance_context
 
     if not api_models:
@@ -985,7 +988,7 @@ def _triad_governance_context(ctx: ToolContext, touched_paths: list,
     else:
         already_inline = ()
     return governance_context(
-        pathlib.Path(ctx.repo_dir),
+        pathlib.Path(governance_root or ctx.repo_dir),
         surface="triad",
         touched_paths=touched_paths,
         usable_window_tokens=_triad_governance_usable_window(api_models, api_slots),
@@ -998,7 +1001,7 @@ def _triad_governance_context(ctx: ToolContext, touched_paths: list,
 
 
 def _capture_triad_staged_diff(
-    ctx: ToolContext, target_repo, blocking_review: bool
+    ctx: ToolContext, target_repo, blocking_review: bool, frozen: Any = None,
 ) -> tuple[Optional[str], Optional[Any], Optional[str]]:
     """Capture the triad's review-diff evidence, or route a capture failure.
 
@@ -1008,12 +1011,16 @@ def _capture_triad_staged_diff(
     ``(None, None, block_result)`` on failure: the fail-closed message in
     blocking mode, ``None`` (advisory skip) otherwise. A genuine failure fails
     closed rather than reviewing a placeholder that would yield authoritative
-    findings about a diff nobody has.
+    findings about a diff nobody has. A ``frozen`` subject that is not the
+    system repo's own index IS the evidence (its diff text and managed artifact);
+    the system index keeps the gate's live capture, byte-identical to today.
     """
     from ouroboros.tools.review_binary_context import (
         StagedDiffUnavailable, capture_staged_diff)
     from ouroboros.tools.review_subject import managed_review_subject
 
+    if frozen is not None and not frozen.is_system_index:
+        return frozen.diff_text, frozen.managed, None
     try:
         subject = managed_review_subject(ctx, target_repo)
         if subject is not None:
@@ -1031,19 +1038,41 @@ def _capture_triad_staged_diff(
         )
 
 
+def _subject_changed_paths(frozen: Any, target_repo) -> tuple[str, str]:
+    """``(changed, preflight_staged)`` of the reviewed subject: the gate asks the
+    staged index of the reading root; a frozen worktree/base..head subject has
+    no staged index to ask and carries its own frozen path set."""
+    if frozen is not None and not frozen.is_system_index:
+        changed = "\n".join(path for _status, path in frozen.name_status)
+        return changed, format_name_status_for_preflight(
+            "\n".join(f"{status}\t{path}" for status, path in frozen.name_status), fallback=changed)
+    try:
+        changed = run_cmd(["git", "diff", "--cached", "--name-only"], cwd=target_repo)
+    except Exception:
+        changed = ""
+    return changed, _build_preflight_staged(target_repo, fallback=changed)
+
+
 def _prepare_unified_review(ctx: ToolContext, commit_message: str,
                             review_rebuttal: str = "",
                             repo_dir=None,
                             goal: str = "",
-                            scope: str = "") -> tuple:
+                            scope: str = "",
+                            subject: Any = None) -> tuple:
     """Assemble the triad packet WITHOUT dispatching any reviewer (Q25=A).
 
     Returns ``(prepared, early_result, exited)``: ``exited=True`` means the
     triad terminated during assembly and ``early_result`` (a block message, or
     ``None`` for an advisory skip / empty diff) is its final answer — nothing
     may be dispatched for it; otherwise ``prepared`` carries everything
-    ``_dispatch_unified_review`` needs."""
-    target_repo = repo_dir or ctx.repo_dir
+    ``_dispatch_unified_review`` needs. A frozen ``subject`` (``FrozenSubject``)
+    is read from ITS root (or isolated checkout) under the installed body's
+    governance, the body's release preflight only on the body's layer; ``None``
+    is the gate's path unchanged."""
+    frozen = subject
+    layer = str(frozen.spec.layer or "body") if frozen is not None else "body"
+    target_repo = frozen.review_root if frozen is not None else (repo_dir or ctx.repo_dir)
+    governance_root = pathlib.Path(frozen.spec.governance_root) if frozen is not None else pathlib.Path(ctx.repo_dir)
     ctx._review_iteration_count += 1
     ctx._last_review_block_reason = ""  # reset per attempt
     ctx._last_triad_models = []  # reset forensic field so stale values never persist on early exit
@@ -1054,24 +1083,20 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
     review_enforcement = _cfg.get_review_enforcement()
     blocking_review = review_enforcement_blocks(review_enforcement)
 
-    diff_text, subject, capture_block = _capture_triad_staged_diff(ctx, target_repo, blocking_review)
+    diff_text, subject, capture_block = _capture_triad_staged_diff(ctx, target_repo, blocking_review, frozen=frozen)
     if diff_text is None:  # capture failed: block (blocking) or advisory-skip (None)
         return None, capture_block, True
     if not diff_text.strip():
         return None, None, True
 
-    try:
-        changed = run_cmd(["git", "diff", "--cached", "--name-only"], cwd=target_repo)
-    except Exception:
-        changed = ""
+    changed, preflight_staged = _subject_changed_paths(frozen, target_repo)
     # Reviewers of a managed resolution read the RESOLUTION path set (delta ∪
-    # conflict anchors); the preflight staged list below stays on the FULL
-    # candidate (I2 — full-tree invariants are never narrowed).
+    # conflict anchors); the preflight staged list stays on the FULL candidate
+    # (I2 — full-tree invariants are never narrowed). The release preflight
+    # (version carriers, Architecture rows) is the installed body's own contract:
+    # a foreign root under the body's rules (layer ``core``) does not carry it.
     review_changed = "\n".join(subject.touched_paths()) if subject is not None else changed
-
-    preflight_staged = _build_preflight_staged(target_repo, fallback=changed)
-
-    preflight_err = _preflight_check(commit_message, preflight_staged, target_repo)
+    preflight_err = _preflight_check(commit_message, preflight_staged, target_repo) if layer == "body" else ""
     if preflight_err:
         from ouroboros.commit_admission import preflight_evidence_unavailable
         ctx._last_review_block_reason = (
@@ -1106,7 +1131,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
     try:
         from ouroboros.review_state import load_state, make_repo_key
         _rs = load_state(pathlib.Path(ctx.drive_root))
-        _repo_key = make_repo_key(pathlib.Path(ctx.repo_dir))
+        _repo_key = make_repo_key(pathlib.Path(frozen.spec.root if frozen is not None else ctx.repo_dir))
         _open_obs_for_review = _rs.get_open_obligations(repo_key=_repo_key)
     except Exception:
         pass  # Non-fatal: anti-thrashing hint is best-effort
@@ -1153,7 +1178,8 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
     # delivered rather than sent twice. An all-retrieving panel assembles no
     # packet, so it asks for none.
     governance = _triad_governance_context(
-        ctx, touched_paths, checklist_section, api_models, api_slots)
+        ctx, touched_paths, checklist_section, api_models, api_slots,
+        governance_root=governance_root, layer=layer)
 
     # Build touched-file pack for full current context (managed: the reviewed
     # resolution set; binary rows carry the M0 baseline identity). A plain
@@ -1239,7 +1265,8 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         prompt, stable_prefix_len, fit_error = _fit_triad_prompt(
             api_models, _assemble_prompt, current_files_section, diff_text,
             review_changed, target_repo, ctx=ctx, subject=subject,
-            slots=api_slots,
+            slots=api_slots,  # a frozen non-index subject re-renders ITS pinned trees at -U0
+            compact_diff=(lambda: frozen.render_prompt_diff(0)) if frozen is not None and not frozen.is_system_index else None,
         )
         for i, slot in zip(api_indices, api_slots):
             models[i], row_plan["session_profiles"][i], row_plan["use_local"][i] = slot.model, slot.session_profile, slot.use_local
@@ -1296,9 +1323,11 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
             for i in retrieving_indices]
         session_governance = _triad_governance_context(
             ctx, touched_paths, checklist_section,
-            [models[i] for i in retrieving_indices], retrieving_slots, delivery="retrieving")
+            [models[i] for i in retrieving_indices], retrieving_slots, delivery="retrieving",
+            governance_root=governance_root, layer=layer)
         session_task = _triad_session_task(
             ctx,
+            governance_root=governance_root,
             goal_section=goal_section,
             scope_section=scope_section,
             checklist_section=checklist_section,
@@ -1306,6 +1335,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
             review_history_section=review_history_section,
             governance=session_governance,
             subject=subject,
+            layer=layer,
         )
 
     # The governance manifest is the packet's disclosure record: which rules were
