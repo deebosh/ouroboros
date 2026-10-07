@@ -117,7 +117,6 @@ def _structural(
     query: str,
     path: str,
     lang: str,
-    limit: int,
     binding: ResolvedResourceBinding | None = None,
     runtime_check: Callable[[pathlib.Path], str] | None = None,
 ) -> list[str]:
@@ -365,20 +364,22 @@ def _query_code(
                     "⚠️ TOOL_ARG_ERROR (query_code): op architecture requires "
                     "root=active_workspace or system_repo."
                 )
-            from ouroboros.code_intelligence_architecture import architecture_fact_rows
+            from ouroboros.code_intelligence_architecture import ARCHITECTURE_LIMIT_MARKER, architecture_fact_rows
 
             try:
                 rows = architecture_fact_rows(repo_root, query)
                 view.notes = ["method: pinned architecture carriers; scope: repository; path targets are in query"]
             except ValueError as exc:
                 return f"⚠️ TOOL_ARG_ERROR (query_code): {exc}"
+            view.limits = [row for row in rows if row.startswith(ARCHITECTURE_LIMIT_MARKER)]
+            view.incomplete = bool(view.limits)
+            rows = [row for row in rows if not row.startswith(ARCHITECTURE_LIMIT_MARKER)]
         elif op == "structural":
-            # Collect through the requested page (offset+limit, like relevant_files
-            # above): collecting only `limit` rows made rows[offset:] empty on every
-            # page after the first and blamed the query for it (#447 D6).
+            # Collection is bounded by the walk and row work caps, never by page
+            # size; offset/limit page the collected rows below (#447 D6).
             rows = _structural(
                 ctx, repo_root, query, scoped_path, str(lang or "any"),
-                offset + limit, binding, runtime_check
+                binding, runtime_check
             )
             view.notes = [f"method: tree-sitter / Python ast; scope: {scoped_path or '.'}; lang={lang}",
                           "universe: independent bounded filesystem walk (not the Git inventory)"]

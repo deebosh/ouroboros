@@ -80,7 +80,13 @@ def _slot(node: Any) -> str:
 
 
 def _callee_leaf(node: Any) -> Any:
-    """Only the terminal identifier of a syntactic callee, never its receiver."""
+    """Only the terminal identifier of a syntactic callee, never its receiver.
+
+    Member/name fields lead to the called name. Otherwise only a sole unlabelled
+    operand, as inside parentheses or a non-null assertion, continues. Several
+    operands (``getters[key]``, a conditional) form a computed callee: none of
+    them is promoted, so they remain ordinary references.
+    """
     target = None
     for name in ("function", "name", "method"):
         target = node.child_by_field_name(name)
@@ -95,10 +101,23 @@ def _callee_leaf(node: Any) -> Any:
             if child is not None:
                 break
         if child is None:
-            child = next((c for c in reversed(target.named_children)
-                          if c.type in ci._TS_NAME_TYPES), None)
+            operands = [i for i, c in enumerate(target.children) if c.is_named]
+            if len(operands) == 1 and target.field_name_for_child(operands[0]) is None:
+                child = target.children[operands[0]]
         target = child
     return None
+
+
+def _source_lines(text: str, *, python_ast: bool = False) -> list[str]:
+    """Lines in the coordinate model of the anchor being rendered.
+
+    Tree-sitter rows and literal anchors count LF only (a CRLF's CR is trimmed);
+    Python AST lines also end at a bare CR. ``str.splitlines`` would also split
+    at form feed, vertical tab, NEL or U+2028 and shift every later slice.
+    """
+    if python_ast:
+        return re.split(r"\r\n?|\n", text)
+    return [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
 
 
 def _source(lines: list[str], line: int, column: int) -> str:
@@ -115,7 +134,7 @@ def _tree_rows(tree: Any, file: Any, text: str, query: str | None, mode: str,
                deadline: float) -> tuple[list[EvidenceRow], set[tuple[int, int]], bool]:
     rows: list[EvidenceRow] = []
     covered: set[tuple[int, int]] = set()
-    lines = text.splitlines()
+    lines = _source_lines(text)
     callees: set[tuple[int, int]] = set()
     stack = [(tree.root_node, (), False)]
     visited = 0
@@ -173,9 +192,12 @@ def scan_occurrences(inventory: ci.CodeInventory, query: str | None, *, mode: st
     candidate joins happen separately over the current complete path list.
     Complete local import facts are reused only for these exact source bytes;
     legacy, overflowed or changed facts require a fresh parse.
+    Inventory call facts and definition ranges also apply only to the bytes the
+    inventory hashed: a changed file is disclosed without them; others still scan.
     A view may select/summarize each file's rows before the selected-result cap.
     """
     scan = EvidenceScan()
+    stale = False
     deadline = deadline if deadline is not None else time.monotonic() + wall_seconds
     root = pathlib.Path(inventory.repo_root)
     pattern = re.compile(r"(?<![\w$])" + re.escape(query) + r"(?![\w$])") if query else None
@@ -238,7 +260,7 @@ def scan_occurrences(inventory: ci.CodeInventory, query: str | None, *, mode: st
         rows: list[EvidenceRow] = []
         covered: set[tuple[int, int]] = set()
         if cached_imports:
-            lines = text.splitlines()
+            lines = _source_lines(text, python_ast=file.import_facts_method == "python ast")
             rows = [EvidenceRow(file.path, fact.line, fact.column, fact.slot,
                                 _source(lines, fact.line, fact.column), "import?",
                                 fact.enclosing, fact.specifier, file.language)
@@ -263,17 +285,18 @@ def scan_occurrences(inventory: ci.CodeInventory, query: str | None, *, mode: st
             if mode in {"callers", "callees"} and file.language == "python" and not file.syntax_error:
                 if file.sha256 != hashlib.sha256(raw).hexdigest():
                     scan.limits["file changed since inventory; Python call facts not used"] += 1
-                    scan.incomplete = True
+                    stale = True
                 else:
-                    lines = text.splitlines()
+                    lines = _source_lines(text, python_ast=True)
                     rows = [EvidenceRow(file.path, c.line, 0, "ast.Call.func", _source(lines, c.line, 1),
                                         "call?", c.enclosing) for c in file.call_sites if query is None or c.name == query]
                     scan.methods.add("python ast local calls")
         if mode == "references":
-            lines = text.splitlines()
+            lines = _source_lines(text)
             text_lines: set[int] = set()
             # Map offsets in one pass; repeated text.count would be quadratic for
-            # common tokens in a large file.
+            # common tokens in a large file. Text rows are line-level: the first
+            # match without syntax context anchors its line; others may follow.
             line = 1
             line_start = 0
             for match in matches:
@@ -288,7 +311,20 @@ def scan_occurrences(inventory: ci.CodeInventory, query: str | None, *, mode: st
                     text_lines.add(line)
                     rows.append(EvidenceRow(file.path, line, col, "text", _source(lines, line, col)))
                     scan.methods.add("literal text")
-        if ranges is not None:
+        if ranges is not None and rows:
+            # Outline ranges describe the inventory's bytes in its line model;
+            # on other bytes, or Python AST lines (bare CR) against parser rows,
+            # they could attribute a moved call to the wrong definition.
+            if file.sha256 != hashlib.sha256(raw).hexdigest():
+                mismatch = "file changed since inventory"
+            elif tree is not None and file.language == "python" and "\r" in text.replace("\r\n", ""):
+                mismatch = "bare CR: outline and parser lines differ"
+            else:
+                mismatch = ""
+            if mismatch:
+                scan.limits[f"{mismatch}; definition ranges not applied"] += 1
+                stale = True
+                rows = []
             rows = [r for r in rows if any(start <= r.line <= end for start, end in ranges.get(file.path, []))]
         rows.sort(key=lambda r: (r.line, r.column, r.specifier))
         if select_rows is not None:
@@ -304,4 +340,5 @@ def scan_occurrences(inventory: ci.CodeInventory, query: str | None, *, mode: st
             scan.incomplete = True
         if scan.incomplete:
             break
+    scan.incomplete |= stale
     return scan

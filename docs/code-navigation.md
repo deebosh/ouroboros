@@ -60,9 +60,20 @@ parser report `structural_unavailable:<language>` instead of an indexed empty
 outline; their text can still contribute occurrence evidence.
 
 `references` can expose identifiers, strings and comments. Files without a
-usable grammar can still contribute text evidence. `callers` selects recognized
-callee positions and does not promote text matches to calls. `callees` retains
-the local call view within the chosen outline ranges. Grammar coverage and
+usable grammar can still contribute text evidence. Text evidence is line-level:
+the first match on a line without syntax context anchors that line, so one long
+line may hold further raw matches. `callers` selects recognized callee positions
+and does not promote text matches to calls. A computed callee such as
+`getters[key]()` has no callee name; its receiver and index stay ordinary
+references. Go spells type arguments with the same brackets, so syntax alone
+cannot tell `handlers[i]()` from the generic call `Make[int]()`: tree-sitter-go
+gives both one tree and both names stay `call?` candidates. A literal or
+expression index is unambiguous; a one-argument `Make[T](x)` parses as a
+generic-type conversion and stays a reference. `callees` retains the local call view within the chosen outline
+ranges, which describe the bytes the inventory hashed in its line model. A file
+changed since then, or a Python file whose bare CR makes AST outline lines differ
+from parser rows, contributes no callee rows and marks the reply incomplete.
+Grammar coverage and
 syntax errors can limit those views; an empty caller list does not prove that a
 symbol has no runtime callers.
 
@@ -125,7 +136,10 @@ These bounds are disclosed when reached and are independent of page size.
 Directory rollups show at most
 50 immediate directories; their flat file entries remain pageable. Source
 slices preserve the text around the match, with an ellipsis when clipped;
-tree-sitter and Python AST import columns count UTF-8 bytes. Python AST local-call
+tree-sitter and Python AST import columns count UTF-8 bytes. Each slice uses the
+line model of its anchor: tree-sitter rows and literal matches count LF only, so
+a form feed or other Unicode line separator stays inside the raw line, while
+Python AST lines also end at a bare CR. Python AST local-call
 fallback supplies line anchors without inventing columns. It rechecks the hash
 against the current source read; a mismatch omits stale calls and visibly marks
 the result incomplete.
@@ -159,7 +173,11 @@ so adding or removing a target can change impact without editing its importer.
 Older caches rebuild on first use; the cache remains disposable derived data.
 
 Local calls continue to feed digest's `Calls:` view. `symbol_definitions` remains
-available to architecture ownership queries; the existing import-text and
+available to architecture ownership queries. A bare-symbol `owner_of` reads a
+fresh inventory; population modules without an indexed outline (enumeration or
+time limits, skipped files, syntax errors) are named as a coverage limit, so an
+empty or short owner list is not reported as absence. Module-path and dotted
+lookups read only the manifest. The existing import-text and
 relative-import helpers remain available to their architecture/review consumers.
 A restricted or partial resource view does not overwrite the shared inventory
 cache. Retention and reset behavior are recorded in [PERSISTENCE](PERSISTENCE.md).

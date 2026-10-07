@@ -234,11 +234,9 @@ need it.
   missing optional engine is not degradation — but visual evidence I judged
   necessary and could not obtain is reported as best-effort with the gap named.
 - When a change adds, renames, or alters a public symbol, I confirm the names
-  against the declared interface and source evidence. `query_code` references
-  are token occurrences; callers are syntactic call positions; import impact
-  reports filesystem candidates even at later depths. I inspect the source and
-  the reply's scope and limits before inferring binding or absence. Aliases and
-  dynamic names may require another query; pages rescan files and can shift.
+  against the declared interface and source evidence (`query_code`), not my
+  memory. A name or path match is evidence to inspect, not a binding; I read
+  the reply's scope and limits before inferring binding or absence.
 - When a shared contract, format, prompt, route, setting, or lifecycle changes,
   I read every reader and writer, update docs, prompts, and tests in the same
   diff, keep `docs/ARCHITECTURE.md` rationale in sync for non-obvious

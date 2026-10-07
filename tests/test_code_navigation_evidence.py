@@ -26,6 +26,12 @@ def body(result):
     return result.split("\n\n", 1)[1] if "\n\n" in result else ""
 
 
+def public(repo, ctx):
+    """query_code through the model-facing ToolRegistry dispatch."""
+    registry = ToolRegistry(repo_dir=repo, drive_root=ctx.drive_root)
+    return lambda op, **args: registry.execute("query_code", {"op": op, **args})
+
+
 def test_public_typescript_views_and_file_impact(project):
     repo, ctx = project
     write(repo, "util.ts", "export namespace util {\n"
@@ -141,6 +147,8 @@ def test_symbol_impact_keeps_occurrences_and_imports(project):
     ("x.go", "package main\nfunc run() { pkg.target() }\n", "selector_expression.field"),
     ("X.java", "class X { void run() { obj.target(); } }\n", "method_invocation.name"),
     ("x.rs", "fn run() { thing.target(); }\n", "field_expression.field"),
+    ("y.py", "def run(): return (target)()\n", "parenthesized_expression"),
+    ("y.ts", "function run() { return obj.target!(); }\n", "member_expression.property"),
 ])
 def test_representative_grammar_callers(project, path, source, slot):
     repo, ctx = project
@@ -148,6 +156,59 @@ def test_representative_grammar_callers(project, path, source, slot):
     result = _query_code(ctx, "callers", query="target")
     assert slot in body(result), result
     assert "call?" in result
+
+
+@pytest.mark.parametrize("path,source,receiver,index,index_slot,parser", [
+    ("x.py", "def run(getters, key): return getters[key]() + (target)()\n",
+     "getters", "key", "subscript.subscript", True),
+    ("x.py", "def run(getters, key): return getters[key]() + target()\n", "getters", "key", "text", False),
+    ("x.ts", "function run(getters, key) { getters[key](); return obj.target!(); }\n",
+     "getters", "key", "subscript_expression.index", True),
+    ("x.rs", "fn run() { getters[key](); thing.target(); }\n", "getters", "key", "index_expression", True),
+    ("x.cpp", "int run() { return getters[key]() + obj.target(); }\n",
+     "getters", "key", "subscript_argument_list", True),
+    ("x.go", "package main\nfunc run() { handlers[0](); handlers[i+1](); pkg.target() }\n",
+     "handlers", "i", "binary_expression.left", True),
+])
+def test_computed_callee_operands_stay_ordinary_references(project, monkeypatch, path, source,
+                                                            receiver, index, index_slot, parser):
+    from ouroboros import code_intelligence as ci
+
+    repo, ctx = project
+    write(repo, path, source)
+    if not parser:
+        monkeypatch.setattr(ci, "_ts_parser", lambda grammar: None)
+    query = public(repo, ctx)
+    line = source.count("\n", 0, source.index(receiver + "[")) + 1
+    for token in (receiver, index):
+        assert not body(query("callers", query=token)), token
+        refs = body(query("references", query=token))
+        assert f"{path}:{line}:" in refs and "call?" not in refs, refs
+    assert index_slot in body(query("references", query=index))
+    # The direct or member call beside the computed callee is still recognized
+    # and, where run() has an outline range, it is the only callee row.
+    target = body(query("callers", query="target")).splitlines()
+    assert len(target) == 1, target
+    outlined = "[outline]" in query("symbols", query="run")
+    assert body(query("callees", query="run")).splitlines() == (target if outlined else [])
+
+
+def test_go_bracket_calls_keep_the_grammar_ambiguity_visible(project):
+    repo, ctx = project
+    # Go spells type arguments with index brackets, so syntax alone cannot tell an
+    # indexed function value from a generic call: tree-sitter-go gives
+    # handlers[i]() and Make[int]() one tree, and both names stay call candidates.
+    # A literal or expression index is unambiguous. With one argument the grammar
+    # parses a generic-type conversion, which stays a reference.
+    write(repo, "x.go", "package main\nfunc run() {\n\thandlers[i]()\n\tMake[int]()\n"
+          "\thandlers[0]()\n\tMake[T](x)\n}\n")
+    query = public(repo, ctx)
+    assert body(query("callers", query="handlers")).splitlines() == [
+        "x.go:3:2 call_expression.function call? in run | \thandlers[i]()"]
+    assert body(query("callers", query="Make")).splitlines() == [
+        "x.go:4:2 call_expression.function call? in run | \tMake[int]()"]
+    assert "x.go:5:2 index_expression.operand" in body(query("references", query="handlers"))
+    assert "x.go:6:2 generic_type.type" in body(query("references", query="Make"))
 
 
 def test_unknown_grammar_event_config_and_comment_source(project):
@@ -229,6 +290,71 @@ def test_missing_parser_rechecks_call_fact_hash_after_inventory(project, monkeyp
     assert not body(result), result
     assert "QUERY_CODE_TRUNCATED" in result, result
     assert "file changed since inventory; Python call facts not used" in result, result
+
+
+@pytest.mark.parametrize("parser", [True, False])
+def test_callees_never_apply_inventory_ranges_to_changed_bytes(project, monkeypatch, parser):
+    from ouroboros import code_intelligence as ci
+    from ouroboros import code_occurrences as co
+
+    repo, ctx = project
+    write(repo, "a.py", "def run():\n    return target()\n")
+    write(repo, "b.py", "def run():\n    return kept()\n")
+    if parser:
+        assert ci._ts_parser("python") is not None
+    else:
+        monkeypatch.setattr(ci, "_ts_parser", lambda grammar: None)
+    original = co.search_skip_reason
+
+    def move_before_source_read(path):
+        if path.name == "a.py":
+            # After the inventory: its run() range 1-2 now holds another body.
+            path.write_text("def other():\n    return other()\n\n\ndef run():\n    return target()\n",
+                            encoding="utf-8")
+        return original(path)
+
+    monkeypatch.setattr(co, "search_skip_reason", move_before_source_read)
+    result = public(repo, ctx)("callees", query="run")
+
+    assert ("tree-sitter/python" in result) is parser, result
+    assert "a.py:" not in body(result), result
+    assert "b.py:2" in body(result) and "kept()" in body(result), result
+    assert "QUERY_CODE_TRUNCATED" in result and "file changed since inventory" in result, result
+
+
+def test_callees_never_mix_outline_and_parser_line_models(project):
+    repo, ctx = project
+    # Python AST ends a line at the bare CR; tree-sitter rows do not.
+    (repo / "x.py").write_bytes(b"x = 1\r\ry = 2\ndef run():\n    return target()\n"
+                                b"def other():\n    return other()\n")
+    query = public(repo, ctx)
+    result = query("callees", query="run")
+    assert "other()" not in body(result), result
+    assert "QUERY_CODE_TRUNCATED" in result and "outline and parser lines differ" in result, result
+    write(repo, "x.py", "x = 1\ny = 2\ndef run():\n    return target()\ndef other():\n    return other()\n")
+    lf = query("callees", query="run")
+    assert "target()" in body(lf) and "other()" not in body(lf), lf
+
+
+@pytest.mark.parametrize("parser", [True, False])
+@pytest.mark.parametrize("separator", ["\f", "\v", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029", "\r"])
+def test_source_slices_use_the_line_model_of_their_anchors(project, monkeypatch, separator, parser):
+    from ouroboros import code_intelligence as ci
+
+    repo, ctx = project
+    write(repo, "x.py", f"# heading{separator}continued\nneedle()\n")
+    write(repo, "crlf.py", "# heading\r\nspin()\r\n")
+    if not parser:
+        monkeypatch.setattr(ci, "_ts_parser", lambda grammar: None)
+    # Tree-sitter rows and literal anchors count LF only; Python AST also ends a
+    # line at a bare CR. Each slice follows the anchor it renders.
+    query = public(repo, ctx)
+    line = 3 if separator == "\r" and not parser else 2
+    callers = body(query("callers", query="needle"))
+    assert f"x.py:{line}" in callers and callers.endswith("| needle()"), repr(callers)
+    heading = body(query("references", query="continued"))
+    assert "x.py:1:" in heading and f"| # heading{separator}continued" in heading, repr(heading)
+    assert body(query("callers", query="spin")).endswith("| spin()")
 
 
 def test_limits_kind_lang_and_changed_pages(project, monkeypatch):

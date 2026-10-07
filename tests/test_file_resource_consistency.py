@@ -544,14 +544,16 @@ def test_parent_runtime_read_rules_follow_physical_files_across_root_labels(tmp_
     cached.parent.mkdir(parents=True, exist_ok=True)
     cached.write_text('{"synthetic": "unchanged cache"}', encoding='utf-8')
     cache_before = cached.read_bytes()
-    original_read = pathlib.Path.read_bytes
+    # Source readers use bounded Path.open('rb'); read_bytes/read_text also open.
+    original_open = pathlib.Path.open
+    hidden = project.resolve()
 
-    def permitted_read(path):
-        if path == project:
+    def permitted_open(path, *args, **kwargs):
+        if path.resolve() == hidden:
             pytest.fail('project-store source was read before admission')
-        return original_read(path)
+        return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(pathlib.Path, 'read_bytes', permitted_read)
+    monkeypatch.setattr(pathlib.Path, 'open', permitted_open)
     for op, options in [('symbols', {}), ('digest', {}), ('structural', {'query': 'FunctionDef'})]:
         result = registry.execute('query_code', {'op': op, **options})
         assert 'hidden_project_fact' not in result
