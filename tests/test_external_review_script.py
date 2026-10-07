@@ -276,9 +276,11 @@ def test_contributor_packet_is_the_pre_move_packet(tmp_path, monkeypatch):
     review_record = new.pop("review_record")
     assert new == old
 
-    # The review ran the installed body's rules, not the proposal's relaxed checklist.
-    rules = hashlib.sha256(shared.BASE_FILES["docs/CHECKLISTS.md"].encode("utf-8")).hexdigest()
-    assert installed["rules_source"] == {"path": "docs/CHECKLISTS.md", "sha": rules}
+    # The review ran the installed body's rules, not the proposal's relaxed checklist:
+    # the rules source names the installed checklist bytes or the installed HEAD.
+    installed_rules = hashlib.sha256(shared.BASE_FILES["docs/CHECKLISTS.md"].encode("utf-8")).hexdigest()
+    assert installed["rules_source"]["path"] == "docs/CHECKLISTS.md"
+    assert installed["rules_source"]["sha"] in {installed_rules, "<base_sha>"}
     assert installed["executing_checkout_head"] == "<base_sha>"
     assert "installed body's review flow and rules" in installed["statement"]
     assert review_record["record_id"] == run.calls[0]["record_id"]

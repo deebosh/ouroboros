@@ -170,6 +170,7 @@ BAND_PATHS = {
     "ouroboros/tools/subagent_integration.py": "Existing native result integration owner handles source patches and complete file artifacts under one disposition and target authority.",
     "ouroboros/tools/tool_result.py": "Typed result composition owns producer payload and dispatch annotations together while preserving the status and metadata contract.",
     "scripts/claudexor_platform_smoke.py": "The managed Claudexor platform smoke owns a multi-platform fixture, lifecycle receipt, and cleanup proof; keeping this runner in the documented band preserves the release gate without moving those checks into product runtime.",
+    "scripts/run_external_review.py": "Operator wrapper over the runtime review_change operation: argument parsing, settings and key loading, OpenRouter key health, the --contributor budget and panel policy, data isolation before any config import and the public contributor packet stay here; the review flow itself runs in ouroboros.tools.review_change.",
     "skills/telegram/plugin.py": None,
     "skills/telegram/scripts/companion.py": None,
     "skills/telegram/scripts/sidecar.py": None,
