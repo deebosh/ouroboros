@@ -725,14 +725,11 @@ def round_sha_of(*, rebuttal_sha: str = "", questions: Any = (), goal: str = "",
     return hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def find_reusable(drive_root: Any, reuse_key: str) -> Optional[Dict[str, Any]]:
-    """The newest SETTLED, DISPATCHED record carrying this reuse key, else ``None``.
-    A pending record, a refusal (``NOT_DISPATCHED``) or an unperformed wave is never
-    reused: the author is owed a real wave, not a replayed gap."""
-    key = str(reuse_key or "").strip()
-    if not key:
-        return None
-    for row in _newest_rows([index_path(drive_root), *reversed(_index_segments(drive_root))]):
+def _reusable_in(drive_root: Any, key: str, path: pathlib.Path, lookup: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The newest settled, dispatched record of ``key`` indexed in ONE segment, else ``None``."""
+    rows = [row for row in iter_jsonl_objects(path) if isinstance(row, dict)]
+    lookup["rows_read"] = int(lookup.get("rows_read") or 0) + len(rows)
+    for row in reversed(rows):
         if str(row.get("reuse_key") or "") != key:
             continue
         try:
@@ -744,6 +741,33 @@ def find_reusable(drive_root: Any, reuse_key: str) -> Optional[Dict[str, Any]]:
                 and (record.get("verdict") or {}).get("aggregate") in (VERDICT_PASS, VERDICT_FAIL)):
             return record
     return None
+
+
+def find_reusable(drive_root: Any, reuse_key: str, *, lookup: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """The newest SETTLED, DISPATCHED record carrying this reuse key, else ``None``.
+    A pending record, a refusal (``NOT_DISPATCHED``) or an unperformed wave is never
+    reused: the author is owed a real wave, not a replayed gap.
+
+    The read is staged and disclosed. The bounded hot index (``INDEX_MAX_BYTES``) is
+    read first; archived segments are opened only after a hot miss — every new
+    subject is one — newest first, and only until the first match. ``lookup``, when
+    given, receives what the call read: ``rows_read`` and ``archive_segments`` (the
+    segments opened), and an archive read is logged with those counts."""
+    key = str(reuse_key or "").strip()
+    facts = lookup if lookup is not None else {}
+    facts.update({"rows_read": 0, "archive_segments": 0})
+    if not key:
+        return None
+    record = _reusable_in(drive_root, key, index_path(drive_root), facts)
+    for segment in reversed(_index_segments(drive_root)) if record is None else ():
+        facts["archive_segments"] += 1
+        record = _reusable_in(drive_root, key, segment, facts)
+        if record is not None:
+            break
+    if facts["archive_segments"]:
+        log.info("review ledger reuse lookup missed the hot index and opened %d archived segment(s) (%d rows read, %s)",
+                 facts["archive_segments"], facts["rows_read"], "found" if record is not None else "no settled record")
+    return record
 
 
 def build_wave_record(facts: Dict[str, Any], *, surface: str, record_id: str = "",

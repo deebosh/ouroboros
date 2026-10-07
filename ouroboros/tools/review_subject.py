@@ -1017,13 +1017,15 @@ def reuse_or_none(drive_root: Any, key: str, *, questions: Sequence[str] = ()) -
     answered by an old record, and an old question is not dropped by a new one."""
     from ouroboros.review_ledger import find_reusable
 
-    record = find_reusable(drive_root, key)
+    lookup: Dict[str, Any] = {}
+    record = find_reusable(drive_root, key, lookup=lookup)
     if record is None:
         return None
     asked = [str(item) for item in ((record.get("brief") or {}).get("author_questions") or [])]
     if asked != [str(item) for item in questions]:
         return None
-    return {"reused": True, "record_id": str(record.get("record_id") or ""), "record": record, "usd": 0.0}
+    return {"reused": True, "record_id": str(record.get("record_id") or ""), "record": record, "usd": 0.0,
+            "lookup": lookup}
 
 
 def review_retry_key(frozen: FrozenSubject, *, round_sha: str = "") -> str:
