@@ -441,6 +441,8 @@ def _assert_lazy_images_load(page, bubble, where: str) -> None:
             page.wait_for_function("img => img.complete && img.naturalWidth > 0", arg=handle, timeout=15_000)
         except PlaywrightTimeoutError:
             raise AssertionError(f"{where}: lazy photo {index} never decoded: {handle.evaluate(_IMAGE_STATE)}") from None
+        # Observe after the load's deferred reflow, even when this image was already decoded.
+        page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
         # Chromium's wide lazy margin decodes the photo even from where the wheel left the feed.
         state = handle.evaluate(_IMAGE_STATE)
         assert state["inView"], f"{where}: the feed left photo {index} after moving to it: {state}"
