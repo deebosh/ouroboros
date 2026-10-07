@@ -5,9 +5,11 @@ triad, scope, advisory, deep self-review — asks this module which rules it mus
 carry inline and which it reaches through a navigation map. Three tiers:
 
 1. **Rules, always inline.** The surface's applicable ``docs/CHECKLISTS.md``
-   section (supplied by the caller, which owns its own section name),
-   ``BIBLE.md`` whole and ``docs/CHECKLISTS_ARCHIVE.md`` whole. This tier is
-   byte-stable across commits, so the caller puts it in its cache-marked prefix.
+   section (supplied by the caller, which owns its own section name), the
+   shared section every reviewer of this repository's code applies
+   (:data:`SHARED_CHECKLIST_SECTION`, loaded here), ``BIBLE.md`` whole and
+   ``docs/CHECKLISTS_ARCHIVE.md`` whole. This tier is byte-stable across
+   commits, so the caller puts it in its cache-marked prefix.
 2. **Rules by change class, within a budget share.** ``docs/DESIGN.md`` when the
    change touches ``web/``; the review-and-commit protocol chapter always; and
    every DEVELOPMENT chapter whose text mentions a touched file NAME. Bounded by
@@ -42,6 +44,9 @@ from ouroboros.utils import estimate_tokens
 
 BIBLE_PATH = "BIBLE.md"
 CHECKLISTS_PATH = "docs/CHECKLISTS.md"
+# One home in CHECKLISTS for a rule the triad, scope, advisory and deep review
+# all apply whatever their own section; plan and skill review never receive it.
+SHARED_CHECKLIST_SECTION = "Shared Contract Ownership"
 CHECKLISTS_ARCHIVE_PATH = "docs/CHECKLISTS_ARCHIVE.md"
 DESIGN_PATH = "docs/DESIGN.md"
 DEVELOPMENT_BOOK_ID = "development"
@@ -193,6 +198,7 @@ def governance_context(
     delivery: str = PACKET_DELIVERY,
     checklist_section_text: str = "",
     already_inline: Any = (),
+    repository_rules: bool = True,
 ) -> GovernanceContext:
     """Tier the governance corpus for ONE reviewer of ONE change.
 
@@ -201,8 +207,10 @@ def governance_context(
     loaded; a surface supplying none has ``docs/CHECKLISTS.md`` recorded as read
     on demand, never as an inlined section of zero characters.
     ``already_inline`` names what the caller's OWN delivery carries in full
-    (:func:`_carried_reasons` states the mechanism)."""
-    from ouroboros.tools.review_helpers import load_governance_doc
+    (:func:`_carried_reasons` states the mechanism). ``repository_rules`` is
+    False for a surface whose subject is not this repository's code (a skill
+    payload): it then receives no :data:`SHARED_CHECKLIST_SECTION`."""
+    from ouroboros.tools.review_helpers import load_checklist_section, load_governance_doc
 
     root = Path(repo_dir)
     names = _touched_names(touched_paths)
@@ -221,6 +229,20 @@ def governance_context(
     else:
         rows.append(_row(CHECKLISTS_PATH, 1, "navigation", 0,
                          "this surface supplies no checklist section"))
+    shared_inline = False
+    if repository_rules:
+        shared_path = f"{CHECKLISTS_PATH}#{SHARED_CHECKLIST_SECTION}"
+        try:
+            # Read where every surface reads its own section: the executing
+            # review code's checklist, never the reviewed tree's copy, so a
+            # contributor proposal cannot rewrite the rule it is judged by.
+            shared = load_checklist_section(SHARED_CHECKLIST_SECTION)
+            shared_inline = True
+        except (OSError, ValueError) as exc:
+            shared = f"[⚠️ OMISSION: {shared_path} could not be loaded: {exc}]"
+        tier1.append((shared_path, shared))
+        rows.append(_row(shared_path, 1, "inline", len(shared),
+                         "tier 1: every reviewer of this repository's code carries it"))
     for path in (BIBLE_PATH, CHECKLISTS_ARCHIVE_PATH):
         if path in carried:
             already = load_governance_doc(root, path, on_missing="silent")
@@ -314,9 +336,11 @@ def governance_context(
         _admit(path, title, chapter_text.get(path, ""), 3, reason)
 
     # --- navigation -------------------------------------------------------
-    checklist_pointer = ("the section that applies to this review is inlined above."
-                         if checklist_text.strip() else
-                         "NO section of it is inlined for this review.")
+    inlined = [label for label, present in (
+        ("the section that applies to this review", bool(checklist_text.strip())),
+        (f"its `{SHARED_CHECKLIST_SECTION}` section", shared_inline)) if present]
+    checklist_pointer = (f"{' and '.join(inlined)} {'are' if len(inlined) > 1 else 'is'} inlined above."
+                         if inlined else "NO section of it is inlined for this review.")
     pointers = [f"- `{CHECKLISTS_PATH}` — the complete checklist book; {checklist_pointer}"]
     if not design_touched:
         pointers.append(f"- `{DESIGN_PATH}` — the design system; not inlined because no "
