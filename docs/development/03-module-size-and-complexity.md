@@ -35,7 +35,7 @@ P7 makes context fit a maintenance constraint, not a line-count aesthetic.
   exists»). Enforcement: Ouroboros Body Layer item 31 `size_cap_paydown`
   (`docs/CHECKLISTS.md`), advisory when applicable.
 - Methods above 150 lines and more than eight parameters are decomposition
-  signals (BIBLE P7, CHECKLISTS item 2(c)), not deterministic gates; existing
+  signals (BIBLE P7, CHECKLISTS item 11(c)), not deterministic gates; existing
   baseline debt is not retroactively a failing tree.
 - Runtime Python function/method totals are descriptive inventory, with no
   aggregate ceiling or remaining quota. A repository-wide count does not
@@ -78,7 +78,7 @@ minimalism finding must name the exact symbol or authority, the concrete
 duplication or coupling, and a smaller alternative that still satisfies the
 contract.
 Diff size, line count, and file count alone are not findings.
-Enforcement: review-only — CHECKLISTS item 2(d) scores these rules in commit
+Enforcement: review-only — CHECKLISTS item 11(d) scores these rules in commit
 review.
 
 ### Shared behavior and data-flow changes
@@ -201,7 +201,7 @@ affect review authority; window sizing and reading diagnostics alone may not
 (BIBLE P3). Neither case blanks, rewrites or relabels the artifact or its
 original cause.
 
-Enforcement: CHECKLISTS item 25 `source_completeness` (critical when
+Enforcement: CHECKLISTS item 21 `source_completeness` (critical when
 applicable) scores the chain in commit review; the presentation-adapter
 contracts below are pinned by the named web tests.
 

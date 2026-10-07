@@ -508,7 +508,7 @@ class TestReviewEnforcementModes:
     def test_rename_out_of_ouroboros_without_tests_passes(self):
         """Regression (#447): a rename/deletion of a .py file out of
         ouroboros/ without staged tests is no longer refused — the lexical
-        tests-required predicate was removed (CHECKLISTS.md item 6 owns
+        tests-required predicate was removed (CHECKLISTS.md item 4 owns
         coverage semantically)."""
         review = _get_review_module()
         result = review._preflight_check(

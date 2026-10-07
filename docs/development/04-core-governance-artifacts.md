@@ -250,7 +250,7 @@ engineering standards MUST:
 2. Log a warning if the file is missing or unavailable — never skip silently
    (a REQUIRED artifact that cannot FIT fails assembly — "No silent truncation").
 3. Add a test asserting the file is present in the assembled context/prompt.
-   That test is the enforcing surface; CHECKLISTS item 11 (`context_building`,
+   That test is the enforcing surface; CHECKLISTS item 25 (`context_building`,
    advisory) backstops the review.
 
 ---

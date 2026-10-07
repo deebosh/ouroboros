@@ -635,7 +635,7 @@ def _preflight_check(commit_message: str, staged_files: str,
     # The version-reference and tests-required lexical heuristics were removed
     # here (false blocks: a "conversion" commit told to bump VERSION; a
     # comment-only .py diff refused for missing tests). See docstring —
-    # CHECKLISTS.md items 6/8 own these duties semantically.
+    # CHECKLISTS.md items 4/12 own these duties semantically.
 
     # New logic modules require active ARCHITECTURE.md update.
     new_logic_files = [
