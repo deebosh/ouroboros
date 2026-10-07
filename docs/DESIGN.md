@@ -26,9 +26,13 @@ server setting. Existing saved Light/Dark choices keep their meaning. Storage
 failures are visible; clearing site data returns the choice to System. Switching
 repaints mounted charts and diagrams without rebuilding views or losing drafts.
 Independent iframe interiors remain author-owned, not automatically recoloured.
-Desktop persistence requires a launcher built with persistent WebView storage;
-server restart alone cannot verify survival across full quit/relaunch. Mechanism
-and deployment limits: ARCHITECTURE §3 “Navigation and shared UI contracts”.
+Desktop persistence requires a desktop app (launcher) built with persistent
+WebView storage, 7.2.0 or later; in-app updates replace the core, never that app.
+An older app opens its WebView in private mode, which erases website data each
+time its window opens, so Settings → Appearance names that app by its own version
+and says the choices reset at restart, instead of presenting them as kept. Server
+restart alone cannot verify survival across full quit/relaunch. Mechanism and
+deployment limits: ARCHITECTURE §3 “Navigation and shared UI contracts”.
 
 ---
 
@@ -65,7 +69,8 @@ Rules:
   20px) for `#` and `##`, `--md-heading-minor` (1.125em, 18px) for `###`,
   the reading size for deeper levels; its tables read at that size too. The
   steps are relative to the reading text, not UI sizes, and only the rich
-  answer's heading rules read the two tokens (§5). Nothing else changes
+  answer's heading rules read the two tokens (§5) — they and a delivered
+  document in the reader (§5 "Document reading"). Nothing else changes
   size: controls, labels, cards and page chrome keep the four sizes, and so
   do the compact surfaces (a Skill Review report, a task timeline) and the
   other rich-content cards (the question card, the update letter).
@@ -728,6 +733,41 @@ are compared as instants, and two that read alike on the local clock (a repeated
 daylight-saving hour) carry zone names. Lines saved before the host recorded end
 times stay as they were. Delivery keeps its present place in Main; an older
 Failed remains that task's result even after a different task succeeds.
+
+### Document reading
+
+A Markdown or plain-text file Ouroboros delivers in chat can be read inside the
+app. Its card says `Read`; pressing it opens a reading dialog over the
+conversation — on a phone a full sheet — and Close or Escape returns to the same
+place in the chat with focus back on the card. Leaving that chat's screen (another
+page, a Project room over Main, a notification) closes the reader; files staged in
+the composer stay. Other files keep the card's Open / Download dialog; the reader
+keeps Open and Download as well.
+
+- It shows the delivered copy, never what a file path holds now. A copy that is
+  missing, failed its integrity check, changed after delivery or cannot be read
+  on this device says so in the reader, with Retry only where retrying can
+  help; nothing else is shown in its place.
+- Name, type and size are the reader's header, not Ouroboros's words: a
+  document is not a chat message and adds none. Like model text, the name and
+  the document are never translated; the reader's own controls are.
+- Markdown reads as a document: a single line break inside a paragraph is soft
+  (an explicit hard break stays), at the reading size and heading ladder of a
+  rich answer (§1). Everything else follows "Rendered Markdown keeps its
+  author's structure and text": raw HTML and SVG stay literal, images stay
+  references and never load, and a relative link, which would point into a
+  folder the reader does not open, reads as its words. `Source` shows the
+  decoded text unformatted — a leading byte-order mark is dropped and invalid
+  bytes read as �, so it is not a byte view. Nothing is editable; all text is
+  selectable.
+- Plain text reads monospaced and wraps; only a table or code block scrolls
+  sideways, inside itself.
+- The reader reads at most the first 1 MiB. A longer file shows that prefix
+  with a note saying how much is shown and that Download has the whole; a
+  character cut by the limit is withheld, not reported as damage. Bytes that are
+  not UTF-8 show as � with a note; a file with NUL bytes is not shown as text.
+  A read that has not finished within 30 seconds stops and says so with Retry;
+  nothing retries by itself.
 
 ### History edges
 
@@ -1505,15 +1545,41 @@ not notify, so the task's real completion still can.
 task are one event, not two: whichever arrives first rings, and the other is
 collapsed. The same holds for the several wire shapes a finished task has.
 
-**One sound.** At most one sound per event. Where the system shows a banner, the
-system owns the sound; where a desktop bridge is available, the launcher owns
-one system sound (or reports that it could not play one); otherwise the app
-plays one short tone. Never both, and the Sound choice remains authoritative,
-with one stated exception: the banner the Windows notification-area icon shows
-while the window is hidden in background mode sounds by Windows' own
-notification settings (the WinForms balloon call has no silent form), so
-turning Sound off silences the page tone, the macOS sound and the Windows beep,
-not that balloon.
+**System notifications first.** Where the desktop app offers them, an alert is
+handed to the operating system's own notifications: sent even while the window
+is in front, titled with the kind of event, sounding with the system's own sound,
+and kept where that system keeps notifications. The system taking it is not a
+promise that anyone saw a banner: its notification settings, Focus and Do Not
+Disturb still decide. macOS uses `UNUserNotificationCenter`, whose one permission
+question is asked only from the owner's gesture — switching notifications on, or
+Test — never by an alert, which falls back while the question is unasked; Windows
+shows a notification-area balloon, which Windows 10/11 present as a system
+notification, on an icon of its own per notification so that each click opens
+its own source; Linux uses the freedesktop notification service when
+the desktop runs one. Not yet allowed, denied, unavailable or failed is a typed
+answer, never silence (an error the system returns instead of asking is that
+error, not a denial): that alert falls back to the browser banner or the in-app
+toast. One the system took without answering in time may still appear, so
+nothing else is shown for it and its click still opens its source. In-app
+updates do not replace the desktop app, so an app built before this capability
+falls back and Settings says that system notifications need the current app.
+Android's host keeps its own channel for its own service; its page has no system
+notifications and says so.
+
+**One sound.** At most one sound per event. A system notification owns its
+sound: the operating system plays it under its own volume and Do Not Disturb,
+and nothing else plays one beside it. Without one, where the browser shows a
+banner, the banner owns the sound; where a desktop bridge is available, the
+launcher owns one system sound (or reports that it could not play one);
+otherwise the app plays one short tone. Never both, and the Sound choice remains
+authoritative: Sound off sends a system notification silently, a Windows balloon
+included (the shell's own balloon call with `NIIF_NOSOUND`). If that call is
+unavailable, a silent request falls back to the page without a balloon; the
+WinForms fallback is used only when sound was requested, and since it answers
+nothing, its balloon counts as unconfirmed. An app built before system
+notifications cannot silence the balloon it shows while its window is hidden,
+so with Sound off the page does not ask that app at all: the alert is a silent
+browser banner or in-app toast, without its balloon, Dock mark or window raise.
 
 **Each open window is its own client.** Settings, permission and the
 duplicate-collapsing that keeps one event to one notification all belong to one
@@ -1523,17 +1589,18 @@ honest consequence of per-client settings, not a bug we have hidden.
 
 **Click goes to the source.** A notification opens the question or the result it
 is about — the Project room and the exact question when it has one, otherwise
-the conversation. No reply is composed from the banner. The one exception is the
-banner the desktop indicator itself shows while the window is hidden in
-background mode (Windows): its click opens the window as it was left and does not
-navigate.
+the conversation. A system notification first opens the window, hidden or not,
+then the same source. No reply is composed from the banner. The one exception is
+the fallback banner the desktop indicator shows while the window is hidden in
+background mode (Windows, when no system notification was shown): its click
+opens the window as it was left and does not navigate.
 
 **Content is private by default.** Only the kind of event is shown until the
 owner turns message text on, because a banner can appear on a shared screen.
 
 **Deliberately absent.** No numeric badge, no repeated reminder, no inline
-reply, no Telegram escalation, and no promise of a native Notification
-Center/toast banner or attention after the application quits. When the packaged
+reply, no Telegram escalation, and no notification or attention after the
+application quits. When no system notification was shown and the packaged
 desktop launcher exposes its optional `request_attention` bridge, a live
 notification may raise a visible window and ask the operating system for one
 standard sound. A window the owner hid in background mode is never raised by an
@@ -1550,7 +1617,12 @@ the browser banner or in-app toast and report that capability honestly.
 block, and are stored per client exactly like the appearance choice: the desktop
 window and each browser keep their own, nothing reaches the server. A test
 button is the honest way to see what this system actually does with a
-notification, including a denied permission.
+notification, including a denied permission, and in the desktop app it is the
+gesture that lets the system ask. The status line names the surface this client
+is using — the system's notifications, a browser banner or the in-app toast —
+keeps the system's permission apart from what became of the last alert (taken,
+unconfirmed or fallen back), and, in an older desktop app, says that system
+notifications need the current app.
 
 **Known limits of this version**, stated rather than discovered later:
 
@@ -1567,7 +1639,17 @@ notification, including a denied permission.
   first observed frame is its terminal — it would notify once.
 - An event that happens while the socket is down never rings: reconnect replays
   history, and history is deliberately silent.
-- The Windows notification-area balloon shown while the window is hidden in
-  background mode follows Windows' own sound setting; the client's Sound choice
-  does not silence it. A silent native send needs a direct shell call that this
-  version does not make.
+- A Windows balloon stays in Windows' notification list only while its icon is
+  in the notification area: until it is clicked, until a fourth retires the
+  oldest of three, or until the app quits. One that timed out or was dismissed
+  keeps its icon; nothing is shown again.
+- An alert the system took without confirming in time can stay unseen: it is
+  not repeated in the app, and Settings says so. On Linux its click cannot open
+  the source, because the server's id for it never came back.
+- A system notification clicked after its page reloaded only opens the window:
+  click targets live as long as the page that sent them, with no stored ledger.
+- What a system notification looks like is the system's choice: macOS's style
+  for Ouroboros (banners, alerts or none), Focus and Do Not Disturb, Windows'
+  notification settings, and a Linux server's optional actions (without them a
+  click cannot open the source) and sound (without it the alert is silent);
+  Settings names what that server lacks.
