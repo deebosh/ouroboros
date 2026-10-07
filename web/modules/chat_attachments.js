@@ -83,7 +83,7 @@ export function attachmentViews(value) {
 function cardHtml(view, atoms, note = view.available ? '' : tr('media.attachment_unavailable', 'Unavailable')) {
     const meta = [atoms.fileExtension(view.name), atoms.humanSize(view.size), note].filter(Boolean).join(' · ');
     return `<div class="chat-file-item${view.available ? '' : ' is-unavailable'}">
-        <button type="button" class="chat-file-card" ${view.available ? '' : 'disabled aria-disabled="true"'}
+        <button type="button" class="chat-file-card" ${view.available ? 'aria-haspopup="dialog"' : 'disabled aria-disabled="true"'}
             aria-label="${escapeHtmlAttr(`${view.name}${meta ? ` — ${meta}` : ''}`)}">
             ${FILE_GLYPH}
             <span class="chat-file-copy">
@@ -424,9 +424,9 @@ export function createUnconfirmedSends({ send, root, onDomWrite, showToast, stor
         return true;
     }
 
-    // Every still-held message whose bubble is in the feed: a plain saved mark ends it; anything else offers the actions.
-    function unsettle() {
-        for (const id of [...frames.keys()]) {
+    // Every still-held message (or only `ids`) whose bubble is in the feed: a plain saved mark ends it; anything else offers the actions.
+    function unsettle(ids = [...frames.keys()]) {
+        for (const id of ids) {
             const bubble = bubbleOf(id);
             if (!bubble) continue;  // not in the feed now: still unsaved, the frame stays
             if (bubble.querySelector('[data-ingress-saved]')?.dataset.ingressSaved === '') forget(id);
@@ -463,13 +463,15 @@ export function createUnconfirmedSends({ send, root, onDomWrite, showToast, stor
         /** The socket closed or a frame was refused: every still-unsaved sent message in the feed says so. */
         unsettle,
         /** After a reload's first history read (or its failure): a kept message it did not settle
-         *  shows its bubble again from the kept words and views if the read did not, then its doubt. */
+         *  shows its bubble again from the kept words and views if the read did not, then its doubt.
+         *  A message this page sent while that read was pending is not in doubt: the read predates it. */
         reconcile(show) {
-            for (const [id, entry] of frames) {
-                if (entry.restored && !bubbleOf(id)) show(entry);
+            const kept = [...frames].filter(([, entry]) => entry.restored);
+            for (const [id, entry] of kept) {
+                if (!bubbleOf(id)) show(entry);
                 entry.restored = false;
             }
-            unsettle();
+            unsettle(kept.map(([id]) => id));
         },
         get count() { return frames.size; },
         /** Room teardown: this instance forgets; the tab's kept copies stay for the room's next instance. */

@@ -484,6 +484,39 @@ test('a tab that cannot keep the copy says so, and Send again still works until 
     }
 });
 
+// The first read after a reload answers for what this tab kept, not for a message this page sent
+// while that read was still pending (on a slow timer the read lands after the send): the new one
+// waits for its echo, a close or a refusal, like any other sent message.
+test('the first read doubts the kept copy, never a message sent while it was pending', () => {
+    const env = installDom();
+    try {
+        const root = document.createElement('div');
+        const bubbles = Object.fromEntries(['cm-kept', 'cm-new'].map((id) => {
+            const bubble = document.createElement('div');
+            bubble.className = 'chat-bubble user';
+            bubble.dataset.clientMessageId = id;
+            root.appendChild(bubble);
+            return [id, bubble];
+        }));
+        const doubts = (id) => bubbles[id].children.filter((node) => Object.hasOwn(node.dataset, 'ingressUnconfirmed'));
+        const kept = JSON.stringify([{ frame: { type: 'chat', content: 'kept', client_message_id: 'cm-kept' }, views: [], ts: TS }]);
+        const unconfirmed = createUnconfirmedSends({ send: () => ({ status: 'sent' }), root: () => root, onDomWrite: (fn) => fn(),
+            showToast: () => {}, storage: { getItem: () => kept, setItem() {}, removeItem() {} }, storageKey: 'k' });
+        unconfirmed.track({ type: 'chat', content: 'new', client_message_id: 'cm-new' });
+        const shown = [];
+        unconfirmed.reconcile((entry) => shown.push(entry));
+        assert.deepEqual(shown, [], 'both bubbles are in the feed');
+        assert.equal(doubts('cm-kept').length, 1, 'the kept copy the read did not settle is in doubt');
+        assert.equal(doubts('cm-new').length, 0, 'the message sent during the read is not');
+        assert.equal(unconfirmed.count, 2, 'and both frames stay until their saved rows');
+        unconfirmed.unsettle();  // the socket closes
+        assert.equal(doubts('cm-new').length, 1, 'a close still doubts the new one');
+        assert.equal(doubts('cm-kept').length, 1, 'the kept one keeps its one doubt');
+    } finally {
+        restoreDom(env.prior);
+    }
+});
+
 const UNREAD = 'This tab could not read an unsaved message it kept for a reload, so it cannot be offered again.';
 
 test('a kept copy this tab cannot read is said, whichever way the read fails; a readable one is restored', () => {

@@ -9,7 +9,10 @@ Three paths the first file does not walk, each through the real candidate server
   replay (reload, a new tab, a server restart), then at phone width;
 * the bundled Telegram adapter's real poller, real ``TelegramClient`` download logic and real
   ``_inject`` into the running Host Service's ``/chat/inject`` (only the Telegram HTTP endpoints are
-  faked), read back in the Main chat live, after reload and at phone width.
+  faked), read back in the Main chat live, after reload and at phone width;
+* the owner's attachments beside documents Ouroboros delivers (the real ``send_file`` tool): the
+  reader and the file dialog each keep their own card, through grouping, a page change and a Project
+  room kept hidden by an unconfirmed attachment send.
 
 Playwright emulation, not the native PyWebView shell or a physical phone; no real Telegram network.
 """
@@ -36,6 +39,19 @@ from tests.test_chat_attachments_browser import (
     _capture,
     _png,
     _wav,
+)
+from tests.test_ui_document_reader_browser import (
+    BRIEF,
+    KEPT_ROOM,
+    LEFT_BEHIND,
+    NOTHING_LEFT,
+    OPEN_ROOM,
+    SCREEN,
+    _check_brief,
+    _close_with_escape,
+    _deliver,
+    _enter_room,
+    _open,
 )
 from tests.test_ui_smoke_playwright import direct_server_with_data as direct_server_with_data
 from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET
@@ -719,3 +735,144 @@ def test_telegram_host_refuses_a_parked_path_outside_the_skill_state(host_servic
                                 "attachments": [{"path": str(outside), "name": "x.pdf", "mime": "application/pdf"}]}, timeout=30)
     assert response.status_code >= 400, response.text
     assert _inbound(data) == [] and _uploads(data) == []
+
+
+# ---------------------------------------------------------------------------------------------
+# 4. The owner's attachments beside delivered documents: the reader and the file dialog
+# ---------------------------------------------------------------------------------------------
+
+_DIALOG_TITLE = "() => document.querySelector('.chat-file-dialog[open] .chat-file-dialog-title')?.textContent ?? null"
+_MORE = """sel => Object.fromEntries([...document.querySelectorAll(sel)].map(card => [
+    card.querySelector('.chat-file-name').textContent, card.querySelector('.chat-file-more').textContent]))"""
+_SAME_GRID = """names => new Set(names.map(name => [...document.querySelectorAll('#chat-messages .chat-bubble.assistant .chat-file-card')]
+    .find(card => card.querySelector('.chat-file-name').textContent === name)?.closest('.chat-file-grid'))).size === 1"""
+_SETTLED = """sel => { const b = [...document.querySelectorAll(sel)].at(-1);
+    return Boolean(b?.querySelector('[data-ingress-saved]') && !b.querySelector('[data-ingress-unconfirmed]')); }"""
+
+
+def _leave_chat_page(page) -> None:
+    """A page change made while a modal is open (the navigation itself is inert under it), then back."""
+    page.evaluate("() => document.querySelector('[data-nav-page=\"settings\"]').click()")
+    page.locator("#page-settings.active").wait_for(state="attached")
+    assert page.evaluate(SCREEN) == NOTHING_LEFT
+    page.locator('[data-nav-page="chat"]').click()
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_owner_uploads_and_delivered_documents_keep_their_own_doors(direct_server_with_data, monkeypatch, engine):
+    """The owner sends a photo, a Markdown file and a PDF; one task answers with a Markdown report and a
+    PDF. The photo stays a photo and the owner's files stay cards with the file dialog (Read takes only a
+    delivered copy, never an upload); the report reads and the PDF grouped under it opens the dialog.
+    Each closes when its chat leaves the screen, and a room kept hidden by an unconfirmed send keeps that
+    message's Send again, then is destroyed once it is saved."""
+    from playwright.sync_api import sync_playwright
+    from ouroboros.projects_registry import create_project
+
+    url, data = direct_server_with_data["url"], direct_server_with_data["data_dir"]
+    evidence = _evidence(data)
+    room, other = create_project(data, "reader-room", name="Reader room"), create_project(data, "next-room", name="Next room")
+    (data / "delivered").mkdir()
+    for name, payload in (("report.md", BRIEF.encode()), ("report.pdf", b"%PDF-1.4\n%delivered\n"), ("room-brief.md", BRIEF.encode())):
+        (data / "delivered" / name).write_bytes(payload)
+    plan, calls = {"drop": 0}, []
+
+    def route(page_side):  # the socket takes an attachment frame, then drops it before the host sees it
+        server = page_side.connect_to_server()
+
+        def forward(message):
+            frame = json.loads(message) if isinstance(message, str) else {}
+            if frame.get("type") == "chat" and frame.get("attachments") and plan["drop"]:
+                plan["drop"] -= 1
+                page_side.close()
+                server.close()
+                return
+            server.send(message)
+
+        page_side.on_message(forward)
+
+    with sync_playwright() as pw:
+        browser = getattr(pw, engine).launch()
+        try:
+            page = browser.new_context(viewport={"width": 1244, "height": 881}).new_page()
+            page.route_web_socket("**/ws", route)
+            _ready(page, url)
+            # A drop before the served SHA is known would reload the page (ws.js `decide`); wait for it.
+            served_sha = str(page.request.get(f"{url}/api/state").json().get("sha") or "")
+            if served_sha:
+                page.wait_for_function("sha => window.__ouroWs?._lastSha === sha", arg=served_sha, timeout=30_000)
+
+            # Main: the owner's three files; the turn delivers the report and its PDF.
+            page.locator("#chat-file-input").set_input_files([
+                {"name": "own-photo.png", "mimeType": "image/png", "buffer": _png(40, 30, (200, 120, 60))},
+                {"name": "own-notes.md", "mimeType": "text/markdown", "buffer": b"# My notes\n"},
+                {"name": "own-plan.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1.4\n%own\n"}])
+            page.wait_for_function("() => document.querySelectorAll('#chat-attachment-preview .attach-badge').length === 3")
+            _deliver(page, monkeypatch, [data / "delivered" / "report.md", data / "delivered" / "report.pdf"], calls,
+                     composer="#chat-input", send="#chat-send", feed="#chat-messages")
+            own = page.locator(f"#chat-messages {_BUBBLE}").last
+            page.wait_for_function("b => [...b.querySelectorAll('img.chat-photo')].some(i => i.complete && i.naturalWidth > 0)",
+                                   arg=own.element_handle(), timeout=30_000)
+            assert own.evaluate("b => [...b.querySelectorAll('img.chat-photo')].map(i => i.alt)") == ["own-photo.png"]
+            assert page.evaluate(_MORE, f"#chat-messages {_BUBBLE} .chat-file-card") == {"own-notes.md": "•••", "own-plan.pdf": "•••"}
+            assert page.evaluate(_MORE, "#chat-messages .chat-bubble.assistant .chat-file-card") == {"report.md": "Read", "report.pdf": "•••"}
+            assert page.evaluate(_SAME_GRID, ["report.md", "report.pdf"]), "one task's files group under its first bubble"
+            _capture(page, own, evidence / f"owner-and-delivered-{engine}.png")
+
+            own.locator(".chat-file-card").filter(has_text="own-notes.md").click()
+            page.locator(".chat-file-dialog[open]").wait_for(state="visible")
+            assert page.evaluate(_DIALOG_TITLE) == "own-notes.md" and page.locator("dialog.document-reader").count() == 0
+            page.locator('.chat-file-dialog[open] [data-file-action="close"]').click()
+            _check_brief(_open(page, "report.md", ready=".document-reader-markdown"), "report.md")
+            _close_with_escape(page)
+            assert page.evaluate("() => document.activeElement?.closest('.chat-file-card')?.textContent.includes('report.md')")
+            page.locator("#chat-messages .chat-bubble.assistant .chat-file-card").filter(has_text="report.pdf").click()
+            assert page.evaluate(_DIALOG_TITLE) == "report.pdf" and page.locator("dialog.document-reader").count() == 0
+            _leave_chat_page(page)
+            _check_brief(_open(page, "report.md", ready=".document-reader-markdown"), "report.md")
+            _leave_chat_page(page)
+
+            # A room: a delivered brief, then an attachment send the socket drops (unconfirmed).
+            feed = _enter_room(page, room)
+            _deliver(page, monkeypatch, [data / "delivered" / "room-brief.md"], calls,
+                     composer=f'[id="pchat-{room["id"]}-input"]', send=f'[id="pchat-{room["id"]}-send"]', feed=feed)
+            plan["drop"] = 1
+            page.locator("#project-panel input[type=file]").set_input_files(
+                [{"name": "room-plan.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1.4\n%room\n"}])
+            page.locator("#project-panel .attach-name").filter(has_text="room-plan.pdf").wait_for()
+            page.locator(f'[id="pchat-{room["id"]}-input"]').fill("unsaved plan")
+            page.locator(f'[id="pchat-{room["id"]}-send"]').click()
+            page.locator(f"{feed} {_BUBBLE} [data-ingress-unconfirmed]").wait_for(timeout=30_000)
+            page.wait_for_function("() => window.__testSockets?.at(-1)?.readyState === 1", timeout=30_000)
+
+            # Reading in the kept room, then another room: hidden for its unsaved message, nothing left over.
+            _check_brief(_open(page, "room-brief.md", ready=".document-reader-markdown", feed=feed), "room-brief.md")
+            page.evaluate(OPEN_ROOM, other)
+            page.locator(f'#pchat-{other["id"]}-messages').wait_for(state="visible", timeout=30_000)
+            assert page.evaluate(SCREEN) == NOTHING_LEFT
+            assert page.evaluate(KEPT_ROOM, room["id"]) == {"hidden": True, "pending": "1", "staged": []}
+            page.locator(f'[id="pchat-{other["id"]}-input"]').click(timeout=5_000)
+
+            # Back: the owner's card in the unsaved message opens the dialog, which leaves with the room too.
+            feed = _enter_room(page, room)
+            assert page.evaluate(KEPT_ROOM, room["id"]) == {"hidden": False, "pending": "", "staged": []}
+            unsaved = page.locator(f"{feed} {_BUBBLE}").last
+            unsaved.locator(".chat-file-card").filter(has_text="room-plan.pdf").click()
+            assert page.evaluate(_DIALOG_TITLE) == "room-plan.pdf"
+            page.evaluate(OPEN_ROOM, other)
+            page.locator(f'#pchat-{other["id"]}-messages').wait_for(state="visible", timeout=30_000)
+            assert page.evaluate(SCREEN) == NOTHING_LEFT
+            assert page.evaluate(KEPT_ROOM, room["id"])["hidden"] is True
+
+            # Send again saves it; with nothing unsaved the room is destroyed on leaving, reader and all.
+            feed = _enter_room(page, room)
+            unsaved.locator('[data-unconfirmed-action="retry"]').click()
+            page.wait_for_function(_SETTLED, arg=f"{feed} {_BUBBLE}", timeout=30_000)
+            page.wait_for_function("() => !Object.keys(sessionStorage).some(k => k.startsWith('ouro_chat_unconfirmed'))",
+                                   timeout=30_000)  # its dispatch, not only its saving, ends the kept frame
+            _open(page, "room-brief.md", ready=".document-reader-markdown", feed=feed)
+            page.evaluate(OPEN_ROOM, other)
+            page.locator(f'#pchat-{other["id"]}-messages').wait_for(state="visible", timeout=30_000)
+            assert page.evaluate(LEFT_BEHIND, feed) == {"readers": 0, "open_dialogs": 0, "room": False, "focus_connected": True}
+            assert len([row for row in _inbound(data) if row.get("chat_id") == room["chat_id"]]) == 1, "saved once"
+        finally:
+            browser.close()

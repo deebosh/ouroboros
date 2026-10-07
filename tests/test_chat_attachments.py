@@ -192,15 +192,17 @@ def test_windows_handle_proof_logic_against_a_fake_api(tmp_path):
 
 
 class RecordingWin32:
-    """The REAL kernel32 binding, recording every handle it opens; ``after_open`` runs right
-    after each open (a racing writer). It records, never raises, so no handle can leak."""
+    """The REAL kernel32 binding, recording every handle it opens and the file object it names;
+    ``after_open`` runs right after each open (a racing writer). It records, never raises, so no
+    handle can leak."""
 
     def __init__(self, after_open=None):
-        self.api, self.after_open, self.handles = confined_files._Win32Files.load(), after_open, []
+        self.api, self.after_open, self.handles, self.objects = confined_files._Win32Files.load(), after_open, [], {}
 
     def open(self, path, *, directory):
         handle = self.api.open(path, directory=directory)
         self.handles.append(handle)
+        self.objects[handle] = self._identity(handle)
         if self.after_open:
             self.after_open(directory)
         return handle
@@ -208,14 +210,24 @@ class RecordingWin32:
     def __getattr__(self, name):
         return getattr(self.api, name)
 
+    def _identity(self, handle):
+        """(volume, file index) of the file HANDLE names now, or None when it names no file."""
+        info = self.api._info_type()
+        if not self.api._info(handle, self.api._ctypes.byref(info)):
+            return None
+        return info.volume, info.index_high, info.index_low
+
     def leaked(self):
-        """Handles still open now (``GetHandleInformation`` fails on a closed one)."""
+        """Handles still open now. ``GetHandleInformation`` fails on a closed one, but Windows hands a
+        closed handle's value to the next kernel object (CPython 3.10's locks, a BufferedReader's too,
+        are semaphores), so the value must also still name the file it opened (unknown: still open)."""
         import ctypes
         from ctypes import wintypes
 
         info = ctypes.WinDLL("kernel32", use_last_error=True).GetHandleInformation
         info.argtypes, info.restype = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL
-        return [h for h in self.handles if info(h, ctypes.byref(wintypes.DWORD()))]
+        return [h for h in self.handles if info(h, ctypes.byref(wintypes.DWORD()))
+                and (self.objects[h] is None or self._identity(h) == self.objects[h])]
 
 
 def _windows_uploads(tmp_path):
@@ -437,7 +449,7 @@ def test_web_acceptance_records_refs_and_echo_equals_history(files_app, tmp_path
                        task_metadata={"chat_attachment_uploads": ws._chat_attachment_uploads(frame)})
     ws._accept_with_attachments(bridge, text, send_kwargs, frame)
 
-    rows = [json.loads(line) for line in (tmp_path / "logs" / "chat.jsonl").read_text().splitlines()]
+    rows = [json.loads(line) for line in (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 1 and rows[0]["text"] == text, "canonical text and model input are unchanged"
     assert [ref["name"] for ref in rows[0]["attachments"]] == ["one.png", "two.pdf"]
     assert all(set(ref) == {"upload", "name", "mime", "kind", "size", "sha256", "mtime_ns"} for ref in rows[0]["attachments"])
@@ -488,7 +500,7 @@ def test_transport_inline_photo_is_parked_once_and_still_reaches_vision(tmp_path
                                        user_id=42, client_message_id="host-1", text="кадр", ts="2026-10-05T00:00:00Z")
     (frame,) = frames
     assert frame["type"] == "chat" and frame["image_base64"] == "" and frame["attachments"][0]["kind"] == "image"
-    (row,) = [json.loads(line) for line in (tmp_path / "logs" / "chat.jsonl").read_text().splitlines()]
+    (row,) = [json.loads(line) for line in (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()]
     assert row["attachments"][0]["upload"] == ref["upload"]
     assert _history(tmp_path, 42)[0]["attachments"] == frame["attachments"]
 

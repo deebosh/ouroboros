@@ -118,16 +118,21 @@ _SHAPE = """bubble => {
 }"""
 
 
-def _wait_bubble(page, count: int = 1, timeout: int = 30_000):
+def _wait_bubble(page, count: int = 1, timeout: int = 30_000, look: bool = False):
     page.wait_for_function(f"n => document.querySelectorAll('{_BUBBLE}').length >= n", arg=count, timeout=timeout)
     bubble = page.locator(_BUBBLE).last
-    # Every decodable image is loaded; the undecodable video became an honest card.
-    page.wait_for_function("""sel => {
+    # Every decodable image is loaded; the undecodable video became an honest card. The photos
+    # are lazy: WebKit starts one only within about a viewport of the feed's visible part. With
+    # `look`, a photo not yet shown is brought into view, as the owner scrolls up to it on a
+    # phone, where the bubble is taller than the screen and later notices keep it above the
+    # feed's end (the feed re-follows its end until a real gesture, so this repeats until loaded).
+    page.wait_for_function("""([sel, look]) => {
         const bubble = [...document.querySelectorAll(sel)].at(-1);
         const images = [...bubble.querySelectorAll('img.chat-photo')];
+        if (look) images.find(img => !img.complete)?.scrollIntoView({ block: 'nearest' });
         return images.length && images.every(img => img.complete && img.naturalWidth > 0)
             && [...bubble.querySelectorAll('.chat-file-name')].some(n => n.textContent === 'clip.mp4');
-    }""", arg=_BUBBLE, timeout=timeout)
+    }""", arg=[_BUBBLE, look], timeout=timeout)
     return bubble
 
 
@@ -260,7 +265,7 @@ def test_owner_attachments_render_once_everywhere(direct_server_with_data, engin
                                         has_touch=True, device_scale_factor=2)
             mobile = phone.new_page()
             mobile.goto(url, wait_until="domcontentloaded")
-            bubble = _wait_bubble(mobile)
+            bubble = _wait_bubble(mobile, look=True)
             shape = bubble.evaluate(_SHAPE)
             _assert_main_bubble(shape, f"{engine} phone after restart")
             geometry = mobile.evaluate("""() => {

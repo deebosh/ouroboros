@@ -228,7 +228,7 @@ test('file dialog and photo menu expose no Share action (owner removal)', async 
     const fx = fixture();
     try {
         const bubble = fx.controller.buildDocumentBubble({
-            type: 'document', role: 'assistant', filename: 'notes.txt', mime: 'text/plain',
+            type: 'document', role: 'assistant', filename: 'notes.pdf', mime: 'application/pdf',
             file_base64: 'aGVsbG8=', ts: '2026-08-30T00:00:00Z',
         });
         await bubble.querySelector('.chat-file-card').click();
@@ -243,6 +243,26 @@ test('file dialog and photo menu expose no Share action (owner removal)', async 
         });
         assert.ok(photo.querySelector('[data-photo-action="copy"]'));
         assert.equal(photo.querySelector('[data-photo-action="share"]'), null);
+    } finally {
+        fx.controller.destroy();
+        fx.restore();
+    }
+});
+
+test('only the delivered copy of a Markdown or text file offers Read; other files keep the file dialog', () => {
+    const fx = fixture();
+    try {
+        const card = (extra) => fx.controller.buildDocumentBubble({
+            type: 'document', role: 'assistant', ts: '2026-08-30T00:00:00Z', task_id: 'task-1', ...extra,
+        }).querySelector('.chat-file-more');
+        const readable = (more) => more.classList.contains('is-read');
+        // Live inline bytes and the immutable task-artifact route are the delivered copy.
+        assert.equal(readable(card({ filename: 'report.md', file_base64: 'IyBIaQ==' })), true);
+        assert.equal(readable(card({ filename: 'notes.txt', download_url: '/api/tasks/task-1/artifacts/notes.txt' })), true);
+        // A current file-browser path is not: Read is not offered, Open/Download stay.
+        assert.equal(readable(card({ filename: 'report.md', download_url: '/api/files/download?path=report.md' })), false);
+        assert.equal(readable(card({ filename: 'page.html', mime: 'text/plain', file_base64: 'PGI+' })), false);
+        assert.equal(readable(card({ filename: 'report.pdf', file_base64: 'JVBERg==' })), false);
     } finally {
         fx.controller.destroy();
         fx.restore();
@@ -721,6 +741,8 @@ test('owner attachments mount above the caption from the shared atoms and releas
         assert.ok(block.querySelectorAll('.chat-file-item')[1].classList.contains('is-unavailable'));
         assert.ok(block.innerHTML.includes('ZIP · Unavailable'),
             'an unavailable card says so in words, not only by its dimmed style');
+        assert.equal(block.innerHTML.match(/aria-haspopup="dialog"/g)?.length, 1,
+            'the live card announces the file dialog it opens, as a delivered card does; the inert one opens nothing');
         assert.ok(fx.tracker.adds > adds, 'listeners belong to the media controller');
         const single = new NodeStub('div', fx.tracker);
         single.innerHTML = '<div class="sender">You</div><div class="message"></div>';
