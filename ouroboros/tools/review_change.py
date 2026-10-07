@@ -668,10 +668,11 @@ def _settle(ctx: ToolContext, wave: _Wave, facts: Dict[str, Any], outcome: Dict[
         verdict = dict(payload.get("verdict") or {})
         verdict["degraded_reasons"] = [*(verdict.get("degraded_reasons") or []), f"review_ledger_unwritten: {exc}"]
         payload["verdict"] = verdict
-    seats = [str(row.get("seat_id") or "") for row in payload.get("rows") or []]
+    # The gate's binding: this wave's OWN execution rows (keyed by seat, stamped
+    # with the wave's timestamps) take the record id; a later run of a seat by
+    # another surface keeps its own.
     with contextlib.suppress(Exception):
-        bind_reviewer_slot_record_id(seats, str(payload.get("record_id") or ""),
-                                     since_ts=str((facts.get("structured") or {}).get("started_ts") or ""))
+        bind_reviewer_slot_record_id(dict(facts.get("slot_executions") or {}), str(payload.get("record_id") or ""))
     _settle_attempt(ctx, wave, outcome, payload)
     result = review_result(payload, reused=False)
     result["durable"] = durable

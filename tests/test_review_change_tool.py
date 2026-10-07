@@ -492,6 +492,30 @@ def test_the_wave_runs_under_its_own_identities_and_restores_the_task(h: Harness
     assert getattr(h.ctx, "_review_paid_stamp", None) is None
 
 
+def test_the_settled_record_is_bound_to_the_seats_own_execution_rows(
+        h: Harness, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    """The seats record their executions during the wave (keyed by seat, stamped with
+    the wave's timestamps); settling names the record on exactly those rows — the
+    gate's ``bind_reviewer_slot_record_id(executions, record_id)`` contract."""
+    monkeypatch.setattr(slots, "_last_execution_path", lambda: tmp_path / "reviewer_last_execution.json")
+    wave, triad, _scope = h.wave, *_configured()
+
+    def recording(ctx: Any, commit_message: str, **kwargs: Any):
+        answer = wave(ctx, commit_message, **kwargs)
+        config = slots.load_reviewer_slot_config()
+        actors = [SimpleNamespace(slot_id=row["slot_id"], status="responded", usage={}, operation_state="settled")
+                  for row in ctx._last_triad_raw_results]
+        slots.record_reviewer_slot_executions("change", actors, {row.slot_id: row for row in config.triad}, keep_on=ctx)
+        return answer
+
+    monkeypatch.setattr(rc, "run_parallel_review", recording)
+    _stage(h.project, "a.py", "a = 1\n")
+    result = h.run(subject="index")
+    assert result["state"] == "settled" and result["record_id"]
+    last = slots.reviewer_slot_last_executions()
+    assert {seat: last[seat].get("review_record_id") for seat in triad} == {seat: result["record_id"] for seat in triad}
+
+
 def test_the_ceiling_is_shared_by_every_subject_of_one_root(h: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
     from ouroboros.review_state import CommitAttemptRecord, make_repo_key, update_state
 
