@@ -1183,9 +1183,10 @@ _LAST_EXECUTION_LOCK = threading.Lock()
 def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict[str, Any]) -> None:
     """Record each actor's last effective execution (best-effort, atomic).
 
-    Written into the CANONICAL data plane (not the review drive): this is UI
-    state beside the saved settings, not per-task forensics — those live in
-    the durable actor records already.
+    Written under the process data root (``config.DATA_DIR``), never a
+    ToolContext review drive: UI state beside the saved settings, not per-task
+    forensics — those live in the durable actor records already. An isolated
+    contributor review's data root IS its review drive, so its markers stay there.
     """
     from ouroboros.review_substrate import TYPED_FAILURE_FACT_KEYS
     from ouroboros.utils import utc_now_iso, write_text_atomic

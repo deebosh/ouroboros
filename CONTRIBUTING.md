@@ -219,10 +219,29 @@ failed or answered outside the contract — is reported as
 `SCOPE_REVIEW_BLOCKED` with its cause, and the evidence packet is preserved
 and marked incomplete. The agentic checklist review above needs none of this.
 
-Configured API slots need their provider credentials and a positive finite
-`TOTAL_BUDGET`. Agent-session slots need their configured agent route and
-account to be available. The wrapper checks route-specific readiness where it
-has a reliable probe; the selected route reports other failures explicitly.
+The run keeps its own writes off your data root: its review drive
+(`--drive-root`: a new or empty directory, or the drive of the run it
+continues; by default a new temporary one) is its whole data root — ledger,
+review state, reviewer markers, locks and logs. It reads your `settings.json`
+in place under an integrity pin (never copied, never written; an edit during
+the run is a typed refusal; the reviewer panel and efforts come from it, or the
+product default where it names none, derived from its own model and provider
+settings — never from a copy inherited in your environment), and with
+`--attach-host-engine` that engine's ownership marker, loopback descriptor and
+token. A provider key missing from both the environment and settings may still
+come from the wrapper's keys-file fallback (`OUROBOROS_KEYS_FILE`). Every run
+needs an explicit `--run-cap-usd`: the isolated review ledger starts empty, so
+that cap (kept by a continuation on the same `--drive-root`) is its whole
+global limit, never your saved `TOTAL_BUDGET`. It does not see your other
+spend. Configured API slots need their provider credentials. Agent-session
+slots need their agent route and account, and `--attach-host-engine`: the run
+then uses the Claudexor engine already running for your data root and never
+starts, prepares, rotates or stops one; a missing, foreign, dead or too old
+engine is a typed refusal, never another engine. That engine records the runs
+it executes for this review in its own home (`<data root>/claudexor`), as it
+does for every delegated run. The wrapper checks route-specific readiness
+where it has a reliable probe; the selected route reports other failures
+explicitly.
 
 From a clean committed branch:
 
@@ -231,6 +250,7 @@ python scripts/run_external_review.py \
   --contributor \
   --base-ref upstream/ouroboros \
   --head-ref HEAD \
+  --run-cap-usd 25 \
   "<PR title>" \
   --goal "<goal>" \
   --scope "<scope>"
@@ -250,7 +270,10 @@ The lane always executes the target base's own review machinery: run from any
 checkout that is not the base, it re-runs itself from a detached worktree of
 the base commit. Your proposal is therefore never reviewed by its own copy of
 the review flow, whatever it touches, and no extra step is needed when a PR
-changes the review script or review substrate.
+changes the review script or review substrate. A base older than
+`--run-cap-usd` cannot run an isolated review: it refuses the invocation
+before touching your settings or data, reported as
+`INCOMPLETE_MAINTAINER_TRUSTED_BASE_RERUN_REQUIRED`.
 
 ## 6. Open the Pull Request
 

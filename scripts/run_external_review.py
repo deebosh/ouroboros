@@ -1,24 +1,16 @@
 #!/usr/bin/env python3
 """Run Ouroboros review without committing.
 
-The default operator lane runs the REAL production commit-gate cycle
-(advisory → triad → scope) on the staged diff. ``--contributor`` is a separate
-non-committing PR-readiness lane: it reviews the exact committed
-``base_ref..head_ref`` proposal with triad + scope only, using the contributor's
-configured reviewer slots. API and hosted-agent routes share one evidence
-contract. A clean contributor packet means READY_FOR_INTEGRATION, never merge
-authorization; maintainers still allocate release metadata and run the
-production gate on the exact landing tree.
-
-Both lanes reuse the runtime substrate in an isolated checkout and non-live
-observability root. The default lane keeps its configured advisory route. The
-contributor lane excludes advisory, freezes configured routes under blocking
-semantics, performs provider-specific readiness checks where supported, and
-emits redacted base/head/tree/diff-bound evidence. A contributor review always
-executes the TARGET BASE's own review machinery: invoked from any other
-checkout it first re-runs itself from a detached worktree of the base commit
-(owner decision 2026-08-19, D31), so a proposal can never be reviewed by its
-own copy of the review flow.
+The operator lane runs the production advisory → triad → scope cycle on the
+staged diff. The separate ``--contributor`` lane reviews committed base..head
+with configured triad + scope, no advisory, and blocking semantics. Both use
+isolated checkouts and non-live observability; API/session routes share one
+redacted base/head/tree/diff-bound evidence contract and supported readiness
+checks. READY_FOR_INTEGRATION is not merge authority: maintainers allocate
+release metadata and run the production gate on the exact landing tree.
+Contributor mode re-executes the TARGET BASE's machinery in a detached worktree
+(D31, owner decision 2026-08-19), never the proposal's own review flow. Its whole
+data root is private, with explicit ``--run-cap-usd`` (review_run_isolation.py).
 
 Exit codes:
     0  review passed
@@ -30,14 +22,13 @@ Exit codes:
 
 Usage (from repo/):
     python scripts/run_external_review.py ["commit message"] [--output DIR]
-    python scripts/run_external_review.py --contributor \
-        --base-ref upstream/ouroboros --head-ref HEAD ["PR title"]
+    python scripts/run_external_review.py --contributor --run-cap-usd 25 \
+        --base-ref upstream/ouroboros --head-ref HEAD [--attach-host-engine] ["PR title"]
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import pathlib
 import re
@@ -58,6 +49,10 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS  # noqa: E402
+# Stdlib-only leaves: nothing may import ``ouroboros.config`` before isolation.
+from ouroboros.review_run_isolation import (  # noqa: E402
+    PINNED_PANEL_KEYS, isolate_review_data, parse_run_cap, retire_comma_lists)
+from ouroboros.settings_integrity import SETTINGS_INTEGRITY_ENV  # noqa: E402
 
 # Release diffs touch protected core paths; only pro mode may stage them for
 # review. An explicit operator env value still wins.
@@ -67,6 +62,7 @@ os.environ.setdefault("OUROBOROS_RUNTIME_MODE", "pro")
 # non-passed outcome is environment/infrastructure and is safe to retry after
 # fixing the environment.
 _GENUINE_BLOCK_REASONS = {"critical_findings"}
+_EXIT_CLASS = {0: "passed", 1: "genuine_review_block", 3: "infrastructure"}
 _OPENROUTER_MIN_REMAINING_USD = 10.0
 _CONTRIBUTOR_DEFAULT_BASE_REF = "upstream/ouroboros"
 _CONTRIBUTOR_PROFILE = "external_pr_readiness"
@@ -105,6 +101,8 @@ _REVIEW_SUBSTRATE_PATHS = frozenset({
     "ouroboros/tools/scope_window.py", "ouroboros/claudexor_daemon.py", "ouroboros/delegate_custody.py",
     "ouroboros/delegate_custody_usage.py", "ouroboros/delegate_output.py", "ouroboros/gateways/claudexor.py",
     "ouroboros/review_evidence.py", "ouroboros/review_evidence_sections.py", "ouroboros/subagents.py",
+    "ouroboros/review_model_routes.py", "ouroboros/review_run_isolation.py", "ouroboros/settings_integrity.py",
+    "ouroboros/settings_setup_contract.py", "ouroboros/usage_admission.py",
 })
 _RELEASE_MACHINERY_PATHS = frozenset({
     ".github/workflows/ci.yml",
@@ -162,18 +160,31 @@ def _load_settings_into_env() -> None:
         os.environ.get("OUROBOROS_SETTINGS_PATH", "") or (DATA / "settings.json")
     ).expanduser().resolve(strict=False)
     if settings_path.exists():
+        raw = settings_path.read_bytes()
+        pin = os.environ.get(SETTINGS_INTEGRITY_ENV, "")
+        if pin and hashlib.sha256(raw).hexdigest() != pin:
+            raise RuntimeError(f"{settings_path} changed after this review pinned it")
         try:
-            data = json.loads(settings_path.read_text(encoding="utf-8"))
+            data = json.loads(raw.decode("utf-8"))
         except Exception as exc:  # pragma: no cover - operator script
             print(f"WARN: could not parse settings.json: {exc}", file=sys.stderr)
-            data = {}
-        for key, value in (data.items() if isinstance(data, dict) else []):
-            if os.environ.get(key, "").strip():
+            data = None
+        if pin and not isinstance(data, dict):  # the pinned document is the review panel, never a default
+            raise RuntimeError(f"{settings_path} is pinned but is not a settings object")
+        named = retire_comma_lists(data) if pin else (data if isinstance(data, dict) else {})
+        for key, value in named.items():
+            if os.environ.get(key, "").strip() and not (pin and key in PINNED_PANEL_KEYS):
                 continue
             if isinstance(value, bool):
                 os.environ[key] = "1" if value else "0"
             elif isinstance(value, (str, int, float)) and str(value) != "":
                 os.environ[key] = str(value)
+            elif pin and key in PINNED_PANEL_KEYS and isinstance(value, (dict, list)) and value:
+                os.environ[key] = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if pin:  # a panel key the pinned document leaves unset reads the product default, as on the host
+            for key in PINNED_PANEL_KEYS:
+                if named.get(key) in (None, "", {}, []):
+                    os.environ.pop(key, None)
     else:
         print(f"WARN: settings.json not found at {settings_path}", file=sys.stderr)
 
@@ -257,25 +268,16 @@ def _apply_contributor_review_env() -> None:
     os.environ["OUROBOROS_PREFLIGHT_DIFF_AWARE"] = "false"
 
 
-def _require_contributor_budget() -> float:
-    """Require an explicit finite USD ceiling before contributor API calls."""
-    raw = str(os.environ.get("TOTAL_BUDGET", "") or "").strip()
-    if not raw:
-        raise RuntimeError(
-            "TOTAL_BUDGET is required for --contributor; set the USD ceiling "
-            "you explicitly authorize for this review run"
-        )
-    try:
-        budget = float(raw)
-    except ValueError as exc:
-        raise RuntimeError("TOTAL_BUDGET must be a positive finite number") from exc
-    if not math.isfinite(budget) or budget <= 0:
-        raise RuntimeError("TOTAL_BUDGET must be a positive finite number")
-    return budget
-
-
 def _hash_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _json_text(value) -> str:
+    return json.dumps(value, indent=2, ensure_ascii=False, default=str)
+
+
+def _write_json(path: pathlib.Path, value) -> None:
+    path.write_text(_json_text(value) + "\n", encoding="utf-8")
 
 
 def _require_clean_worktree() -> None:
@@ -467,12 +469,6 @@ def _select_healthy_openrouter_key(
 ) -> bool:
     """Pick the first healthy key from the allowed pool (values never printed)."""
     pool = _openrouter_pool()
-    if not pool:
-        message = "no OpenRouter key candidates found"
-        if required:
-            raise RuntimeError(message)
-        print(f"WARN: {message}.", file=sys.stderr)
-        return False
     for name, token in pool:
         healthy, detail = _openrouter_key_health(
             token,
@@ -483,10 +479,8 @@ def _select_healthy_openrouter_key(
         if healthy:
             os.environ["OPENROUTER_API_KEY"] = token
             return True
-    message = (
-        "no healthy OpenRouter key in the allowed pool; fix keys and rerun "
-        "(exit 3 class)"
-    )
+    message = ("no healthy OpenRouter key in the allowed pool; fix keys and rerun (exit 3 class)"
+               if pool else "no OpenRouter key candidates found")
     if required:
         raise RuntimeError(message)
     print(f"WARN: {message}.", file=sys.stderr)
@@ -628,13 +622,21 @@ def _run_on_trusted_base(args) -> int | None:
             f"--goal={args.goal}", f"--scope={args.scope}",
             *([f"--output={os.path.abspath(os.path.expanduser(args.output))}"] if args.output else []),
             *([f"--drive-root={os.path.abspath(os.path.expanduser(args.drive_root))}"] if args.drive_root else []),
+            # A base that predates these options refuses them in argparse,
+            # before reading settings or data: never a silent unisolated run.
+            f"--run-cap-usd={args.run_cap_usd}",
+            *(["--attach-host-engine"] if args.attach_host_engine else []),
             "--", args.commit_message,
         ]
         print(f"Trusted review machinery: base {base_sha[:12]} at {trusted}", file=sys.stderr)
         env = {**os.environ, "OUROBOROS_DATA_DIR": str(DATA)}
         code = subprocess.run(command, cwd=str(trusted), env=env).returncode
-        # An abnormal termination is infrastructure, never a reviewer verdict.
-        return code if code in (0, 1, 2, 3) else 3
+        if code == 2:  # only argparse exits 2 on a contributor base (an empty proposal is 3)
+            print("ERROR: the target base refused this invocation (usage error above) before touching "
+                  "settings or data; a base that predates --run-cap-usd cannot run an isolated review. Result: "
+                  "INCOMPLETE_MAINTAINER_TRUSTED_BASE_RERUN_REQUIRED.", file=sys.stderr)
+        # An abnormal termination or a refused invocation is infrastructure, never a verdict.
+        return code if code in (0, 1, 3) else 3
     finally:
         _remove_isolated_checkout(checkout_root, trusted)
 
@@ -727,12 +729,39 @@ def _review_evidence_and_cost(ctx: object) -> tuple[list[dict], dict]:
     }
 
 
+def _pinned_default_panel_view(profile: str):
+    """The pinned document's task view for a contributor default panel, else ``None``.
+
+    The shipped panel reads Main, the model slots and provider routes
+    (``review_model_routes``). Here they come from the verified document over the
+    product and provider defaults, as a host task derives them
+    (``subagent_runtime.apply_task_start_settings``), never from an inherited
+    projection, whose keys still serve the calls. Only this lane freezes what it
+    resolves, so only here does the view decide what executes.
+    """
+    from ouroboros import config
+    from ouroboros.reviewer_slot_config import structured_reviewer_slots_present
+    from ouroboros.server_runtime import apply_runtime_provider_defaults
+    from ouroboros.settings_integrity import read_settings_json_verified, task_settings_snapshot
+
+    if profile != _CONTRIBUTOR_PROFILE or not os.environ.get(SETTINGS_INTEGRITY_ENV) \
+            or structured_reviewer_slots_present():
+        return None  # the process environment, as before
+    settings = config.defaults_for_settings_document(True)
+    settings.update(config.normalize_settings_raw(read_settings_json_verified(config.SETTINGS_PATH)))
+    settings, projected = apply_runtime_provider_defaults(settings)[0], {}
+    config.apply_settings_to_env(settings, environ=projected)
+    return task_settings_snapshot(settings, projected)
+
+
 def _resolved_review_config(*, profile: str = "production_commit_gate") -> dict:
     """Return resolved review slots and efforts after settings/env loading."""
     from ouroboros.config import get_context_mode, get_review_enforcement
     from ouroboros.reviewer_slot_config import load_reviewer_slot_config, row_effort
+    from ouroboros.settings_integrity import task_settings_scope
 
-    config = load_reviewer_slot_config()
+    with task_settings_scope(_pinned_default_panel_view(profile)):
+        config = load_reviewer_slot_config()
 
     def _project(row, surface: str) -> dict:
         route = {
@@ -866,9 +895,7 @@ def _replace_public_paths(value, replacements: list[tuple[str, str]]):
             str(key): _replace_public_paths(item, replacements)
             for key, item in value.items()
         }
-    if isinstance(value, list):
-        return [_replace_public_paths(item, replacements) for item in value]
-    if isinstance(value, tuple):
+    if isinstance(value, (list, tuple)):
         return [_replace_public_paths(item, replacements) for item in value]
     if isinstance(value, str):
         result = value
@@ -936,11 +963,7 @@ def _write_contributor_packet(
         "result": result,
         "complete": exit_code == 0,
         "exit_code": exit_code,
-        "exit_class": {
-            0: "passed",
-            1: "genuine_review_block",
-            3: "infrastructure",
-        }.get(exit_code, "unknown"),
+        "exit_class": _EXIT_CLASS.get(exit_code, "unknown"),
         "reviewed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "snapshot": public_snapshot,
         "review_config": resolved_config,
@@ -988,6 +1011,12 @@ def _write_contributor_packet(
         "production_outcome": outcome,
         "raw_evidence_refs": evidence_refs,
         "cost_report": cost_report,
+        "budget": {
+            "run_cap_usd": (resolved_config.get("data_isolation") or {}).get("run_cap_usd"),
+            "authority": "isolated_review_ledger",
+            "note": ("The run cap is the whole global limit of a ledger that starts empty and sees no "
+                     "host spend or concurrent host work; agent-session seats are recorded at settlement."),
+        },
         "elapsed_sec": round(elapsed_sec, 1),
     }
     public_evidence = _public_projection(evidence, replacements=replacements)
@@ -997,32 +1026,19 @@ def _write_contributor_packet(
     evidence_path = output_dir / "review-evidence.json"
     outcome_path = output_dir / "outcome.json"
     full_output_path = output_dir / "full-output.txt"
-    evidence_path.write_text(
-        json.dumps(public_evidence, indent=2, ensure_ascii=False, default=str) + "\n",
-        encoding="utf-8",
-    )
-    outcome_path.write_text(
-        json.dumps(
-            _public_projection(
-                {"exit_code": exit_code, "outcome": outcome},
-                replacements=replacements,
-            ),
-            indent=2,
-            ensure_ascii=False,
-            default=str,
-        ) + "\n",
-        encoding="utf-8",
-    )
+    _write_json(evidence_path, public_evidence)
+    _write_json(outcome_path, _public_projection({"exit_code": exit_code, "outcome": outcome},
+                                                 replacements=replacements))
     sep = "=" * 80
     full_output = "\n".join([
         sep, "CONTRIBUTOR REVIEW EVIDENCE", sep,
-        json.dumps(public_evidence, indent=2, ensure_ascii=False, default=str),
+        _json_text(public_evidence),
         sep, "TRIAD ACTOR RESULT RECORDS (full, redacted)", sep,
-        json.dumps(public_triad, indent=2, ensure_ascii=False, default=str),
+        _json_text(public_triad),
         sep, "SCOPE ACTOR RESULT RECORDS (full, redacted)", sep,
-        json.dumps(public_scope, indent=2, ensure_ascii=False, default=str),
+        _json_text(public_scope),
         sep, "AGENT SESSION TRANSCRIPTS (full, redacted)", sep,
-        json.dumps(public_transcripts, indent=2, ensure_ascii=False, default=str),
+        _json_text(public_transcripts),
     ])
     full_output_path.write_text(full_output + "\n", encoding="utf-8")
     packet_path = output_dir / "review-packet.zip"
@@ -1126,12 +1142,25 @@ def _parse_args():
         default="HEAD",
         help="Committed proposal ref for --contributor (default: HEAD).",
     )
+    parser.add_argument("--run-cap-usd", default="", help=(
+        "Required with --contributor: the USD ceiling of this review's isolated "
+        "ledger (kept by a continuation on the same --drive-root); never TOTAL_BUDGET."))
+    parser.add_argument("--attach-host-engine", action="store_true", help=(
+        "With --contributor: use the host's running Claudexor engine attach-only; "
+        "never start, prepare, rotate, claim or stop one."))
     args = parser.parse_args()
 
     if args.contributor and args.no_isolated_checkout:
         parser.error("--contributor requires the frozen isolated checkout")
     if not args.contributor and (args.base_ref or args.head_ref != "HEAD"):
         parser.error("--base-ref/--head-ref require --contributor")
+    if not args.contributor and (args.run_cap_usd or args.attach_host_engine):
+        parser.error("--run-cap-usd/--attach-host-engine require --contributor")
+    if args.contributor:
+        try:
+            parse_run_cap(args.run_cap_usd)
+        except ValueError as exc:
+            parser.error(str(exc))
     return args
 
 
@@ -1187,6 +1216,11 @@ def _build_review_request(
 
 
 def _prepare_review_configuration(args) -> tuple[dict | None, str, dict]:
+    isolation = isolate_review_data(
+        host_data=DATA, drive_root=args.drive_root, run_cap=args.run_cap_usd,
+        attach_host_engine=args.attach_host_engine) if args.contributor else None
+    if isolation:
+        args.drive_root = isolation["review_data_root"]
     _load_settings_into_env()
     contributor_snapshot: dict | None = None
     review_base_commit = "HEAD"
@@ -1205,15 +1239,15 @@ def _prepare_review_configuration(args) -> tuple[dict | None, str, dict]:
         _assert_contributor_review_config(resolved_config)
         resolved_config = _freeze_contributor_slots(resolved_config)
         _assert_contributor_review_config(resolved_config)
-        api_rows = [
-            row for row in [
-                *list(resolved_config.get("triad_slots") or []),
-                *list(resolved_config.get("scope_slots") or []),
-            ]
-            if (row.get("route") or {}).get("kind") == "api_chat"
-        ]
-        if api_rows:
-            _require_contributor_budget()
+        from ouroboros.provider_models import provider_for_model
+
+        engine_rows = [row["slot_id"] for row in [*resolved_config["triad_slots"], *resolved_config["scope_slots"]]
+                       if row["route"]["kind"] == "agent_session"
+                       or provider_for_model(row["route"]["target_id"]) == "claudexor"]
+        if engine_rows and not args.attach_host_engine:
+            raise RuntimeError(f"reviewer slots {engine_rows} run on Claudexor, and an isolated review never "
+                               "starts one; pass --attach-host-engine to use the host's running engine")
+        resolved_config["data_isolation"] = isolation
         openrouter_models = _configured_openrouter_models(resolved_config)
         if openrouter_models:
             _select_healthy_openrouter_key(
@@ -1378,13 +1412,8 @@ def main() -> int:
             print(f"ERROR: isolated checkout failed: {exc}", file=sys.stderr)
             if checkout_root is not None and checkout is not None:
                 _remove_isolated_checkout(checkout_root, checkout)
-            (output_dir / "outcome.json").write_text(
-                json.dumps({
-                    "exit_code": 3,
-                    "outcome": {"status": "blocked", "block_reason": "isolated_checkout_failed"},
-                }, indent=2) + "\n",
-                encoding="utf-8",
-            )
+            _write_json(output_dir / "outcome.json", {
+                "exit_code": 3, "outcome": {"status": "blocked", "block_reason": "isolated_checkout_failed"}})
             return 3
 
     ctx = ToolContext(repo_dir=repo_for_review, drive_root=review_drive_root)
@@ -1477,7 +1506,7 @@ def main() -> int:
                                retained_checkout=str(checkout), retained_custody=retained_custody,
                                review_drive_root=str(review_drive_root),
                                retention_reason="review custody unresolved; reconcile before cleanup")
-                (output_dir / "outcome.json").write_text(json.dumps({"exit_code": 3, "outcome": outcome}, default=str) + "\n", encoding="utf-8")
+                _write_json(output_dir / "outcome.json", {"exit_code": 3, "outcome": outcome})
                 print(f"Review checkout retained for reconciliation: {checkout} (custody drive: {review_drive_root})", file=sys.stderr)
             else:
                 _remove_isolated_checkout(checkout_root, checkout)
@@ -1530,36 +1559,26 @@ def main() -> int:
     sep = "=" * 80
     out = "\n".join([
         sep, "RESOLVED REVIEW CONFIG", sep,
-        json.dumps({**resolved_config, "drive_root": str(review_drive_root)}, indent=2, ensure_ascii=False, default=str),
+        _json_text({**resolved_config, "drive_root": str(review_drive_root)}),
         sep, "TRIAD RAW RESULTS (full, untruncated)", sep,
-        json.dumps(getattr(ctx, "_last_triad_raw_results", []), indent=2, ensure_ascii=False, default=str),
+        _json_text(getattr(ctx, "_last_triad_raw_results", [])),
         sep, "SCOPE RAW RESULT (full, untruncated)", sep,
-        json.dumps(getattr(ctx, "_last_scope_raw_result", {}), indent=2, ensure_ascii=False, default=str),
+        _json_text(getattr(ctx, "_last_scope_raw_result", {})),
         sep, "AGGREGATE VERDICT", sep,
-        json.dumps({
+        _json_text({
             "complete": exit_code == 0,
             "exit_code": exit_code,
-            "exit_class": {
-                0: "passed",
-                1: "genuine_review_block",
-                3: "infrastructure",
-            }.get(exit_code, "unknown"),
+            "exit_class": _EXIT_CLASS.get(exit_code, "unknown"),
             "production_outcome": outcome,
             "scope_model": getattr(ctx, "_last_scope_model", ""),
             "raw_evidence_refs": evidence_refs,
             "cost_report": cost_report,
             "elapsed_sec": round(time.time() - t0, 1),
-        }, indent=2, ensure_ascii=False, default=str),
+        }),
     ])
     print(out)
     (output_dir / "full-output.txt").write_text(out + "\n", encoding="utf-8")
-    (output_dir / "outcome.json").write_text(
-        json.dumps(
-            {"exit_code": exit_code, "outcome": outcome},
-            indent=2, ensure_ascii=False, default=str,
-        ) + "\n",
-        encoding="utf-8",
-    )
+    _write_json(output_dir / "outcome.json", {"exit_code": exit_code, "outcome": outcome})
     print(f"Artifacts: {output_dir}", file=sys.stderr)
     return exit_code
 

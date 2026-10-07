@@ -20,6 +20,10 @@ Lifecycle belongs to the installation, not the process that first needed it:
   custodied startup without a reachable control endpoint is joined across
   managers/processes; caller wait expiry reports ``daemon_starting`` and never
   kills it. Engine writer election owns the concurrent first-launch race;
+* ATTACH-ONLY (``review_run_isolation.attach_home``, the isolated contributor
+  review): another data plane's running engine, by marker, loopback descriptor
+  and handshake — never started, prepared, rotated, claimed or stopped; a
+  missing or dead one is a typed refusal. Own runs stay cancellable;
 * STOP-ONLY-WHAT-IS-PROVABLY-OURS: ``stop`` (Panic) terminates the child THIS
   manager spawned and ledger roots confirmed by our marker and measured
   custody fingerprint, with an authenticated endpoint, a typed transport
@@ -63,6 +67,7 @@ from ouroboros.claudexor_startup_failure import (
     start_failure_label,
     start_failure_row,
 )
+from ouroboros.review_run_isolation import attach_home
 from ouroboros.config import (
     CLAUDEXOR_STARTUP_WAIT_SEC as _SPAWN_WAIT_SEC,
     CLAUDEXOR_STARTUP_POLL_SEC as _SPAWN_POLL_SEC,
@@ -123,6 +128,25 @@ def owned_config_dir() -> pathlib.Path:
     from ouroboros.config import DATA_DIR
 
     return pathlib.Path(DATA_DIR) / _OWNED_DIR_NAME
+
+
+def attached_endpoint(home: pathlib.Path) -> Any:
+    """The attach-only home's engine (``review_run_isolation.attach_home``), provenance first."""
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable, discover_daemon_at
+
+    try:
+        marker = json.loads((home / OWNERSHIP_MARKER).read_text(encoding="utf-8"))
+        marked = pathlib.Path(str(marker.get("data_dir") or "")) if isinstance(marker, dict) else None
+        if (not isinstance(marker, dict) or marker.get("owner") != "ouroboros" or marked is None
+                or not marked.is_absolute() or (marked / _OWNED_DIR_NAME).resolve() != home.resolve()):
+            raise ValueError("marker does not name this home as an Ouroboros-owned engine home")
+    except (OSError, ValueError, RuntimeError) as exc:  # RuntimeError: a symlink loop in resolve()
+        raise ClaudexorUnavailable(
+            "attach_provenance_refused",
+            f"attach-only engine home {home} has no matching ownership marker "
+            f"({type(exc).__name__}: {exc}); nothing is started in its place",
+        ) from exc
+    return discover_daemon_at(home)
 
 
 def owned_descriptor_path() -> pathlib.Path:
@@ -618,6 +642,8 @@ class OwnedClaudexorDaemon:
         from ouroboros.claudexor_runtime import ClaudexorRuntimeError, get_runtime_manager
         from ouroboros.gateways.claudexor import SHORT_POLL_TIMEOUT_SEC, ClaudexorUnavailable
 
+        if attach_home() is not None:
+            raise ClaudexorUnavailable("attach_only_engine", "an attach-only process never starts or prepares an engine")
         with self._lock:
             generation = self._generation
             self._check_start_generation(generation)
@@ -1216,14 +1242,17 @@ def read_owned_gateway() -> Any:
 
     Discovery is explicitly owned-only, including on unprovisioned installs.
     Callers own close(); discovery/handshake failures retain their typed refusal.
+    An attach-only selection reads the selected home and records no stop target.
     """
     from ouroboros.gateways.claudexor import ClaudexorGateway, discover_daemon_at
 
-    endpoint = discover_daemon_at(owned_config_dir())
+    home = attach_home()
+    endpoint = attached_endpoint(home) if home is not None else discover_daemon_at(owned_config_dir())
     gateway = ClaudexorGateway(endpoint)
     try:
         gateway.handshake()
-        get_owned_daemon()._remember_stop_targets(endpoint)
+        if home is None:
+            get_owned_daemon()._remember_stop_targets(endpoint)
     except Exception:
         gateway.close()
         raise
@@ -1272,8 +1301,12 @@ def ensure_owned_gateway(*, admission_wait_sec: Optional[float] = None,
     wait = _ADMISSION_WAIT_SEC if admission_wait_sec is None else max(
         0.0, float(admission_wait_sec))
     daemon = get_owned_daemon()
-    endpoint = (daemon.ensure_running() if startup_wait_sec is None
-                else daemon.ensure_running(startup_wait_sec=startup_wait_sec))
+    home = attach_home()
+    if home is not None:  # attach-only: no start, no runtime pin, no ownership claim
+        endpoint = attached_endpoint(home)
+    else:
+        endpoint = (daemon.ensure_running() if startup_wait_sec is None
+                    else daemon.ensure_running(startup_wait_sec=startup_wait_sec))
     gateway = ClaudexorGateway(endpoint)
     try:
         # Read-bounded: a daemon that accepts the socket but withholds the
@@ -1312,6 +1345,9 @@ def ensure_owned_gateway(*, admission_wait_sec: Optional[float] = None,
     except Exception:
         gateway.close()
         raise
+    if home is not None:  # the proven version feeds request-shape floors; host engine settings stay untouched
+        daemon._proven_engine_version = str(gateway.engine_version or "")
+        return gateway
     daemon.reconcile_rotation(gateway)
     return gateway
 
