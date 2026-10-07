@@ -173,7 +173,7 @@ def test_verdict_pass_fail_quorum_failed_not_dispatched_and_pending():
         "change": {"required": 2, "assigned": 3, "responded": 3}, "coupling": {"required": 1, "assigned": 1, "responded": 1}}}
 
     rows = _three()
-    rows[0]["parsed_items"] = [{"item": "bug", "severity": "critical"}]
+    rows[0]["parsed_items"] = [{"item": "bug", "verdict": "FAIL", "severity": "critical"}]
     failed = rl.build_commit_gate_record(_facts(rows, _scope(), blocked=True, block_reason="critical_findings",
                                                 critical_findings=rows[0]["parsed_items"])).to_dict()["verdict"]
     assert failed["aggregate"] == "FAIL" and failed["per_question"] == {"change": "FAIL", "coupling": "PASS"}
@@ -252,7 +252,7 @@ def test_sources_are_retained_before_the_index_row_and_survive_rotation_and_chil
 
 def test_index_keeps_heavy_fields_for_a_row_whose_source_does_not_resolve(tmp_path, monkeypatch):
     rows = _three()
-    rows[0]["parsed_items"] = [{"item": "bug", "severity": "critical"}]
+    rows[0]["parsed_items"] = [{"item": "bug", "verdict": "FAIL", "severity": "critical"}]
     record = rl.build_commit_gate_record(_facts(rows, _scope(), critical_findings=rows[0]["parsed_items"]), drive_root=tmp_path)
     payload = rl.write_record(tmp_path, record)
     hot = rl.index_path(tmp_path).read_text(encoding="utf-8").splitlines()
@@ -351,7 +351,7 @@ def test_gate_fail_and_quorum_failed_records_follow_the_gate(candidate, monkeypa
         kind = next(outcomes)
         if kind == "fail":
             rows = _three()
-            rows[0]["parsed_items"] = [{"item": "amount", "severity": "critical"}]
+            rows[0]["parsed_items"] = [{"item": "amount", "verdict": "FAIL", "severity": "critical"}]
             ctx._last_triad_raw_results = rows
             ctx._last_review_critical_findings = rows[0]["parsed_items"]
             ctx._last_scope_raw_result = _scope()
@@ -368,7 +368,7 @@ def test_gate_fail_and_quorum_failed_records_follow_the_gate(candidate, monkeypa
     assert failed["status"] == "blocked" and failed["review_record_id"]
     record = rl.load_record(rl.ledger_root(ctx), failed["review_record_id"])
     assert record["verdict"]["aggregate"] == "FAIL" and record["verdict"]["per_question"]["change"] == "FAIL"
-    assert record["verdict"]["critical_findings"] == [{"item": "amount", "severity": "critical"}]
+    assert record["verdict"]["critical_findings"] == [{"item": "amount", "verdict": "FAIL", "severity": "critical"}]
     assert _attempt_rows(ctx)[-1].review_record_id == failed["review_record_id"]
 
     (ctx.repo_dir / "change.py").write_text("value = 3\n", encoding="utf-8")
@@ -390,7 +390,7 @@ def test_free_refusal_before_dispatch_is_a_not_dispatched_record(candidate, monk
         invoke_review_paid_stamp(ctx._review_paid_stamp)
         calls.append(message)
         rows = _three()
-        rows[0]["parsed_items"] = [{"item": "amount", "severity": "critical"}]
+        rows[0]["parsed_items"] = [{"item": "amount", "verdict": "FAIL", "severity": "critical"}]
         ctx._last_triad_raw_results = rows
         ctx._last_review_critical_findings = rows[0]["parsed_items"]
         ctx._last_scope_raw_result = _scope()
@@ -481,7 +481,7 @@ def test_author_continuation_notes_its_decision_on_the_answered_record(candidate
         invoke_review_paid_stamp(ctx._review_paid_stamp)
         calls.append(message)
         rows = _three()
-        rows[0]["parsed_items"] = [{"item": "amount", "severity": "critical"}]
+        rows[0]["parsed_items"] = [{"item": "amount", "verdict": "FAIL", "severity": "critical"}]
         ctx._last_triad_raw_results = rows
         ctx._last_review_critical_findings = rows[0]["parsed_items"]
         ctx._last_scope_raw_result = _scope()
@@ -510,13 +510,77 @@ def test_slot_executions_carry_and_bind_the_record_id(tmp_path, monkeypatch):
     slot = SimpleNamespace(slot_id="s1", model="openai/gpt-5", route=SimpleNamespace(value="api_chat"), effort="high",
                            session_target="", session_profile="", subagent_id="", processing_preference="", declared_effort="")
     actor = SimpleNamespace(slot_id="s1", status="responded", usage={}, operation_state="settled")
-    cfg.record_reviewer_slot_executions("commit_gate", [actor], {"s1": slot})
+    import ouroboros.utils as utils_mod
+    stamps = iter(f"2026-10-07T00:00:0{i}+00:00" for i in range(1, 9))
+    monkeypatch.setattr(utils_mod, "utc_now_iso", lambda: next(stamps))
+    rows = cfg.record_reviewer_slot_executions("commit_gate", [actor], {"s1": slot})
+    assert set(rows) == {"s1"} and rows["s1"]["surface"] == "commit_gate" and "review_record_id" not in rows["s1"]
     assert "review_record_id" not in cfg.reviewer_slot_last_executions()["s1"], "three positional args stay the old shape"
     cfg.record_reviewer_slot_executions("commit_gate", [actor], {"s1": slot}, record_id="rl-1")
     assert cfg.reviewer_slot_last_executions()["s1"]["review_record_id"] == "rl-1"
-    cfg.bind_reviewer_slot_record_id(["s1", "missing"], "rl-2")
-    assert cfg.reviewer_slot_last_executions()["s1"]["review_record_id"] == "rl-2"
-    cfg.bind_reviewer_slot_record_id(["s1"], "rl-3", since_ts="2999-01-01T00:00:00+00:00")
-    assert cfg.reviewer_slot_last_executions()["s1"]["review_record_id"] == "rl-2", "an older wave's row keeps its own id"
-    cfg.bind_reviewer_slot_record_id(["s1"], "")
-    assert cfg.reviewer_slot_last_executions()["s1"]["review_record_id"] == "rl-2"
+    mine = cfg.record_reviewer_slot_executions("commit_gate", [actor], {"s1": slot})
+    cfg.bind_reviewer_slot_record_id({**mine, "missing": {"ts": mine["s1"]["ts"]}}, "rl-2")
+    assert cfg.reviewer_slot_last_executions()["s1"]["review_record_id"] == "rl-2", "the wave's own row takes its id"
+    # Another surface finished the SAME seat after this wave: the projection row is no longer
+    # the wave's, so binding with the wave's own rows never labels the foreign run.
+    theirs = cfg.record_reviewer_slot_executions("plan_review", [actor], {"s1": slot})
+    assert theirs["s1"]["ts"] != mine["s1"]["ts"]
+    cfg.bind_reviewer_slot_record_id(mine, "rl-3")
+    assert "review_record_id" not in cfg.reviewer_slot_last_executions()["s1"], "a later run of the seat keeps its own identity"
+    cfg.bind_reviewer_slot_record_id(theirs, "rl-4")
+    assert cfg.reviewer_slot_last_executions()["s1"]["review_record_id"] == "rl-4"
+    cfg.bind_reviewer_slot_record_id(theirs, "")
+    assert cfg.reviewer_slot_last_executions()["s1"]["review_record_id"] == "rl-4"
+
+
+def test_a_passed_critical_item_is_a_clean_answer_and_only_a_failed_one_is_a_finding():
+    clean = [_raw(f"s{i}", m, parsed_items=[{"item": "bible_compliance", "verdict": "PASS", "severity": "critical"}])
+             for i, m in enumerate(("openai/gpt-5", "anthropic/claude-x", "google/gemini"), 1)]
+    record = rl.build_commit_gate_record(_facts(clean, _scope()))
+    change_rows = [row for row in record.rows if row["parts"] == ["change"]]
+    assert [row["critical_count"] for row in change_rows] == [0, 0, 0]
+    assert [rl.row_verdict(row) for row in change_rows] == ["PASS"] * 3 and record.verdict["aggregate"] == "PASS"
+    failing = [_raw("s1", "openai/gpt-5", parsed_items=[{"item": "secrets_check", "verdict": "FAIL", "severity": "critical"}]),
+               *clean[1:]]
+    record = rl.build_commit_gate_record(_facts(failing, _scope()))
+    assert record.rows[0]["critical_count"] == 1 and rl.row_verdict(record.rows[0]) == "FAIL"
+    assert record.verdict["aggregate"] == "FAIL"
+
+
+def test_ledger_facts_take_this_waves_own_execution_rows_never_the_shared_projection(candidate, monkeypatch):  # noqa: F811
+    from ouroboros import reviewer_slot_config as cfg
+    from ouroboros.tools import commit_gate
+
+    ctx = candidate
+    git._reset_commit_review_state(ctx)
+    assert ctx._last_review_slot_executions == {}
+    monkeypatch.setattr(cfg, "_last_execution_path", lambda: ctx.drive_root / "last.json")
+    slot = SimpleNamespace(slot_id="s1", model="openai/gpt-5", route=SimpleNamespace(value="api_chat"), effort="high",
+                           session_target="", session_profile="", subagent_id="", processing_preference="", declared_effort="")
+    cfg.record_reviewer_slot_executions("plan_review", [SimpleNamespace(slot_id="s1", status="responded", usage={},
+                                                                         operation_state="settled")], {"s1": slot})
+    mine = {"s1": {"ts": "2026-10-07T00:00:01+00:00", "surface": "commit_gate", "effective": {"model": "openai/gpt-5"}}}
+    ctx._last_review_slot_executions = dict(mine)
+    facts = commit_gate._review_ledger_facts(ctx, "msg", goal="", scope="", pre_fingerprint={}, advisory_paths=None,
+                                             blocked=False, block_reason="", combined_findings=None,
+                                             dispatch_refusal=None, pending=False)
+    assert facts["slot_executions"] == mine, "another surface's row for the same seat is not this wave's fact"
+
+
+def test_tests_fact_is_passed_only_for_a_candidate_bound_proof(candidate, monkeypatch):  # noqa: F711,F811
+    from ouroboros import commit_admission
+    from ouroboros.tools import commit_gate
+
+    ctx = candidate
+    git._reset_commit_review_state(ctx)
+    facts = lambda: commit_gate._review_ledger_facts(  # noqa: E731
+        ctx, "msg", goal="", scope="", pre_fingerprint={}, advisory_paths=None, blocked=False, block_reason="",
+        combined_findings=None, dispatch_refusal=None, pending=False)["tests"]
+    assert facts() == {"policy": "NOT_RUN", "result": "unknown"}
+    ctx._preflight_tests_passed = True  # the runner's flag from an EARLIER candidate survives in the process
+    ctx._preflight_test_proof = None
+    assert facts() == {"policy": "NOT_RUN", "result": "unknown", "reason": "tests_proof_not_for_this_candidate"}
+    monkeypatch.setattr(commit_admission, "preflight_test_proof_matches", lambda ctx, repo: True)
+    assert facts() == {"policy": "run", "result": "passed", "proof": "candidate_bound"}
+    ctx._preflight_tests_passed = False
+    assert facts() == {"policy": "NOT_RUN", "result": "unknown"}

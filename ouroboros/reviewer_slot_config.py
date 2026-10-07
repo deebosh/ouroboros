@@ -1180,9 +1180,90 @@ def _last_execution_path() -> "pathlib.Path":
 _LAST_EXECUTION_LOCK = threading.Lock()
 
 
+def reviewer_slot_execution_rows(surface: str, actors: Any, slots_by_id: Dict[str, Any], *,
+                                 record_id: str = "") -> Dict[str, Dict[str, Any]]:
+    """One last-execution row per settled actor, keyed by slot id (pure: nothing written).
+
+    The wave that ran these actors keeps the returned rows as ITS facts; the shared
+    projection written by :func:`record_reviewer_slot_executions` may be overwritten by
+    another surface's later run of the same seat."""
+    from ouroboros.review_substrate import TYPED_FAILURE_FACT_KEYS
+    from ouroboros.utils import utc_now_iso
+
+    rows: Dict[str, Dict[str, Any]] = {}
+    for actor in actors or []:
+        slot = slots_by_id.get(getattr(actor, "slot_id", ""))
+        if slot is None:
+            continue
+        if str(getattr(actor, "operation_state", "") or "") == "pending_dispatch":
+            continue  # released at the dispatch barrier: still running, recorded when it settles
+        usage = dict(getattr(actor, "usage", {}) or {})
+        route_kind = str(getattr(getattr(slot, "route", None), "value", "") or "api_chat")
+        delegated_route = str(usage.get("delegated_route") or "")
+        session = route_kind == "agent_session" or bool(delegated_route)
+        effective: Dict[str, Any] = {
+            # For a session the harness resolves route/model on its side; for
+            # api_chat what was sent is what ran.
+            "route": (f"agent_session:{delegated_route}" if delegated_route
+                      else route_kind),
+            # APPLIED honesty: a session whose telemetry disclosed no resolved
+            # model shows ABSENCE — the requested model must never be dressed
+            # up as the applied one. An api row's sent model IS its applied one.
+            "model": (str(usage.get("resolved_model") or "") if session
+                      else str(getattr(slot, "model", "") or "")),
+            # No scalar "effort": keep host-send evidence and the engine's
+            # sourced report separate from the requested row below.
+            "verdict_method": str(usage.get("verdict_method") or ""),
+        }
+        if isinstance(usage.get("processing"), dict):
+            effective["processing"] = dict(usage["processing"])
+        if isinstance(usage.get("effort_resolution"), dict):
+            effective["effort_resolution"] = dict(usage["effort_resolution"])
+        # D29 applied account/access, verbatim from the engine receipt; absent
+        # keys mean the telemetry predates the receipt — shown as absence.
+        if usage.get("applied_profile"):
+            effective["profile_id"] = str(usage["applied_profile"])
+        if usage.get("applied_access"):
+            effective["access"] = str(usage["applied_access"])
+        row: Dict[str, Any] = {
+            "ts": utc_now_iso(),
+            "surface": str(surface or ""),
+            "requested": {
+                "route_kind": route_kind,
+                "model": str(getattr(slot, "model", "") or ""),
+                # The ROW's effort. A caller-declared one-off (plan review's
+                # reviewer_effort) is disclosed separately, never shown as the
+                # row's saved configuration.
+                "effort": "" if getattr(slot, "declared_effort", "") else str(getattr(slot, "effort", "") or ""),
+                **({"declared_effort": str(slot.declared_effort)} if getattr(slot, "declared_effort", "") else {}),
+                "session_target": str(getattr(slot, "session_target", "") or ""),
+                "profile_id": str(getattr(slot, "session_profile", "") or ""),
+                # Actor binding, when the row is a configured-subagent
+                # reference ('' = direct row) — disclosure, never routing.
+                "subagent_id": str(getattr(slot, "subagent_id", "") or ""),
+                "processing_preference": str(getattr(slot, "processing_preference", "") or ""),
+            },
+            "effective": effective,
+            **({"effort": dict(usage["effort"])} if isinstance(usage.get("effort"), dict) else {}),
+            "capability_delta": usage.get("capability_delta") or [],
+            "status": str(getattr(actor, "status", "") or ""),
+            **({"review_record_id": str(record_id)} if record_id else {}),
+        }
+        # B1: typed failure facts, present only when the substrate carried them
+        # (a later health surface reads them; absence stays honest absence).
+        # ONE shared key list with the plan-row/wave projections (sources differ).
+        for key in TYPED_FAILURE_FACT_KEYS:
+            value = getattr(actor, key, None)
+            if value:
+                row[key] = value
+        rows[str(actor.slot_id)] = row
+    return rows
+
+
 def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict[str, Any], *,
-                                    record_id: str = "") -> None:
-    """Record each actor's last effective execution (best-effort, atomic).
+                                    record_id: str = "") -> Dict[str, Dict[str, Any]]:
+    """Record each actor's last effective execution (best-effort, atomic) and return
+    the rows this call wrote (:func:`reviewer_slot_execution_rows`).
 
     Written under the process data root (``config.DATA_DIR``), never a
     ToolContext review drive: UI state beside the saved settings, not per-task
@@ -1192,9 +1273,9 @@ def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict
     caller already holds it; a surface that learns the id only after its wave
     settled binds it afterwards with ``bind_reviewer_slot_record_id``.
     """
-    from ouroboros.review_substrate import TYPED_FAILURE_FACT_KEYS
-    from ouroboros.utils import utc_now_iso, write_text_atomic
+    from ouroboros.utils import write_text_atomic
 
+    rows = reviewer_slot_execution_rows(surface, actors, slots_by_id, record_id=record_id)
     path = _last_execution_path()
     with _LAST_EXECUTION_LOCK:
         try:
@@ -1203,87 +1284,25 @@ def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict
                 data = {}
         except (OSError, ValueError):
             data = {}
-        for actor in actors or []:
-            slot = slots_by_id.get(getattr(actor, "slot_id", ""))
-            if slot is None:
-                continue
-            if str(getattr(actor, "operation_state", "") or "") == "pending_dispatch":
-                continue  # released at the dispatch barrier: still running, recorded when it settles
-            usage = dict(getattr(actor, "usage", {}) or {})
-            route_kind = str(getattr(getattr(slot, "route", None), "value", "") or "api_chat")
-            delegated_route = str(usage.get("delegated_route") or "")
-            session = route_kind == "agent_session" or bool(delegated_route)
-            effective: Dict[str, Any] = {
-                # For a session the harness resolves route/model on its side; for
-                # api_chat what was sent is what ran.
-                "route": (f"agent_session:{delegated_route}" if delegated_route
-                          else route_kind),
-                # APPLIED honesty: a session whose telemetry disclosed no resolved
-                # model shows ABSENCE — the requested model must never be dressed
-                # up as the applied one. An api row's sent model IS its applied one.
-                "model": (str(usage.get("resolved_model") or "") if session
-                          else str(getattr(slot, "model", "") or "")),
-                # No scalar "effort": keep host-send evidence and the engine's
-                # sourced report separate from the requested row below.
-                "verdict_method": str(usage.get("verdict_method") or ""),
-            }
-            if isinstance(usage.get("processing"), dict):
-                effective["processing"] = dict(usage["processing"])
-            if isinstance(usage.get("effort_resolution"), dict):
-                effective["effort_resolution"] = dict(usage["effort_resolution"])
-            # D29 applied account/access, verbatim from the engine receipt; absent
-            # keys mean the telemetry predates the receipt — shown as absence.
-            if usage.get("applied_profile"):
-                effective["profile_id"] = str(usage["applied_profile"])
-            if usage.get("applied_access"):
-                effective["access"] = str(usage["applied_access"])
-            row: Dict[str, Any] = {
-                "ts": utc_now_iso(),
-                "surface": str(surface or ""),
-                "requested": {
-                    "route_kind": route_kind,
-                    "model": str(getattr(slot, "model", "") or ""),
-                    # The ROW's effort. A caller-declared one-off (plan review's
-                    # reviewer_effort) is disclosed separately, never shown as the
-                    # row's saved configuration.
-                    "effort": "" if getattr(slot, "declared_effort", "") else str(getattr(slot, "effort", "") or ""),
-                    **({"declared_effort": str(slot.declared_effort)} if getattr(slot, "declared_effort", "") else {}),
-                    "session_target": str(getattr(slot, "session_target", "") or ""),
-                    "profile_id": str(getattr(slot, "session_profile", "") or ""),
-                    # Actor binding, when the row is a configured-subagent
-                    # reference ('' = direct row) — disclosure, never routing.
-                    "subagent_id": str(getattr(slot, "subagent_id", "") or ""),
-                    "processing_preference": str(getattr(slot, "processing_preference", "") or ""),
-                },
-                "effective": effective,
-                **({"effort": dict(usage["effort"])} if isinstance(usage.get("effort"), dict) else {}),
-                "capability_delta": usage.get("capability_delta") or [],
-                "status": str(getattr(actor, "status", "") or ""),
-                **({"review_record_id": str(record_id)} if record_id else {}),
-            }
-            # B1: typed failure facts, present only when the substrate carried them
-            # (a later health surface reads them; absence stays honest absence).
-            # ONE shared key list with the plan-row/wave projections (sources differ).
-            for key in TYPED_FAILURE_FACT_KEYS:
-                value = getattr(actor, key, None)
-                if value:
-                    row[key] = value
-            data[str(actor.slot_id)] = row
+        data.update(rows)
         if len(data) > _LAST_EXECUTION_CAP:
             ordered = sorted(data.items(), key=lambda kv: str(kv[1].get("ts") or ""))
             data = dict(ordered[-_LAST_EXECUTION_CAP:])
         path.parent.mkdir(parents=True, exist_ok=True)
         write_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=1))
+    return rows
 
 
-def bind_reviewer_slot_record_id(slot_ids: Any, record_id: str, *, since_ts: str = "") -> None:
-    """Name the review ledger record on the rows a settled wave just wrote (the gate
-    learns the id after its seats recorded themselves). Rows older than ``since_ts``
-    belong to an earlier wave and keep their own id; best-effort, atomic."""
+def bind_reviewer_slot_record_id(executions: Any, record_id: str) -> None:
+    """Name the review ledger record on the projection rows a settled wave itself wrote
+    (the gate learns the id after its seats recorded themselves). ``executions`` are
+    that wave's own rows (:func:`reviewer_slot_execution_rows`): a projection row is
+    bound only when its timestamp is the wave's — a later run of the same seat by
+    another surface keeps its own id. Best-effort, atomic."""
     from ouroboros.utils import write_text_atomic
 
     record_id = str(record_id or "")
-    if not record_id:
+    if not record_id or not isinstance(executions, dict):
         return
     path = _last_execution_path()
     with _LAST_EXECUTION_LOCK:
@@ -1294,9 +1313,10 @@ def bind_reviewer_slot_record_id(slot_ids: Any, record_id: str, *, since_ts: str
         if not isinstance(data, dict):
             return
         changed = False
-        for slot_id in slot_ids or []:
+        for slot_id, own in executions.items():
             row = data.get(str(slot_id))
-            if isinstance(row, dict) and (not since_ts or str(row.get("ts") or "") >= since_ts):
+            own_ts = str(own.get("ts") or "") if isinstance(own, dict) else ""
+            if isinstance(row, dict) and own_ts and str(row.get("ts") or "") == own_ts:
                 row["review_record_id"] = record_id
                 changed = True
         if changed:
@@ -1334,7 +1354,7 @@ __all__ = [
     "authored_reviewer_slots_state",
     "bind_reviewer_slot_record_id",
     "project_reviewer_slots_into_env",
-    "record_reviewer_slot_executions",
+    "record_reviewer_slot_executions", "reviewer_slot_execution_rows",
     "reviewer_slot_last_executions",
     "acceptance_delivery_disclosure",
     "reviewer_slot_save_check",

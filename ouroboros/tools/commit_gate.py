@@ -1304,15 +1304,13 @@ def _review_ledger_facts(ctx: ToolContext, commit_message: str, *, goal: str, sc
     forensic fields (no second reading of any reviewer output)."""
     from ouroboros.config import get_review_enforcement
     from ouroboros.review_records import ReviewRequest, resolve_review_wave
-    from ouroboros.reviewer_slot_config import reviewer_slot_last_executions
     from ouroboros.tools import git as git_mod
 
     task_id = str(getattr(ctx, "task_id", "") or "")
     enforcement = str(get_review_enforcement() or "")
-    try:
-        executions = reviewer_slot_last_executions()
-    except Exception:
-        executions = {}
+    # THIS wave's own execution rows (stashed by the substrate as it recorded them), never the
+    # shared last-execution projection another surface may have overwritten meanwhile.
+    executions = dict(getattr(ctx, "_last_review_slot_executions", {}) or {})
     try:
         mode = str(git_mod._current_runtime_mode() or "")
     except Exception:
@@ -1337,10 +1335,28 @@ def _review_ledger_facts(ctx: ToolContext, commit_message: str, *, goal: str, sc
         "degraded_reasons": list(getattr(ctx, "_review_degraded_reasons", []) or []),
         "critical_findings": list(combined_findings or getattr(ctx, "_last_review_critical_findings", []) or []),
         "advisory_findings": list(getattr(ctx, "_last_review_advisory_findings", []) or []),
-        "tests": ({"policy": "run", "result": "passed"} if tests_passed is True
-                  else {"policy": "NOT_RUN", "result": "unknown"}),
+        "tests": _review_tests_facts(ctx, tests_passed),
         "preflight": _review_preflight_facts(ctx, commit_message, advisory_paths),
     }
+
+
+def _review_tests_facts(ctx: ToolContext, tests_passed: Any) -> Dict[str, Any]:
+    """``passed`` only for THIS candidate: the runner's flag is process state that outlives
+    the checkout it tested, so it counts only when the process-held test proof still covers
+    the current tree/index/workload (``commit_admission.PreflightTestProof``); a skipped
+    or stale run is ``NOT_RUN`` with its reason, never a passed result borrowed from an
+    earlier candidate."""
+    if tests_passed is not True:
+        return {"policy": "NOT_RUN", "result": "unknown"}
+    try:
+        from ouroboros.commit_admission import preflight_test_proof_matches
+
+        bound = bool(preflight_test_proof_matches(ctx, ctx.repo_dir))
+    except Exception:
+        bound = False
+    if bound:
+        return {"policy": "run", "result": "passed", "proof": "candidate_bound"}
+    return {"policy": "NOT_RUN", "result": "unknown", "reason": "tests_proof_not_for_this_candidate"}
 
 
 def settle_commit_review_ledger(ctx: ToolContext, commit_message: str, *, goal: str = "", scope: str = "",
@@ -1396,9 +1412,7 @@ def settle_commit_review_ledger(ctx: ToolContext, commit_message: str, *, goal: 
             ctx._current_review_record_id = str(ledger.write_record(root, record)["record_id"])
         from ouroboros.reviewer_slot_config import bind_reviewer_slot_record_id
 
-        bind_reviewer_slot_record_id(
-            [row.get("slot_id") for row in [*structured.get("triad_rows", []), *structured.get("scope_rows", [])]],
-            ctx._current_review_record_id, since_ts=str(structured.get("started_ts") or ""))
+        bind_reviewer_slot_record_id(facts.get("slot_executions") or {}, ctx._current_review_record_id)
         _bind_attempt_record_id(ctx, ctx._current_review_record_id)
     except Exception:
         log.warning("review ledger record could not be written for this commit attempt", exc_info=True)

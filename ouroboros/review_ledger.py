@@ -541,7 +541,10 @@ def _apply_raw(seat: Dict[str, Any], raw: Dict[str, Any], part: str) -> None:
     answered = status in ANSWERED_STATUSES
     # A typed critical list (scope rows) outranks severity tags inside parsed items (triad rows).
     typed_critical = [i for i in (raw.get("critical_findings") or []) if isinstance(i, dict)]
+    # Only a FAILED critical item is a finding — the gate reads parsed items the same way
+    # (``tools/review.py``); a PASS row tagged critical is a clean answer to a critical item.
     tagged_critical = [i for i in (raw.get("parsed_items") or []) if isinstance(i, dict)
+                       and str(i.get("verdict") or "").upper() == "FAIL"
                        and str(i.get("severity") or "").lower() == "critical"]
     seat.update(status=status, parts_answered=[part] if answered else [],
                 usd=None if status == "pending" else raw.get("cost_usd"),  # an open seat has no cost yet

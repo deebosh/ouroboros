@@ -554,6 +554,7 @@ def _reset_commit_review_state(ctx):
     ctx._current_review_retry_key = ctx._current_review_record_id = ""
     ctx._review_reconcile_only = False
     ctx._review_frozen_rows = {}
+    ctx._last_review_slot_executions = {}
     ctx._review_custody_lost = False
     ctx._current_review_attempt_number = None
     ctx._author_commit_source = None
