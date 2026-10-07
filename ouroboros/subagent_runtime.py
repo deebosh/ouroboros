@@ -142,7 +142,8 @@ def current_model_visible_subagent_catalog() -> dict[str, Any]:
 _REVIEW_RULES = {
     "cyber_pro": "Cyber Pro: review informs judgment; no finding, failure or unavailable review prohibits action.",
     "blocking": "Blocking: critical findings, a failed quorum or a review infrastructure failure stop the commit.",
-    "advisory": "Advisory: what blocking would stop is recorded loudly instead, and the commit proceeds.",
+    "advisory": ("Advisory: material findings and review failures return to the author as the outcome before any Git "
+                 "effect; the author may continue explicitly on that outcome, and nothing is rewritten into PASS."),
 }
 
 

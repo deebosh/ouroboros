@@ -863,6 +863,22 @@ def hot_store_growth_notes(env: Any) -> list:
             f"(threshold {RETAINED_EXECUTION_DRIVES_WARN_COUNT}). Terminal-task retention "
             "or pruning is lagging; inspect lifecycle GC without recursively sizing drives."
         )
+    try:
+        ledger_size = sum(
+            path.stat().st_size for path in (drive_root / "state" / "review_ledger").glob("index*.jsonl")
+            if path.is_file()
+        )
+    except OSError:
+        ledger_size = 0
+    from ouroboros.context_budget import REVIEW_LEDGER_INDEX_WARN_BYTES
+    if ledger_size > REVIEW_LEDGER_INDEX_WARN_BYTES:
+        notes.append(
+            "WARNING: HOT STORE GROWTH — state/review_ledger/index*.jsonl totals "
+            f"{ledger_size / 1_000_000:.1f} MB (threshold "
+            f"{REVIEW_LEDGER_INDEX_WARN_BYTES // 1_000_000} MB). Task context reads only the "
+            "rotating hot index; readers that walk the rotated segments replay this chain — move old "
+            "segments and the records they name to cold storage, never delete the newest."
+        )
     return notes
 
 
