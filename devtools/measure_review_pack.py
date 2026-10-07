@@ -203,7 +203,10 @@ def _governance_prefix(
     carries: tier 1 rides the cache-marked stable prefix, the change-class
     selection and the navigation maps open the dynamic tail. A panel with no api
     row assembles no packet, so it asks for no governance — the same branch the
-    runtime takes. Everything is read from ``repo``, never from this checkout."""
+    runtime takes. The principal checklist and repository documents are read
+    from ``repo``; the shared ownership section follows the runtime loader and
+    comes from the executing checkout. Cross-checkout measurements therefore
+    retain that disclosed mixed-source boundary."""
     from ouroboros.tools import review
     from ouroboros.tools.governance_context import GovernanceContext, governance_context
 
