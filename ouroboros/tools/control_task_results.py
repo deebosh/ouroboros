@@ -186,6 +186,30 @@ def _unchanged_result_reference(task_id: str, current_hash: str, known_hash: Any
     }
 
 
+def get_task_result_entry() -> ToolEntry:
+    """The result/source reader schema lives beside its scoped handler."""
+    return ToolEntry("get_task_result", {
+        "name": "get_task_result",
+        "description": "Read the effective result or exact authority of a task, including one bounded canonical work-order source range when requested.",
+        "parameters": {"type": "object", "required": ["task_id"], "properties": {
+            "task_id": {"type": "string", "description": "Task ID returned by scheduling or exposed by the host routing manifest."},
+            "known_result_sha256": {"type": "string", "description": "Optional child_result_sha256 from a previous read. An exact match omits only unchanged result/trace text, retaining current facts and a full-read reference. Omit for full text; explicit authority/source requests always return their requested view."},
+            "include_authority": {"type": "boolean", "default": False, "description": "Return the exact selected result, task contract, origin, artifact references, and current plan-review authority."},
+            "include_work_order_source": {"type": "boolean", "default": False, "description": "Return the canonical work-order source projection; provide both source_start_char and source_end_char for the exact bounded range."},
+            "include_completion_source": {"type": "boolean", "default": False,
+                                          "description": "Read the full stored completion observations for this task, including returns omitted from the summary. Omit bounds for source length/hash, then request explicit character ranges."},
+            "include_focus_source": {"type": "boolean", "default": False, "description": "Read the exact bytes this task's focus source_ref answered when the focus was authored (the retained_source of an [INDEPENDENT_ROOTS] row); same bounds contract as include_completion_source."},
+            "focus_source_sha256": {"type": "string", "default": "", "description": "With include_focus_source: select the retained source by the sha256 the roster row quoted, so a later focus of the same author cannot substitute its evidence."},
+            "review_source_sha256": {"type": "string", "default": "", "description": "Root turns: read only the exact acceptance-review source named by a late-evidence digest, pinned to the physical task_id even after a retry. Works across forked/empty drives. Without a range returns complete_chars/hash; then use source_start_char/source_end_char to read exact text. Does not include authority."},
+            "presence_reentry_sha256": {"type": "string", "default": "", "description": "Read the exact Presence reentry observation checkpoint named in a resumed-conversation note. Includes full observed messages and transport facts plus coverage gaps. Uses the existing task scope; omit ranges for complete_chars/hash, then page with source_start_char/source_end_char."},
+            "presence_reentry_offset": {"type": "integer", "description": "With presence_reentry_sha256: scan the frozen canonical interval of that checkpoint's own conversation, including rows beyond its initial scan budget. Start at history_start and follow next_offset until interval_exhausted. Small pages return complete rows and explicit gaps. Oversized pages return complete_chars/hash; use source_start_char/source_end_char with the same offset to reconstruct that page's exact JSON before advancing."},
+            "source_start_char": {"type": "integer", "description": "Inclusive character offset for the requested canonical source range."},
+            "source_end_char": {"type": "integer", "description": "Exclusive character offset for the requested canonical source range. A range outside the source returns no text: the answer names complete_chars and the range received, and is an argument error."},
+            "presence_scope": {"type": "string", "enum": ["own_binding"], "description": "Presence tasks only: read just independent work started from this Presence binding (any of its conversations) or this task's own tree."},
+        }},
+    }, _get_task_result)
+
+
 @completed_local_read
 def _get_task_result(
     ctx: ToolContext, task_id: str, include_authority: bool = False,
@@ -193,6 +217,7 @@ def _get_task_result(
     source_end_char: Any = None, include_completion_source: bool = False,
     known_result_sha256: str = "", include_focus_source: bool = False, focus_source_sha256: str = "",
     presence_scope: str = "", review_source_sha256: str = "",
+    presence_reentry_sha256: str = "", presence_reentry_offset: Any = None,
 ) -> str:
     """Read a task result, or a bounded canonical work-order/completion source range."""
     metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
@@ -260,6 +285,15 @@ def _get_task_result(
                 "this one is lost is yours to judge from the two times above."
             ),
         ))
+    if presence_reentry_sha256:
+        from ouroboros.presence_continuation import reentry_source_projection
+
+        source = reentry_source_projection(status_drive_root, str(task_id), presence_reentry_sha256,
+                                            source_start_char, source_end_char, presence_reentry_offset)
+        text = json.dumps({"presence_reentry_source": source}, ensure_ascii=False, sort_keys=True)
+        if source.get("reason") == "source_range_invalid":
+            return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=text))
+        return text
     if review_source_sha256:
         from ouroboros.task_finalization import review_source_projection
 

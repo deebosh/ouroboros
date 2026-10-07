@@ -28,7 +28,6 @@ from scripts.run_external_review import (
     _openrouter_key_health,
     _openrouter_pool,
     _remove_isolated_checkout,
-    _require_contributor_budget,
     _prepare_review_configuration,
     _resolved_review_config,
     _review_evidence_and_cost,
@@ -113,6 +112,13 @@ def test_contributor_trust_boundary_covers_functional_review_dependencies():
         "ouroboros/review_verdict_extraction.py",
         "ouroboros/review_execution_projection.py",
         "scripts/contributor_review_evidence.py",
+        # The contributor lane's isolation leaf and the runtime leaves its pin,
+        # default panel and run cap are read through.
+        "ouroboros/review_model_routes.py",
+        "ouroboros/review_run_isolation.py",
+        "ouroboros/settings_integrity.py",
+        "ouroboros/settings_setup_contract.py",
+        "ouroboros/usage_admission.py",
     }.issubset(_REVIEW_SUBSTRATE_PATHS)
 
 
@@ -391,6 +397,7 @@ def test_contributor_review_always_runs_on_the_trusted_base(
     exit_code = _run_on_trusted_base(SimpleNamespace(
         base_ref="base", head_ref="HEAD", commit_message="PR title",
         goal="goal", scope="scope", output="", drive_root="",
+        run_cap_usd="7.5", attach_host_engine=False,
     ))
 
     assert exit_code == 1  # the base-side verdict is this review's verdict
@@ -427,7 +434,7 @@ def test_the_handoff_forwards_artifact_paths_the_child_can_still_reach(
     _run_on_trusted_base(SimpleNamespace(
         base_ref="base", head_ref="HEAD", commit_message="-title-like-a-flag",
         goal="--goal-like-a-flag", scope="-s", output="artifacts/run",
-        drive_root="~/drive",
+        drive_root="~/drive", run_cap_usd="7.5", attach_host_engine=True,
     ))
 
     ran = json.loads(probe.read_text(encoding="utf-8"))
@@ -438,6 +445,10 @@ def test_the_handoff_forwards_artifact_paths_the_child_can_still_reach(
     assert options["drive-root"] == os.path.abspath(os.path.expanduser("~/drive"))
     for key in ("output", "drive-root"):
         assert not Path(options[key]).is_relative_to(Path(ran["machinery_root"]))
+    # The run cap and the attach selection reach the base side, which owns
+    # isolation; a base that predates them refuses them in argparse.
+    assert options["run-cap-usd"] == "7.5"
+    assert "--attach-host-engine" in ran["argv"]
     # Values that look like flags survive as values.
     assert options["goal"] == "--goal-like-a-flag"
     assert options["scope"] == "-s"
@@ -456,6 +467,7 @@ def test_contributor_review_invoked_from_the_target_base_runs_in_place(
     assert _run_on_trusted_base(SimpleNamespace(
         base_ref="base", head_ref=head_sha, commit_message="",
         goal="", scope="", output="", drive_root="",
+        run_cap_usd="7.5", attach_host_engine=False,
     )) is None
     assert not probe.exists()
 
@@ -471,10 +483,13 @@ def test_the_real_wrapper_hands_off_before_it_reviews_anything(tmp_path, monkeyp
     repo = _init_contributor_repo(tmp_path, monkeypatch)
     probe = _probe_path(monkeypatch, tmp_path)
     wrapper = Path(__file__).resolve().parent.parent / "scripts" / "run_external_review.py"
-    # The base commit keeps the probe; the proposal carries the real wrapper.
+    # The base commit keeps the probe; the proposal carries the real wrapper
+    # and the stdlib-only leaves it imports before any handoff.
     (repo / "scripts" / "run_external_review.py").write_text(
         wrapper.read_text(encoding="utf-8"), encoding="utf-8"
     )
+    for leaf in ("review_run_isolation.py", "settings_integrity.py"):
+        (repo / "ouroboros" / leaf).write_bytes((wrapper.parents[1] / "ouroboros" / leaf).read_bytes())
     _git(repo, "add", "-A")
     _git(repo, "commit", "-m", "proposal adopts the real wrapper")
     base_sha = _git(repo, "rev-parse", "base").strip()
@@ -482,7 +497,8 @@ def test_the_real_wrapper_hands_off_before_it_reviews_anything(tmp_path, monkeyp
     proc = subprocess.run(
         [
             sys.executable, str(repo / "scripts" / "run_external_review.py"),
-            "--contributor", "--base-ref=base", "--head-ref=HEAD", "--", "PR title",
+            "--contributor", "--base-ref=base", "--head-ref=HEAD", "--run-cap-usd=5",
+            "--", "PR title",
         ],
         cwd=str(repo), capture_output=True, text=True, timeout=300,
         env={**os.environ, "REVIEW_PROBE_OUT": str(probe)},
@@ -508,6 +524,7 @@ def test_contributor_review_refuses_a_dirty_authoring_worktree(tmp_path, monkeyp
         _run_on_trusted_base(SimpleNamespace(
             base_ref="base", head_ref="HEAD", commit_message="",
             goal="", scope="", output="", drive_root="",
+            run_cap_usd="7.5", attach_host_engine=False,
         ))
     assert not probe.exists()
 
@@ -535,6 +552,7 @@ def test_a_base_without_the_wrapper_fails_closed_not_in_place(tmp_path, monkeypa
         exit_code = _run_on_trusted_base(SimpleNamespace(
             base_ref="base", head_ref="HEAD", commit_message="",
             goal="", scope="", output="", drive_root="",
+            run_cap_usd="7.5", attach_host_engine=False,
         ))
 
     assert exit_code == 3
@@ -616,6 +634,8 @@ def test_agent_session_only_preflight_needs_no_api_budget_or_key(monkeypatch):
         "review_enforcement": "blocking", "context_mode": "max",
     }
     monkeypatch.delenv("TOTAL_BUDGET", raising=False)
+    isolation = {"run_cap_usd": 3.0, "review_data_root": "/isolated/drive"}
+    monkeypatch.setattr(module, "isolate_review_data", lambda **_kwargs: isolation)
     monkeypatch.setattr(module, "_load_settings_into_env", lambda: None)
     monkeypatch.setattr(module, "_contributor_snapshot", lambda *_args: {"base_sha": "a" * 40})
     monkeypatch.setattr(module, "_apply_contributor_review_env", lambda: None)
@@ -625,25 +645,42 @@ def test_agent_session_only_preflight_needs_no_api_budget_or_key(monkeypatch):
         module, "_select_healthy_openrouter_key",
         lambda **_kwargs: pytest.fail("agent-only review must not probe OpenRouter"),
     )
+    args = SimpleNamespace(contributor=True, base_ref="", head_ref="HEAD",
+                           drive_root="", run_cap_usd="3", attach_host_engine=False)
 
-    snapshot, base, resolved = _prepare_review_configuration(SimpleNamespace(
-        contributor=True, base_ref="", head_ref="HEAD",
-    ))
+    # An isolated review never starts its own engine: session rows need the
+    # explicit attach to the host's running one.
+    with pytest.raises(RuntimeError, match="--attach-host-engine"):
+        _prepare_review_configuration(args)
+    args.attach_host_engine = True
+    snapshot, base, resolved = _prepare_review_configuration(args)
 
     assert snapshot and base == "a" * 40
-    assert resolved == config
+    assert resolved == config and resolved["data_isolation"] is isolation
+    assert args.drive_root == "/isolated/drive"  # the review drive IS the isolated data root
 
 
-def test_contributor_budget_must_be_explicit_positive_and_finite(monkeypatch):
-    monkeypatch.delenv("TOTAL_BUDGET", raising=False)
-    with pytest.raises(RuntimeError, match="TOTAL_BUDGET is required"):
-        _require_contributor_budget()
-    for invalid in ("0", "-1", "inf", "not-a-number"):
-        monkeypatch.setenv("TOTAL_BUDGET", invalid)
-        with pytest.raises(RuntimeError, match="positive finite"):
-            _require_contributor_budget()
-    monkeypatch.setenv("TOTAL_BUDGET", "125.50")
-    assert _require_contributor_budget() == 125.5
+def test_contributor_run_cap_must_be_explicit_positive_and_finite(monkeypatch):
+    """The cap is a CLI fact decided before settings load; no saved budget stands in."""
+    import scripts.run_external_review as module
+    from ouroboros.review_run_isolation import parse_run_cap
+
+    for invalid in ("", "0", "-1", "inf", "nan", "not-a-number"):
+        with pytest.raises(ValueError, match="positive finite"):
+            parse_run_cap(invalid)
+    assert parse_run_cap("125.50") == 125.5
+    monkeypatch.setenv("TOTAL_BUDGET", "500")  # an inherited budget is not a run cap
+    monkeypatch.setattr(module.sys, "argv", ["run_external_review.py", "--contributor"])
+    with pytest.raises(SystemExit) as refused:
+        module._parse_args()
+    assert refused.value.code == 2
+    monkeypatch.setattr(module.sys, "argv", ["run_external_review.py", "--run-cap-usd", "5"])
+    with pytest.raises(SystemExit):
+        module._parse_args()  # the cap and the attach selection belong to --contributor
+    monkeypatch.setattr(module.sys, "argv", [
+        "run_external_review.py", "--contributor", "--run-cap-usd", "5", "--attach-host-engine"])
+    args = module._parse_args()
+    assert (args.run_cap_usd, args.attach_host_engine) == ("5", True)
 
 
 def test_contributor_snapshot_binds_clean_base_head_and_tree(tmp_path, monkeypatch):

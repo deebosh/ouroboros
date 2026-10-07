@@ -598,9 +598,8 @@ class OuroborosAgent:
             if _inherited_deadline:
                 task_metadata["deadline_at"] = _inherited_deadline
         _tc_meta = task.get("task_constraint")
-        _surface_meta = str((_tc_meta.get("surface") if isinstance(_tc_meta, dict) else "") or "")
-        if _surface_meta:
-            task_metadata["write_surface"] = _surface_meta
+        if isinstance(_tc_meta, dict) and _tc_meta.get("surface"):
+            task_metadata["write_surface"] = str(_tc_meta["surface"])
         with self._owner_message_admission_lock:
             self._current_task_metadata = dict(task_metadata)
 
@@ -669,6 +668,7 @@ class OuroborosAgent:
             ctx.model_wait_context.tool_context = ctx
         ctx.task_started_at = self._task_started_ts
         ctx.owner_wait_callback = getattr(self, "owner_wait_callback", None)
+        ctx.review_wait_callback = getattr(self, "review_wait_callback", None)  # Presence review park (#1536)
         ctx.owner_wait_resume = task.get("_owner_wait_resume")
         ctx.budget_pause_resume = task.get("_budget_pause_resume")
         from ouroboros.owner_wait import load_owner_wait

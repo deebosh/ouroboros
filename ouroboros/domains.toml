@@ -78,6 +78,7 @@ D20 = "Presence"
 "ouroboros/launcher_tray.py" = "D18"
 "ouroboros/launcher_tray_macos.py" = "D18"
 "ouroboros/launcher_background.py" = "D18"
+"ouroboros/desktop_notifications.py" = "D18"
 "ouroboros/desktop_autostart.py" = "D18"
 "ouroboros/windows_autostart.py" = "D18"
 "ouroboros/__init__.py" = "D18"
@@ -111,8 +112,11 @@ D20 = "Presence"
 "ouroboros/claudexor_startup_failure.py" = "D07"
 "ouroboros/cli.py" = "D18"
 "ouroboros/client_surface.py" = "D11"
+"ouroboros/code_import_candidates.py" = "D05"
 "ouroboros/code_intelligence.py" = "D05"
 "ouroboros/code_intelligence_architecture.py" = "D05"
+"ouroboros/code_navigation.py" = "D05"
+"ouroboros/code_occurrences.py" = "D05"
 "ouroboros/code_search_rg.py" = "D05"
 "ouroboros/colab_bootstrap.py" = "D12"
 "ouroboros/commit_admission.py" = "D06"
@@ -354,6 +358,8 @@ D20 = "Presence"
 "ouroboros/presence_bindings.py" = "D20"
 "ouroboros/presence_capabilities.py" = "D20"
 "ouroboros/presence_context.py" = "D20"
+"ouroboros/presence_continuation.py" = "D20"
+"ouroboros/presence_observations.py" = "D20"
 "ouroboros/presence_delivery.py" = "D20"
 "ouroboros/presence_profile.py" = "D20"
 "ouroboros/presence_runner.py" = "D20"
@@ -428,6 +434,7 @@ D20 = "Presence"
 "ouroboros/server_runtime.py" = "D11"
 "ouroboros/server_web.py" = "D11"
 "ouroboros/settings_integrity.py" = "D12"
+"ouroboros/review_run_isolation.py" = "D12"
 "ouroboros/settings_setup_contract.py" = "D12"
 "ouroboros/shell_parse.py" = "D13"
 "ouroboros/size_ratchet_manifest.py" = "D10"
@@ -1028,8 +1035,10 @@ lazy_only = [
   "D19->D08",
   "D19->D20",
   "D20->D01",
+  "D20->D06",
   "D20->D07",
   "D20->D08",
+  "D20->D09",
   "D20->D11",
   "D20->D12",
 ]
