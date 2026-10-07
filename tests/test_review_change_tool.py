@@ -168,20 +168,26 @@ class Harness:
 
 
 def _install_seams(monkeypatch: pytest.MonkeyPatch, h: Harness) -> None:
+    def frozen_of(spec: ReviewSubjectSpec, checkout: str = "") -> Frozen:
+        root, base = pathlib.Path(spec.root), spec.base or "HEAD"
+        if spec.kind == "base..head":
+            diff = _git(root, "diff", "--binary", spec.base, spec.head)
+            tree = _git(root, "rev-parse", f"{spec.head}^{{tree}}")
+        else:
+            diff = _git(root, "diff", "--binary", *(["--cached"] if spec.kind == "index" else []), base)
+            tree = _git(root, "write-tree") if spec.kind == "index" else _sha(diff)
+        return Frozen(spec, diff, _sha(diff), tree, _git(root, "rev-parse", base), checkout=checkout)
+
     def freeze(ctx: Any, spec: ReviewSubjectSpec) -> Frozen:
         h.calls.append(("freeze", spec))
-        root, base = pathlib.Path(spec.root), spec.base or "HEAD"
-        diff = _git(root, "diff", "--binary", *(["--cached"] if spec.kind == "index" else []), base)
-        tree = _git(root, "write-tree") if spec.kind == "index" else _sha(diff)
-        return Frozen(spec, diff, _sha(diff), tree, _git(root, "rev-parse", base))
+        return frozen_of(spec)
 
     @contextlib.contextmanager
     def checkout(ctx: Any, spec: ReviewSubjectSpec, *, retain=None):
+        """``review_subject.isolated_checkout``'s contract for every subject kind: the
+        frozen subject reads in a checkout under the data root."""
         h.calls.append(("checkout", spec))
-        root = pathlib.Path(spec.root)
-        diff = _git(root, "diff", "--binary", spec.base, spec.head)
-        yield Frozen(spec, diff, _sha(diff), _git(root, "rev-parse", f"{spec.head}^{{tree}}"),
-                     _git(root, "rev-parse", spec.base), checkout=str(h.drive / "checkouts" / "head"))
+        yield frozen_of(spec, checkout=str(h.drive / "checkouts" / spec.kind.replace("..", "-")))
         # The runtime's exit question (review_subject.checkout_retention): kept or removed.
         from ouroboros.tools.review_subject import checkout_retention
 

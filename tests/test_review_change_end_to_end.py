@@ -24,6 +24,7 @@ from ouroboros.tools import review_change
 from ouroboros.tools.git_review_cycle import _run_non_committing_review_cycle
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.review_change import run_review_change
+from ouroboros.tools.review_subject import CHECKOUT_SUBDIR
 from scripts import run_external_review as runner
 from tests import _contributor_packet_shared as shared
 
@@ -126,6 +127,118 @@ def test_review_change_on_the_system_index_is_the_commit_gates_brief(staged_body
         aligned = operation_text.replace(label, COMMIT_MESSAGE)
         assert hashlib.sha256(aligned.encode()).hexdigest() == hashlib.sha256(gate_text.encode()).hexdigest(), slot_id
         assert "## Informational context — commit message" in gate_text, slot_id
+
+
+def _foreign_project(tmp_path, monkeypatch) -> tuple:
+    """The production geometry of a project review: the body and its data under one
+    Ouroboros home, the reviewed project elsewhere under the user's files; the project
+    has a remote, so its body fact is a recognized foreign root (the core layer)."""
+    monkeypatch.setenv("OUROBOROS_USER_FILES_ROOT", str(tmp_path))
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps(runner._slot_plan_payload(shared.GOLDEN_CONFIG)))
+    system = Path(shared.init_installed_body(tmp_path / "ouroboros")["repo"])
+    project = (tmp_path / "work" / "project").resolve()
+    project.mkdir(parents=True)
+    shared.git(project, "init", "-q")
+    (project / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (project / "lib.py").write_text("LIB = 'base'\n", encoding="utf-8")
+    shared.git(project, "add", "-A")
+    shared.git(project, "commit", "-q", "-m", "base")
+    shared.git(project, "remote", "add", "origin", "https://example.com/third-party/project.git")
+    drive = tmp_path / "ouroboros" / "data"
+    for sub in ("logs", "locks", "state"):
+        (drive / sub).mkdir(parents=True)
+    ctx = ToolContext(repo_dir=system, system_repo_dir=system, drive_root=drive, workspace_root=project,
+                      workspace_mode="external", task_id="task-project")
+    return ctx, project
+
+
+def _probing_substrate(briefs: list[dict]):
+    """The golden paid seam, plus what a retrieving seat would find at call time: the
+    staged index of the root it is pointed at (``git diff --cached``) and whether that
+    root still exists — the checkout is removed when the wave settles."""
+    inner = shared.golden_substrate(briefs)
+
+    def run_review_request(request, **kwargs):
+        seen = len(briefs)
+        answer = inner(request, **kwargs)
+        for brief in briefs[seen:]:
+            root = Path(brief["session_root"] or "")
+            brief["root_existed"] = bool(brief["session_root"]) and root.is_dir()
+            brief["index_at_call"] = shared.git(root, "diff", "--cached") if brief["root_existed"] else ""
+        return answer
+
+    return run_review_request
+
+
+def _frozen_delta(project: Path, parent: str, tree: str) -> str:
+    return shared.git(project, "diff", "--no-ext-diff", "--no-textconv", "--no-color", parent, tree)
+
+
+def test_an_unstaged_worktree_change_is_read_in_its_isolated_checkout_by_every_delivery(tmp_path, monkeypatch):
+    """A ``worktree`` subject's change is NOT in any index. Every delivery reads the
+    frozen subject: the packet and the scope brief carry the frozen diff, the
+    retrieving seats are pointed at an isolated checkout whose index IS the frozen
+    patch (the live root's index is empty), and the checkout is gone when the wave
+    settles with no custody open."""
+    ctx, project = _foreign_project(tmp_path, monkeypatch)
+    (project / "app.py").write_text("VALUE = 2  # live edit, never staged\n", encoding="utf-8")
+    assert shared.git(project, "diff", "--cached") == ""
+    briefs: list[dict] = []
+    monkeypatch.setattr(substrate, "run_review_request", _probing_substrate(briefs))
+
+    result = run_review_change(ctx, subject="worktree", goal="Bump the value", scope="app.py only")
+
+    assert result["state"] == "settled" and result["aggregate"] == "PASS", result
+    subject = result["subject"]
+    checkout = subject["checkout"]
+    assert subject["kind"] == "worktree" and subject["root"] == str(project) and checkout
+    assert Path(checkout).is_relative_to(ctx.drive_root / "state" / CHECKOUT_SUBDIR)
+    frozen_diff = _frozen_delta(project, subject["base"], subject["tree_sha"])
+    assert "+VALUE = 2  # live edit, never staged" in frozen_diff
+    assert sorted(brief["slot_id"] for brief in briefs) == ["s1", "t1", "t2"]
+    for brief in briefs:
+        text = _brief_text(brief)
+        if brief["slot_id"] == "t2":  # the retrieving triad seat reads the checkout's index
+            assert brief["session_root"] == checkout and brief["root_existed"], brief["slot_id"]
+            assert brief["index_at_call"].strip() == frozen_diff.strip()
+        else:
+            assert "+VALUE = 2  # live edit, never staged" in text, brief["slot_id"]
+        if brief["slot_id"] == "s1":  # the scope seat retrieves in the checkout too
+            assert brief["session_root"] == checkout and brief["index_at_call"].strip() == frozen_diff.strip()
+    assert not Path(checkout).exists() and not result["subject"].get("retained_checkout")
+    assert shared.git(project, "diff", "--cached") == "" and shared.git(project, "worktree", "list").count("\n") == 0
+
+
+def test_an_index_against_another_base_delivers_the_frozen_delta_not_the_live_index(tmp_path, monkeypatch):
+    """``index`` with ``base`` ≠ HEAD: the subject is parent→index-tree, which also
+    carries the commits between the base and HEAD. A recapture of the live index
+    (HEAD→index) would lose them; every delivery reads the frozen delta instead."""
+    ctx, project = _foreign_project(tmp_path, monkeypatch)
+    base = shared.git(project, "rev-parse", "HEAD")
+    (project / "lib.py").write_text("LIB = 'committed after the base'\n", encoding="utf-8")
+    shared.git(project, "add", "lib.py")
+    shared.git(project, "commit", "-q", "-m", "lib")
+    (project / "app.py").write_text("VALUE = 3  # staged\n", encoding="utf-8")
+    shared.git(project, "add", "app.py")
+    live_index = shared.git(project, "diff", "--cached")
+    assert "committed after the base" not in live_index
+    briefs: list[dict] = []
+    monkeypatch.setattr(substrate, "run_review_request", _probing_substrate(briefs))
+
+    result = run_review_change(ctx, subject="index", base=base, goal="Both changes", scope="app.py and lib.py")
+
+    assert result["state"] == "settled" and result["aggregate"] == "PASS", result
+    subject = result["subject"]
+    assert (subject["kind"], subject["base"], subject["tree_sha"]) == ("index", base, shared.git(project, "write-tree"))
+    frozen_diff = _frozen_delta(project, base, subject["tree_sha"])
+    assert "+LIB = 'committed after the base'" in frozen_diff and "+VALUE = 3  # staged" in frozen_diff
+    for brief in briefs:
+        text = _brief_text(brief)
+        if brief["slot_id"] != "t2":
+            assert "+LIB = 'committed after the base'" in text and "+VALUE = 3  # staged" in text, brief["slot_id"]
+        if brief["slot_id"] in ("t2", "s1"):
+            assert brief["session_root"] == subject["checkout"] and brief["index_at_call"].strip() == frozen_diff.strip()
+    assert shared.git(project, "diff", "--cached") == live_index  # the live root is untouched
 
 
 SERVING_RULE = "SERVING-CONSTITUTION-MARKER: the rule that is running."

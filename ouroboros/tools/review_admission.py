@@ -474,10 +474,10 @@ def prepare_scope_review(
             block_message=f"⚠️ SCOPE_REVIEW_BLOCKED: review subject could not be established: {exc}",
         )
     # The path/tree source of the manifest: the managed artifact when the subject
-    # is one; the frozen trees of a worktree/base..head subject; the live staged
-    # index for a plain index subject (the gate's path, byte-identical).
-    path_subject = subject if subject is not None else (
-        frozen if frozen is not None and frozen.spec.kind != "index" else None)
+    # is one; the frozen trees and diff of every other frozen subject; the live
+    # staged index only for the gate's own subject (the gate's path, byte-identical).
+    frozen_read = frozen is not None and not frozen.is_system_index
+    path_subject = subject if subject is not None else (frozen if frozen_read else None)
     required_sources: list = []
     required_ref: dict = {}
     try:
@@ -510,6 +510,7 @@ def prepare_scope_review(
             drive_root=pathlib.Path(ctx.drive_root) if getattr(ctx, "drive_root", None) else None,
             governance_repo_dir=governance_repo,
             managed_subject=subject,
+            subject_diff=str(frozen.diff_text) if frozen_read else "",
             task_evidence_section=task_evidence_section,
             required_sources=manifest_rows,
             required_sources_ref=required_ref,

@@ -44,7 +44,8 @@ from ouroboros.tools.parallel_review import run_parallel_review
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.review_helpers import checklist_fingerprint
 from ouroboros.tools.review_subject import (
-    ReviewSubjectSpec, freeze_subject, isolated_checkout, reuse_or_none, review_retry_key, review_reuse_key,
+    ReviewSubjectSpec, freeze_subject, is_gate_subject, isolated_checkout, reuse_or_none, review_retry_key,
+    review_reuse_key,
 )
 from ouroboros.utils import run_cmd, utc_now_iso
 
@@ -773,10 +774,13 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
     spec = ReviewSubjectSpec(root_kind=root_kind, root=str(root), kind=request.subject, base=request.base,
                              head=request.head, governance_root=str(governance), surface=SURFACE,
                              body_fact=str(fact.body), body_how=str(fact.how), layer=layer)
-    # Open custody after the wave keeps the isolated checkout (review_subject.isolated_checkout).
+    # The gate's own subject (the body's staged index against HEAD) is read on its live
+    # root exactly as the gate reads it; every other subject is materialized in an
+    # isolated checkout, where every delivery reads the frozen tree. Open custody
+    # after the wave keeps that checkout (review_subject.isolated_checkout).
     retention: Dict[str, Any] = {}
-    frozen_subject = (isolated_checkout(ctx, spec, retain=lambda: retention) if request.subject == "base..head"
-                      else contextlib.nullcontext(freeze_subject(ctx, spec)))
+    frozen_subject = (contextlib.nullcontext(freeze_subject(ctx, spec)) if is_gate_subject(spec)
+                      else isolated_checkout(ctx, spec, retain=lambda: retention))
     with frozen_subject as frozen, _panel_in_force(panel):
         if not str(getattr(frozen, "diff_text", "") or "").strip():
             raise ReviewChangeArgumentError(f"subject={request.subject} of {root} has no change to review")
@@ -825,8 +829,9 @@ _DESCRIPTION = (
     "Review a change WITHOUT committing it: one paid reviewer wave over a subject in any registered repository, "
     "written to the review ledger. commit_reviewed stays the only landing in the system repository; use "
     "review_change by judgment for any other root (it never starts on its own and never runs tests: "
-    "tests.policy=NOT_RUN). Subjects: base..head (commits, read in an isolated checkout of head), index (staged) "
-    "or worktree (live) against base (default HEAD). Rules follow the subject: the body is read against the body "
+    "tests.policy=NOT_RUN). Subjects: base..head (commits), index (staged) or worktree (live) against base "
+    "(default HEAD); every subject but the body's own staged index is frozen and read in an isolated checkout of "
+    "its tree. Rules follow the subject: the body is read against the body "
     "layer, anything else against the universal core checklist. Panel: for a body subject outside Cyber Pro the "
     "configured panel stands and reviewers only add seats; otherwise reviewers IS the panel (omitted = every "
     "configured seat) and reason records why. The same subject, rules and panel return the settled record free "

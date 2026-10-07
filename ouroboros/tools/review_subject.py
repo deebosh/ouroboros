@@ -40,8 +40,9 @@ The second half of the module is the review subject AS AN OBJECT
 (ARCHITECTURE §6 "Subject operation"): ``ReviewSubjectSpec`` states WHAT is
 reviewed (root, kind ``index`` | ``worktree`` | ``base..head``, the governance
 root that is ALWAYS the installed body), ``freeze_subject`` pins its bytes and
-trees once, ``isolated_checkout`` gives the retrieving deliveries a frozen tree
-under the install's data root, and the three review identities
+trees once, ``isolated_checkout`` materializes every subject but the gate's own
+(``is_gate_subject``) as a frozen tree under the install's data root where all
+deliveries read it, and the three review identities
 (``review_reuse_key``, the rebuttal round, ``review_retry_key``) are derived
 from the frozen subject — never from the live index of whatever repository the
 process happens to run in.
@@ -700,8 +701,8 @@ class FrozenSubject:
     name_status: Tuple[Tuple[str, str], ...] = ()
     patch: bytes = dataclasses.field(default=b"", repr=False, compare=False)
     managed: Optional[ManagedReviewSubject] = dataclasses.field(default=None, repr=False, compare=False)
-    # An index/worktree read against a commit other than HEAD is an ordinary
-    # tree delta, never the gate's subject.
+    # An index/worktree read against an EXPLICIT base is an ordinary tree delta,
+    # never the gate's subject (``is_gate_subject``).
     at_head: bool = True
 
     @property
@@ -730,10 +731,11 @@ class FrozenSubject:
 
     def render_prompt_diff(self, unified: int = 3) -> str:
         """Re-render THIS subject's pinned trees at another context width (the
-        -U0 fit rung), never a fresh capture of whatever the root holds now."""
+        -U0 fit rung), never a fresh capture of whatever the root holds now. Only
+        the gate's own subject keeps the gate's live capture of its reading root."""
         if self.managed is not None:
             return self.managed.render_prompt_diff(unified=unified)
-        if self.spec.kind == SUBJECT_KIND_INDEX:
+        if self.is_system_index:
             return _rbc.capture_staged_diff(pathlib.Path(self.review_root), unified=unified)
         return _tree_delta_diff(self.spec.root, self.parent_sha, self.tree_sha, unified)
 
@@ -765,11 +767,19 @@ def _patch(root, *refs: str) -> Tuple[bytes, str]:
 def _tree_parent(root, spec: ReviewSubjectSpec) -> Tuple[str, bool]:
     """``(parent_sha, at_head)`` of an ``index``/``worktree`` subject: the tree is
     read against ``spec.base`` when given (any commit), else against HEAD. Only a
-    HEAD-relative system index is the gate's own subject (``at_head``)."""
+    system index WITHOUT an explicit base is the gate's own subject (``at_head``):
+    an explicit base, even one that resolves to HEAD, names an ordinary tree delta."""
     head_sha = _rev_parse(root, "HEAD^{commit}")
     base = str(spec.base or "").strip()
-    parent_sha = _rev_parse(root, f"{base}^{{commit}}") if base else head_sha
-    return parent_sha, parent_sha == head_sha
+    return (_rev_parse(root, f"{base}^{{commit}}"), False) if base else (head_sha, True)
+
+
+def is_gate_subject(spec: ReviewSubjectSpec) -> bool:
+    """The ONE subject read on its live root through the gate's own capture: the
+    system repository's staged index against HEAD, with no explicit base. Every
+    other subject is materialized in ``isolated_checkout`` and read there."""
+    return (spec.kind == SUBJECT_KIND_INDEX and spec.root_kind == ROOT_KIND_SYSTEM
+            and not str(spec.base or "").strip())
 
 
 def _resolve_range(root, base: str, head: str) -> Tuple[str, str]:
@@ -808,27 +818,31 @@ def _normalized_spec(ctx: Any, spec: ReviewSubjectSpec) -> ReviewSubjectSpec:
 def freeze_subject(ctx: Any, spec: ReviewSubjectSpec, *, checkout: str = "") -> FrozenSubject:
     """Pin the subject once: prompt diff, binary-patch identity, tree and parent.
 
-    ``index`` of the system repo goes through the gate's own path (the authorized
-    resolver's ``managed_review_subject(surface="gate")``, else
-    ``capture_staged_diff``), so the bytes equal today's commit gate. ``worktree``
-    serializes the live tree through a private index (the advisory snapshot) and
-    reads HEAD→snapshot. ``base..head`` is frozen only through
-    ``isolated_checkout``: its reviewers read the head tree, never the live root."""
+    The gate's subject (``is_gate_subject``: the system repo's ``index`` against
+    HEAD) goes through the gate's own path (the authorized resolver's
+    ``managed_review_subject(surface="gate")``, else ``capture_staged_diff``), so
+    the bytes equal today's commit gate. Every other ``index`` is the delta between
+    its parent and the root's real index tree; ``worktree`` serializes the live
+    tree through a private index (the advisory snapshot) and reads parent→snapshot.
+    ``base..head`` is frozen only through ``isolated_checkout``: its reviewers read
+    the head tree, never the live root."""
     spec = _normalized_spec(ctx, spec)
     root, managed, at_head = spec.root, None, True
     if spec.kind == SUBJECT_KIND_INDEX:
         parent_sha, at_head = _tree_parent(root, spec)
-        if spec.root_kind == ROOT_KIND_SYSTEM and at_head:
+        if is_gate_subject(spec):
             managed = managed_review_subject(ctx, pathlib.Path(root), surface="gate")
-        tree_sha = managed.staged_tree if managed is not None else _real_index_tree(root)
-        if at_head:
+            tree_sha = managed.staged_tree if managed is not None else _real_index_tree(root)
             diff_text = (managed.render_prompt_diff() if managed is not None
                          else _rbc.capture_staged_diff(pathlib.Path(root)))
             patch, diff_sha = _patch(root, "--cached")
+            name_status = (managed.name_status if managed is not None
+                           else _tree_delta_name_status(root, parent_sha, tree_sha))
         else:
+            tree_sha = _real_index_tree(root)
             diff_text = _tree_delta_diff(root, parent_sha, tree_sha, 3)
             patch, diff_sha = _patch(root, parent_sha, tree_sha)
-        name_status = managed.name_status if managed is not None else _tree_delta_name_status(root, parent_sha, tree_sha)
+            name_status = _tree_delta_name_status(root, parent_sha, tree_sha)
         spec = dataclasses.replace(spec, base=parent_sha)
     elif spec.kind == SUBJECT_KIND_WORKTREE:
         from supervisor.update_candidate import worktree_snapshot_tree

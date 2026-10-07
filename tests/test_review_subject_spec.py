@@ -310,6 +310,40 @@ def test_an_index_or_worktree_subject_is_read_against_its_base_when_one_is_named
         freeze_subject(ctx, _index_spec(system, base="not-a-revision"))
 
 
+def test_a_frozen_index_rerenders_its_own_trees_at_u0_never_the_live_index(tmp_path):
+    """The -U0 fit rung of a frozen index subject is parent→tree of the FROZEN
+    subject. The live root's index may move after the freeze (the author stages
+    more); a recapture of ``--cached`` there would review bytes the record never
+    bound. Only the gate's own subject keeps the gate's live capture."""
+    system = _system_repo(tmp_path)
+    foreign, base, _head = _foreign_repo(tmp_path)
+    (foreign / "keep.txt").write_text("staged first\n", encoding="utf-8")
+    _git(foreign, "add", "keep.txt")
+    ctx = _ctx(system, tmp_path)
+    at_head = freeze_subject(ctx, ReviewSubjectSpec(root_kind="active_workspace", root=str(foreign), kind="index", surface="change"))
+    against = freeze_subject(ctx, ReviewSubjectSpec(root_kind="active_workspace", root=str(foreign), kind="index",
+                                                    base=base, surface="change"))
+    assert not at_head.is_system_index and not against.is_system_index
+    expected = {frozen: _out(foreign, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=0",
+                             frozen.parent_sha, frozen.tree_sha) for frozen in (at_head, against)}
+
+    # The author stages more after the freeze: the live index is now a different tree.
+    (foreign / "keep.txt").write_text("staged later\n", encoding="utf-8")
+    (foreign / "extra.txt").write_text("extra\n", encoding="utf-8")
+    _git(foreign, "add", "-A")
+    assert _out(foreign, "write-tree") != at_head.tree_sha
+    for frozen in (at_head, against):
+        rendered = frozen.render_prompt_diff(unified=0)
+        assert rendered.strip() == expected[frozen].strip()
+        assert "+staged first" in rendered and "staged later" not in rendered and "extra" not in rendered
+    assert "+two" in against.render_prompt_diff(unified=0) and "+two" not in at_head.render_prompt_diff(unified=0)
+
+    # The gate's subject is the one live capture: the body's own staged index against HEAD.
+    gate = freeze_subject(ctx, _index_spec(system))
+    assert gate.is_system_index and gate.render_prompt_diff(unified=0).strip() == _out(
+        system, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=0")
+
+
 def test_base_head_subject_reads_an_isolated_checkout_in_the_data_root(tmp_path):
     system = _system_repo(tmp_path)
     foreign, base, head = _foreign_repo(tmp_path)

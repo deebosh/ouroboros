@@ -121,6 +121,10 @@ class ScopeBriefInputs:
     drive_root: Optional[pathlib.Path] = None
     governance_repo_dir: Optional[pathlib.Path] = None
     managed_subject: Optional[Any] = None
+    # The FROZEN prompt diff of a review subject read in its isolated checkout
+    # (review_subject.FrozenSubject.diff_text); empty means the gate's own
+    # subject, whose staged index is captured live on the reading root.
+    subject_diff: str = ""
     task_evidence_section: str = ""
     required_sources: Optional[list] = None
     required_sources_ref: Optional[dict] = None
@@ -215,16 +219,19 @@ def _staged_diff(repo_dir: pathlib.Path, brief: ScopeBriefInputs) -> Tuple[str, 
     the staged diff of such a commit is the whole two-parent candidate and
     re-renders already-released code. Without an M0 baseline there is no
     resolution delta to deliver, and the subject's own fallback header instructs
-    retrieval instead. An ordinary commit uses the same hardened capture the
-    triad's evidence uses; a capture the host cannot perform is DISCLOSED and
-    the reviewer retrieves the change itself, exactly as it did before the diff
-    was delivered at all.
+    retrieval instead. A frozen subject read in its isolated checkout delivers
+    the diff it was frozen with (``subject_diff``), never a recapture. An
+    ordinary commit uses the same hardened capture the triad's evidence uses; a
+    capture the host cannot perform is DISCLOSED and the reviewer retrieves the
+    change itself, exactly as it did before the diff was delivered at all.
     """
     subject = brief.managed_subject
     if subject is not None:
         if getattr(subject, "fallback_full_diff", False):
             return "", "", "managed_resolution_without_m0_baseline"
         return subject.header(), subject.diff, ""
+    if brief.subject_diff:
+        return "", brief.subject_diff, ""
     from ouroboros.tools.review_binary_context import StagedDiffUnavailable, capture_staged_diff
 
     try:
