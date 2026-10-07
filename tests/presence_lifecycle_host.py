@@ -241,9 +241,10 @@ def main(root, generation, mode, scenario="incoming"):
                        Route("/fixture/restart", restart, methods=["POST"]),
                        Route("/fixture/live", live), Route("/fixture/shutdown", shutdown, methods=["POST"])])
     from ouroboros.review_operation import controller_identity
-    (root / f"ready-{generation}.json").write_text(json.dumps({
+    from ouroboros.utils import atomic_write_json
+    atomic_write_json(root / f"ready-{generation}.json", {
         "url": f"http://127.0.0.1:{port}", "binding": binding, "pid": os.getpid(),
-        "controller": controller_identity(), "reconciled": reconciled}))
+        "controller": controller_identity(), "reconciled": reconciled})
     try:
         server.run(sockets=[sock])
     finally:
