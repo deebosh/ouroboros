@@ -584,3 +584,23 @@ def test_tests_fact_is_passed_only_for_a_candidate_bound_proof(candidate, monkey
     assert facts() == {"policy": "run", "result": "passed", "proof": "candidate_bound"}
     ctx._preflight_tests_passed = False
     assert facts() == {"policy": "NOT_RUN", "result": "unknown"}
+
+
+def test_the_public_commit_outcome_names_the_record_when_the_review_blocks(candidate, monkeypatch):  # noqa: F811
+    ctx = candidate
+
+    def reviewer(_ctx, message, **kw):
+        rows = _three()
+        rows[0]["parsed_items"] = [{"item": "amount", "verdict": "FAIL", "severity": "critical"}]
+        ctx._last_triad_raw_results = rows
+        ctx._last_review_critical_findings = rows[0]["parsed_items"]
+        ctx._last_scope_raw_result = _scope()
+        return "Critical feedback", ScopeReviewResult(blocked=False, status="responded"), "critical_findings", []
+
+    _wire(ctx, monkeypatch, reviewer)
+    import subprocess
+    subprocess.run(["git", "checkout", "-q", "-b", ctx.branch_dev], cwd=ctx.repo_dir, check=True, capture_output=True)
+    result = git._repo_commit_push(ctx, "Review changed candidate", skip_tests=True, skip_advisory_pre_review=True)
+    record_id = _attempt_rows(ctx)[-1].review_record_id
+    assert record_id and rl.load_record(rl.ledger_root(ctx), record_id)["verdict"]["aggregate"] == "FAIL"
+    assert f"review_record_id: {record_id}" in result, "the actor-facing outcome names the record the canon promises"

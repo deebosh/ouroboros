@@ -1282,7 +1282,11 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
                     reestablish_merge_head(str(_managed_tx.get("target_sha") or ""))
                 except Exception:
                     log.debug("reestablish_merge_head after blocked managed review failed", exc_info=True)
-            return str(outcome.get("message", "") or "")
+            message = str(outcome.get("message", "") or "")
+            record_id = str(outcome.get("review_record_id") or "")
+            if record_id and record_id not in message:  # a blocked, pending or refused wave still names its record
+                message += f"\nreview_record_id: {record_id}"
+            return message
         pre_fingerprint = outcome.get("pre_fingerprint", {}) or {}
         post_fingerprint = outcome.get("post_fingerprint", {}) or {}
 
