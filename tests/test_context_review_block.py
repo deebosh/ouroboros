@@ -208,6 +208,9 @@ def test_one_rule_sentence_per_effective_authority(tmp_path, monkeypatch, enforc
 
     assert (block["enforcement"], block["mode"], block["enforcement_blocks"]) == (enforcement, mode, blocks)
     assert block["rule"].startswith(opening) and block["rule"].count(".") == 1
+    if opening == "Advisory:":  # the handback before Git effects, never an automatic commit (DEVELOPMENT 05)
+        assert "before any Git effect" in block["rule"] and "continue explicitly" in block["rule"]
+        assert "commit proceeds" not in block["rule"]
 
 
 def test_a_fourteen_seat_panel_shrinks_its_rows_and_stays_within_four_kilobytes(tmp_path, monkeypatch):
