@@ -273,8 +273,9 @@ The command creates `review-evidence.json`, `full-output.txt`, and
 route/model/profile facts, absent telemetry, base/head/tree/diff hashes,
 verdicts, and incomplete or degraded actors. It fails closed when the declared
 slot route and observable execution receipt disagree or cannot be correlated,
-or when the review record is missing or names another subject. It links the
-review record the operation wrote (aggregate verdict, seat rows, cost). The
+or when the review record is missing or names another subject. It names the
+review record the operation wrote (its aggregate verdict, tests and cost), and
+`full-output.txt` carries every seat row with its retained answer. The
 operation runs no tests, so its record says tests `NOT_RUN`; the verification
 of section 4 is still yours to run and report.
 
