@@ -211,6 +211,19 @@ def test_architecture_component_map_covers_every_live_runtime_module():
     )
 
 
+def test_architecture_map_row_of_the_review_subject_names_its_nodes():
+    """The component-map row of ``tools/review_subject.py`` must name the subject
+    operation's nodes, not only the managed resolution delta it began as: a reader
+    sent to the map finds where a subject is frozen, materialized and identified."""
+    arch = _read("docs/ARCHITECTURE.md")
+    rows = [line for line in arch.splitlines() if "review_subject.py ←" in line]
+    assert len(rows) == 1, rows
+    for node in ("ReviewSubjectSpec", "freeze_subject", "FrozenSubject", "is_gate_subject", "isolated_checkout",
+                 "checkout_token", "review_reuse_key", "review_round_sha", "review_retry_key", "reuse_or_none",
+                 "Subject operation"):
+        assert node in rows[0], node
+
+
 def test_architecture_mentions_shared_log_grouping_and_direct_provider_review_fallback():
     arch = _read("docs/ARCHITECTURE.md")
 
