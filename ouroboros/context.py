@@ -1164,7 +1164,7 @@ def _capture_context_core(
     try:
         from ouroboros.subagent_runtime import review_facts_block
 
-        semi_stable_parts.append(review_facts_block(drive_root=canonical_root, task_id=str(task.get("id") or "")))
+        semi_stable_parts.append(review_facts_block())
     except Exception:
         log.warning("Failed to build the Review block", exc_info=True)
     semi_stable_parts.extend(build_memory_sections(context_memory, partition="stable"))
@@ -1197,6 +1197,12 @@ def _capture_context_core(
     dynamic_parts = []
     if health_section:
         dynamic_parts.append(health_section)
+    try:
+        from ouroboros.subagent_runtime import review_records_block
+
+        dynamic_parts.append(review_records_block(drive_root=canonical_root, task_id=str(task.get("id") or "")))
+    except Exception:
+        log.warning("Failed to build the Review records block", exc_info=True)
     dynamic_parts.extend(build_memory_sections(context_memory, partition="volatile", include_scratchpad=not is_child))
 
     registry_digest = _build_registry_digest(context_env)

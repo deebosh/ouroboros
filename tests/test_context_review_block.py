@@ -14,7 +14,7 @@ import pytest
 
 from ouroboros.reviewer_slot_config import REVIEWER_SLOTS_ENV, load_reviewer_slot_config, reviewer_slot_config_error
 from ouroboros.settings_integrity import task_settings_snapshot
-from ouroboros.subagent_runtime import review_facts_block
+from ouroboros.subagent_runtime import review_facts_block, review_records_block
 from tests.test_doc_context import _make_env_and_memory
 
 _HEADER = "## Review\n\n"
@@ -39,9 +39,20 @@ def _decode(text: str) -> dict:
 
 
 def _block(tmp_path, snapshot=None, task_id: str = "task-1") -> tuple[dict, str]:
-    text = review_facts_block(snapshot, drive_root=tmp_path, task_id=task_id)
+    text = review_facts_block(snapshot)
     assert text.startswith(_HEADER)
     return _decode(text), text
+
+
+_RECORDS_HEADER = "## Review records\n\n"
+
+
+def _records(tmp_path, task_id: str = "task-1") -> dict:
+    """The changing-part block: this task's recent ledger records, never inside the cached prefix."""
+    text = review_records_block(drive_root=tmp_path, task_id=task_id)
+    assert text.startswith(_RECORDS_HEADER)
+    block, _end = json.JSONDecoder().raw_decode(text.split(_RECORDS_HEADER, 1)[1])
+    return block
 
 
 def _ledger(monkeypatch, recent_records, archived_segments_exist=lambda drive_root: False) -> None:
@@ -85,7 +96,8 @@ def test_a_structured_panel_names_reference_rows_by_their_catalog_handle(tmp_pat
                                         "effort": resolve_effort("scope_review"), "delivery": "native"}]
     assert "critic-key" not in text, "the stored key is not model-facing"
     assert block["panel"]["deep_review"]["seat_id"] == "deep_review_slot_1"
-    assert block["omitted"] == {"rows": 0, "records": 0} and block["recent_records"] == []
+    assert block["omitted"] == {"rows": 0} and "recent_records" not in block
+    assert _records(tmp_path) == {"recent_records": [], "omitted": {"records": 0}, "full_source": "state/review_ledger/"}
 
 
 def test_the_factory_panel_shows_the_models_it_runs(tmp_path):
@@ -160,6 +172,9 @@ def test_both_context_paths_carry_the_block(tmp_path):
     assert _decode(shared.semi_stable_text)["source"] == "default"
     assert _decode(declared.semi_stable_text) == _decode(shared.semi_stable_text)
     assert _HEADER not in shared.dynamic_text + declared.dynamic_text
+    # The task's records are a changing fact: both paths carry them in the dynamic part only.
+    assert _RECORDS_HEADER in shared.dynamic_text and _RECORDS_HEADER in declared.dynamic_text
+    assert _RECORDS_HEADER not in shared.semi_stable_text + declared.semi_stable_text
 
 
 def test_root_and_child_acceptance_differ_and_a_seat_id_is_the_child_selector(tmp_path, monkeypatch):
@@ -212,7 +227,9 @@ def test_a_fourteen_seat_panel_shrinks_its_rows_and_stays_within_four_kilobytes(
     rows = block["panel"]["triad"] + block["panel"]["scope"]
 
     assert len(text.encode("utf-8")) <= 4096
-    assert block["omitted"] == {"rows": 14, "records": "1+"} and len(block["recent_records"]) == 5
+    assert block["omitted"] == {"rows": 14} and "recent_records" not in block
+    records = _records(tmp_path)
+    assert records["omitted"]["records"] == "1+" and len(records["recent_records"]) == 5
     assert len(rows) == 14 and all(set(row) == {"seat_id", "model"} and len(row["seat_id"]) == 64 for row in rows)
     assert all(key not in text for key in keys), "stored keys never become model-facing"
     assert block["full_source"]["panel"] == "GET /api/reviewer-slots"
@@ -230,7 +247,7 @@ def test_recent_records_are_the_readers_newest_five_of_this_task_from_a_bounded_
         return newest_first[:max(1, int(limit))]
 
     _ledger(monkeypatch, recent_records)
-    block, _ = _block(tmp_path, task_id="task-9")
+    block = _records(tmp_path, task_id="task-9")
 
     assert calls == [(tmp_path, "task-9", 6, True)]
     assert [record["record_id"] for record in block["recent_records"]] == ["r6", "r5", "r4", "r3", "r2"]
@@ -240,13 +257,13 @@ def test_recent_records_are_the_readers_newest_five_of_this_task_from_a_bounded_
     ]
     assert block["omitted"]["records"] == "1+", "more rows than shown in the hot index: a bounded fact, not a count"
     calls.clear()
-    empty, _ = _block(tmp_path, task_id="")
+    empty = _records(tmp_path, task_id="")
     assert (empty["recent_records"], empty["omitted"]["records"], calls) == ([], 0, []), "empty selects every task"
     few = lambda drive_root, task_id="", limit=20, hot_only=False: newest_first[:3]  # noqa: E731
     _ledger(monkeypatch, few)
-    assert _block(tmp_path, task_id="task-9")[0]["omitted"]["records"] == 0, "nothing else in the hot index, no archive"
+    assert _records(tmp_path, task_id="task-9")["omitted"]["records"] == 0, "nothing else in the hot index, no archive"
     _ledger(monkeypatch, few, archived_segments_exist=lambda drive_root: True)
-    assert _block(tmp_path, task_id="task-9")[0]["omitted"]["records"] == "unknown", "an archive may hold older records"
+    assert _records(tmp_path, task_id="task-9")["omitted"]["records"] == "unknown", "an archive may hold older records"
 
 
 def test_an_unreadable_ledger_is_unknown_never_a_silent_zero(tmp_path, monkeypatch):
@@ -254,5 +271,5 @@ def test_an_unreadable_ledger_is_unknown_never_a_silent_zero(tmp_path, monkeypat
         raise OSError("index unreadable")
 
     _ledger(monkeypatch, recent_records)
-    block, _ = _block(tmp_path)
+    block = _records(tmp_path)
     assert block["recent_records"] == [] and block["omitted"]["records"] == "unknown"

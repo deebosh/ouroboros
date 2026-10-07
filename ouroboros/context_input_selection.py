@@ -105,7 +105,7 @@ def _capture_declared_context_core(
     retries and fitting operate on the resulting immutable ContextCore.
     """
     from ouroboros.subagent_work_order import input_source_selection_receipt
-    from ouroboros.subagent_runtime import current_model_visible_subagent_catalog, review_facts_block
+    from ouroboros.subagent_runtime import current_model_visible_subagent_catalog, review_facts_block, review_records_block
 
     canonical_root = pathlib.Path(task.get("budget_drive_root") or getattr(env, "budget_drive_root", None) or memory.drive_root)
     same_drive = canonical_root.resolve(strict=False) == memory.drive_root.resolve(strict=False)
@@ -125,7 +125,8 @@ def _capture_declared_context_core(
         log.debug("Failed to build Available subagents catalog", exc_info=True)
     review_text = ""
     try:
-        review_text = review_facts_block(drive_root=canonical_root, task_id=str(task["id"]))
+        review_text = review_facts_block()
+        parts.append(review_records_block(drive_root=canonical_root, task_id=str(task["id"])))
     except Exception:
         log.warning("Failed to build the Review block", exc_info=True)
     return _ContextCore(

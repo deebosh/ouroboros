@@ -147,10 +147,12 @@ _REVIEW_RULES = {
 }
 
 
-def review_facts_block(snapshot: Optional[TaskSettingsSnapshot] = None, *, drive_root: Any, task_id: str) -> str:
+def review_facts_block(snapshot: Optional[TaskSettingsSnapshot] = None) -> str:
     """``## Review``: the lanes this task's settings snapshot serves, read by the resolver every review surface
     uses, never by live settings or the last execution (``reviewer_slots_last``); ``None`` reads the bound task
-    scope. Above four triad/scope seats their rows shrink to ``{seat_id, model}`` and ``omitted`` counts them."""
+    scope. Above four triad/scope seats their rows shrink to ``{seat_id, model}`` and ``omitted`` counts them.
+    Stable for the task (cache-marked prefix); the task's recent ledger records ride separately in the
+    changing part (:func:`review_records_block`), so ids and timestamps never sit in the cached prefix."""
     from ouroboros import reviewer_slot_config as rs
     from ouroboros.config import get_review_enforcement, get_runtime_mode, runtime_settings, task_settings_scope
     from ouroboros.runtime_mode_policy import runtime_mode_at_least
@@ -190,7 +192,6 @@ def review_facts_block(snapshot: Optional[TaskSettingsSnapshot] = None, *, drive
     if seats > 4:
         for lane in ("triad", "scope"):
             panel[lane] = [{"seat_id": row["seat_id"], "model": row["model"]} for row in panel[lane]]
-    records, unseen = _recent_review_records(drive_root, task_id)
     return "## Review\n\n" + json.dumps({
         "source": config.source if config is not None else "error", "error": error,
         "enforcement": enforcement, "enforcement_blocks": blocks, "mode": mode,
@@ -200,8 +201,17 @@ def review_facts_block(snapshot: Optional[TaskSettingsSnapshot] = None, *, drive
             "root": "full configured triad panel",
             "child": "≤1 triad seat; with several, name one as reviewer_slot_id"},
             "preflight": ["advisory"], "deep_self_review": ["deep_review"]},
-        "recent_records": records, "omitted": {"rows": seats if seats > 4 else 0, "records": unseen},
-        "full_source": {"panel": "GET /api/reviewer-slots", "records": "state/review_ledger/"},
+        "omitted": {"rows": seats if seats > 4 else 0},
+        "full_source": {"panel": "GET /api/reviewer-slots"},
+    }, ensure_ascii=False, separators=(",", ":"))
+
+
+def review_records_block(*, drive_root: Any, task_id: str) -> str:
+    """``## Review records``: this task's newest review-ledger records (:func:`_recent_review_records`),
+    a changing fact that belongs in the dynamic context part, never in the cached prefix."""
+    records, unseen = _recent_review_records(drive_root, task_id)
+    return "## Review records\n\n" + json.dumps({
+        "recent_records": records, "omitted": {"records": unseen}, "full_source": "state/review_ledger/",
     }, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -1081,7 +1091,7 @@ __all__ = [
     "model_visible_subagent_catalog",
     "prepare_delegate_start_actor",
     "resolve_configured_actor_dispatch",
-    "review_facts_block",
+    "review_facts_block", "review_records_block",
     "select_subagent_snapshot",
     "validate_subagent_snapshot",
 ]
