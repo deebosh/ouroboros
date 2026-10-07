@@ -524,7 +524,7 @@ def _seat_from_plan(seat_id: str, part: str, plan: Dict[str, Any]) -> Dict[str, 
     return {"seat_id": seat_id, "subagent_id": str(plan.get("subagent_id") or ""), "parts": [part],
             "requested": requested, "effective": {**effective, "verdict_method": "", "source": "requested"},
             "observed_model": UNKNOWN, "status": "not_dispatched", "operation_state": "not_dispatched",
-            "parts_answered": [], "coverage": "not_asked", "capability_delta": [], "cost_usd": None,
+            "parts_answered": [], "coverage": "not_asked", "capability_delta": [], "usd": None,
             "critical_count": 0, "raw_text": "", "source_refs": []}
 
 
@@ -536,7 +536,7 @@ def _apply_raw(seat: Dict[str, Any], raw: Dict[str, Any], part: str) -> None:
     tagged_critical = [i for i in (raw.get("parsed_items") or []) if isinstance(i, dict)
                        and str(i.get("severity") or "").lower() == "critical"]
     seat.update(status=status, parts_answered=[part] if answered else [],
-                cost_usd=None if status == "pending" else raw.get("cost_usd"),  # an open seat has no cost yet
+                usd=None if status == "pending" else raw.get("cost_usd"),  # an open seat has no cost yet
                 raw_text=str(raw.get("raw_text") or ""), critical_count=len(typed_critical or tagged_critical),
                 operation_state=str(raw.get("operation_state") or ("settled" if answered else status)))
     coverage = raw.get("coverage")
@@ -665,7 +665,7 @@ def build_commit_gate_record(facts: Dict[str, Any], *, record_id: str = "", driv
     if facts.get("blocked") and facts.get("block_reason") and verdict["aggregate"] != VERDICT_FAIL:
         degraded.append(f"gate_block:{facts.get('block_reason')}")
     verdict.update({k: list(facts.get(k) or []) for k in HEAVY_VERDICT_FIELDS}, degraded_reasons=degraded)
-    known_costs = [float(s["cost_usd"]) for s in rows if isinstance(s.get("cost_usd"), (int, float))]
+    known_costs = [float(s["usd"]) for s in rows if isinstance(s.get("usd"), (int, float))]
     for seat in rows:
         seat.pop("raw_text", None)  # retained as a source above; the row names it, never copies it
     binding = dict(facts.get("binding") or {})

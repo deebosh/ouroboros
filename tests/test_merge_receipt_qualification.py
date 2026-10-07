@@ -8,7 +8,6 @@ import os
 import pathlib
 import shutil
 import subprocess
-import sys
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
@@ -17,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroboros import merge_receipts
+from ouroboros import merge_receipts, review_ledger
 from ouroboros.tools import github
 from tests import test_pr_merge_receipts as merge_fixture
 from tests.test_pr_merge_receipts import BASE, HEAD, MERGE, TREE, _receipts
@@ -464,7 +463,7 @@ def ledger_record(kind="base..head", *, head=HEAD, base=BASE, tree=TREE, aggrega
 
 
 def install_ledger(monkeypatch, records=(), *, error=None, answer=None):
-    """Stand in for the optional ``ouroboros.review_ledger`` reader; returns what it was asked."""
+    """Stand in for the ``review_ledger`` reader ``merge_receipts`` binds; returns what it was asked."""
     asked = []
 
     def load_record(drive_root, record_id):
@@ -473,7 +472,7 @@ def install_ledger(monkeypatch, records=(), *, error=None, answer=None):
             raise error
         return answer if answer is not None else dict(records).get(record_id)
 
-    monkeypatch.setitem(sys.modules, "ouroboros.review_ledger", SimpleNamespace(load_record=load_record))
+    monkeypatch.setattr(merge_receipts, "review_ledger", SimpleNamespace(load_record=load_record))
     return asked
 
 
@@ -517,6 +516,21 @@ def test_a_matching_review_record_covers_the_head_and_names_its_source(world, mo
     assert "review-1" not in body and "merge-task" not in body
 
 
+def test_a_record_written_by_the_review_ledger_covers_the_head_through_the_real_reader(world):
+    drive_root = review_ledger.ledger_root(world.ctx)
+    record = review_ledger.ReviewLedgerRecord(
+        record_id=RECORD_ID, task_id="merge-task", subject=ledger_record()["subject"],
+        verdict={"aggregate": "PASS", "per_question": {"change": "PASS", "coupling": "PASS"}},
+        panel={"seats": [{"seat_id": f"s{i}"} for i in range(3)], "distinct_models": ["a", "b"]})
+    review_ledger.write_record(drive_root, record)
+    out = record_merge(world, review_record_id=RECORD_ID)
+    (receipt,) = _receipts(world)
+    assert receipt["coverage"]["status"] == "covers_head" and receipt["coverage"]["gaps"] == []
+    assert receipt["review"]["record"]["panel"] == {"seats": 3, "distinct_models": 2}
+    assert receipt["review"]["record"]["subject"]["kind"] == "base..head" and receipt["review"]["declared_only"] is False
+    assert out.startswith("✅ PR #7 merge: merged") and "review source: record, verdict PASS" in out
+
+
 @pytest.mark.parametrize("kind", ["index", "worktree"])
 def test_an_uncommitted_record_at_the_same_head_is_a_named_gap_and_still_merges(world, monkeypatch, kind):
     install_ledger(monkeypatch, {RECORD_ID: ledger_record(kind)})
@@ -554,10 +568,12 @@ def test_a_nonexistent_record_id_is_an_argument_refusal_before_any_effect(world,
     assert world.gh.calls == [] and _receipts(world) == []  # nothing read, merged or recorded
 
 
-@pytest.mark.parametrize("failure", ["store", "shape", "module"])
+@pytest.mark.parametrize("failure", ["store", "shape", "corrupt_file"])
 def test_an_unreadable_record_is_not_reported_as_an_absent_one(world, monkeypatch, failure):
-    if failure == "module":
-        monkeypatch.setitem(sys.modules, "ouroboros.review_ledger", None)
+    if failure == "corrupt_file":  # the real reader over a damaged record file
+        path = review_ledger.record_path(review_ledger.ledger_root(world.ctx), RECORD_ID)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not a record", encoding="utf-8")
     else:
         install_ledger(monkeypatch, **({"error": OSError("disk")} if failure == "store" else {"answer": ["x"]}))
     out = record_merge(world, review_record_id=RECORD_ID)

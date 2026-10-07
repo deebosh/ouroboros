@@ -34,12 +34,12 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-import importlib
 import json
 import re
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
+from ouroboros import review_ledger
 from ouroboros.utils import update_json_locked, utc_now_iso
 
 RECEIPTS_KEY = "merge_receipts"
@@ -213,14 +213,14 @@ def observe_review_tasks(drive_root: Any, task_ids: List[str]) -> List[Dict[str,
 def load_review_record(drive_root: Any, record_id: str) -> Optional[Dict[str, Any]]:
     """The host review record ``record_id`` reduced to what a receipt binds; ``None`` = no such record.
 
-    Reader: ``ouroboros.review_ledger.load_record(drive_root, record_id)``, an optional
-    dependency returning a mapping or a dataclass (``None``, ``LookupError`` or
-    ``FileNotFoundError`` = absent). A missing reader, an unreadable store or a
-    non-mapping record raises: unreadable is not absent. The private ``root`` stays
-    on the task record and never reaches the PR body.
+    Reader: ``review_ledger.load_record(drive_root, record_id)`` returns a mapping or a
+    dataclass (``None``, ``LookupError`` or ``FileNotFoundError`` = absent) and raises
+    for a record that exists but cannot be read; a non-mapping record raises here.
+    Unreadable is never reported as absent. The private ``root`` stays on the task
+    record and never reaches the PR body.
     """
     try:
-        record = importlib.import_module("ouroboros.review_ledger").load_record(drive_root, record_id)
+        record = review_ledger.load_record(drive_root, record_id)
     except (LookupError, FileNotFoundError):
         return None
     if record is None:
