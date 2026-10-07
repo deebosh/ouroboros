@@ -221,7 +221,8 @@ and marked incomplete. The agentic checklist review above needs none of this.
 
 The run keeps its own writes off your data root: its review drive
 (`--drive-root`: a new or empty directory, or the drive of the run it
-continues; by default a new temporary one) is its whole data root — ledger,
+continues; by default a new temporary one, refused before it is created when
+the temporary directory lies inside your data root) is its whole data root — ledger,
 review state, reviewer markers, locks and logs. It reads your `settings.json`
 in place under an integrity pin (never copied, never written; an edit during
 the run is a typed refusal; the reviewer panel and efforts come from it, or the
@@ -244,7 +245,8 @@ does for every delegated run. Without that option the run starts no engine
 either: any other Claudexor call it makes (a Claudexor Main or Light model) is a
 typed refusal. The wrapper checks route-specific readiness
 where it has a reliable probe; the selected route reports other failures
-explicitly.
+explicitly. A paid readiness probe (one token on a configured reviewer model)
+is an attempt in the review ledger, under the cap.
 
 From a clean committed branch:
 

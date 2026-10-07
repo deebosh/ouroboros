@@ -51,7 +51,7 @@ if str(REPO) not in sys.path:
 from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS  # noqa: E402
 # Stdlib-only leaves: nothing may import ``ouroboros.config`` before isolation.
 from ouroboros.review_run_isolation import (  # noqa: E402
-    PINNED_PANEL_KEYS, isolate_review_data, parse_run_cap, retire_comma_lists)
+    PINNED_PANEL_KEYS, isolate_review_data, parse_run_cap, retire_comma_lists, run_cap_from_env)
 from ouroboros.settings_integrity import SETTINGS_INTEGRITY_ENV  # noqa: E402
 
 # Release diffs touch protected core paths; only pro mode may stage them for
@@ -374,35 +374,40 @@ def _openrouter_pool() -> list[tuple[str, str]]:
 def _probe_model_for_key(token: str, model: str) -> tuple[bool, str]:
     """One-token completion on the EXACT reviewer model.
 
-    `limit_remaining` alone is documented to lie (a ToS-blocked or nearly
-    drained key passes it and then 403s/starves the real panel), so a key is
-    healthy only after the actual model answered through it.
+    `limit_remaining` alone is documented to lie (a ToS-blocked or nearly drained key
+    passes it and then 403s/starves the real panel), so a key is healthy only after the
+    actual model answered through it, paid in an isolated review's own run-capped ledger.
     """
-    try:
-        import httpx
+    import httpx
 
-        response = httpx.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {token}", **OPENROUTER_APP_HEADERS},
-            json={
-                "model": model,
-                "max_tokens": 1,
-                "messages": [{"role": "user", "content": "ping"}],
-            },
-            timeout=60,
-        )
+    from ouroboros import llm_probe, usage_accounting
+
+    def send(payload: dict) -> httpx.Response:
+        response = httpx.post("https://openrouter.ai/api/v1/chat/completions", json=payload, timeout=60,
+                              headers={"Authorization": f"Bearer {token}", **OPENROUTER_APP_HEADERS})
+        if response.status_code != 200:  # no completion: the ledger keeps its money unknown
+            raise httpx.HTTPStatusError("model probe refused", request=response.request, response=response)
+        return response
+
+    payload = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]}
+    try:
+        response = send(payload) if run_cap_from_env() is None else llm_probe.accounted_one_shot(
+            {"provider": "openrouter", "resolved_model": model, "processing_preference": ""}, payload, send,
+            source="review_key_probe")  # no run cap: the operator lane, whose review ledger is not created yet
+    except usage_accounting.UsageAccountingError:  # the run cap's refusal or custody, never a key's
+        raise
+    except httpx.HTTPStatusError as exc:
+        return False, f"model_probe_http_{exc.response.status_code}"
     except Exception as exc:
         return False, f"model_probe_error:{type(exc).__name__}"
-    if response.status_code == 200:
-        try:
-            body = response.json() or {}
-        except Exception:
-            return False, "model_probe_unreadable"
-        # OpenRouter passes provider errors through an HTTP-200 body.
-        if isinstance(body.get("error"), dict):
-            return False, f"model_probe_body_{body['error'].get('code') or 'error'}"
-        return True, f"model_ok({model})"
-    return False, f"model_probe_http_{response.status_code}"
+    try:
+        body = response.json() or {}
+    except Exception:
+        return False, "model_probe_unreadable"
+    # OpenRouter passes provider errors through an HTTP-200 body.
+    if isinstance(body.get("error"), dict):
+        return False, f"model_probe_body_{body['error'].get('code') or 'error'}"
+    return True, f"model_ok({model})"
 
 
 def _review_probe_models() -> list[str]:

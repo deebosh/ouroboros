@@ -877,7 +877,7 @@ class OwnedClaudexorDaemon:
         provisioning, a bare except, and no read-back — so a race with the
         daemon's startup "serving recovery only" window failed it forever,
         attach paths never patched at all, and a harness discovered later was
-        never covered. This runs on EVERY ``ensure_owned_gateway`` instead
+        never covered. This runs on EVERY owned ``ensure_owned_gateway`` instead
         (owner decision 5=A, literal: no read-path TTL — each ensure does the
         GET, computes the missing set and POSTs conditionally), against the
         gateway that ensure just handshook:
@@ -1265,8 +1265,8 @@ def ensure_owned_gateway(*, admission_wait_sec: Optional[float] = None,
 
     This is the explicit start/probe seam — the ONE funnel every consumer
     (delegation, review sessions, account surfaces, login) passes through,
-    which is why the rotation reconcile rides it: spawn AND attach paths are
-    both covered, on every ensure, best-effort (see ``reconcile_rotation``).
+    which is why the rotation reconcile rides it: spawn AND owned-attach paths,
+    on every ensure, best-effort (see ``reconcile_rotation``); never attach-only.
     The gateway transport itself stays pure I/O; callers own ``close()`` (or
     use it as a context manager). ``stop()`` owns the separate marker, transport
     and process-identity checks for stopping an attached daemon.

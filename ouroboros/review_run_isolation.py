@@ -109,9 +109,13 @@ def isolate_review_data(*, host_data: pathlib.Path, drive_root: str, run_cap: st
         raise RuntimeError("ouroboros.config was imported before the review data root was isolated")
     cap = parse_run_cap(run_cap)
     host = pathlib.Path(host_data).expanduser().resolve(strict=False)
-    drive = pathlib.Path(
-        drive_root or tempfile.mkdtemp(prefix="ouroboros-external-review-")
-    ).expanduser().resolve(strict=False)
+    if not drive_root:  # a default drive is allocated only below a temporary root outside the host
+        temp_root = pathlib.Path(tempfile.gettempdir()).resolve()
+        if _within(temp_root, host):
+            raise RuntimeError(f"the temporary directory {temp_root} is inside the host data root {host}; "
+                               "pass a --drive-root outside it")
+        drive_root = tempfile.mkdtemp(prefix="ouroboros-external-review-", dir=temp_root)
+    drive = pathlib.Path(drive_root).expanduser().resolve(strict=False)
     if _within(drive, host) or _within(host, drive):
         raise RuntimeError(f"the review drive {drive} overlaps the host data root {host}")
     drive.mkdir(parents=True, exist_ok=True)
