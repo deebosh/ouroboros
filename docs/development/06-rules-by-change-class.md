@@ -990,7 +990,8 @@ and what enforces each.
   wave's real pair labelled `historical_critic`, never an invented verdict. An envelope
   `reviewer_effort` outranks a row's pinned effort for plan review only (an argument of
   `plan_review_slots`, never a contextvar; a compound route slug keeps its encoded
-  effort); every wave records its effective per-seat efforts, the owner baseline captured
+  effort — `review_change`'s composed panel is the one disclosed contextvar seam,
+  ARCHITECTURE §6 "Change review on any root"); every wave records its effective per-seat efforts, the owner baseline captured
   at dispatch and one typed `ordered_weaker`. On a same-spec cycle a seat that does not
   answer keeps its still-open findings listed (`carried_absent_answer`), never counted as
   parseable. The own-room conversation reaches every reviewer as numbered readable lines;

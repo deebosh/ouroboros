@@ -499,10 +499,15 @@ class TestCommitReviewedLandsInTheSystemRepository:
 
         monkeypatch.setattr(git_mod, "_run_reviewed_stage_cycle", _no_review)
         monkeypatch.setattr(git_mod, "_run_parallel_review", _no_review)
+        # The registered handler names this call's review record on every outcome; a
+        # refusal before any staging, review or record is ID-less, even when an
+        # earlier call's id still sits on the context.
+        ctx._current_review_record_id = "rl-stale-from-an-earlier-call"
         for root in ("active_workspace", str(tmp_path / "project"), "user_files"):
-            result = git_mod._repo_commit_push(ctx, commit_message="land the project", root=root)
+            result = git_mod._commit_reviewed(ctx, commit_message="land the project", root=root)
             assert result.startswith("⚠️ TOOL_ARG_ERROR: commit_reviewed lands in the system repository")
             assert "review_change" in result and "ordinary git" in result
+            assert "review_record_id" not in result and "rl-stale" not in result
         assert self._state(ctx.repo_dir) == before
 
     def test_the_dispatcher_delivers_the_refusal_for_both_names(self, tmp_path, monkeypatch):
@@ -525,7 +530,7 @@ class TestCommitReviewedLandsInTheSystemRepository:
         from ouroboros.tools import git as git_mod
 
         ctx = _make_staged_repo(tmp_path)
-        answers = {repr(kwargs): git_mod._repo_commit_push(ctx, commit_message="", **kwargs)
+        answers = {repr(kwargs): git_mod._commit_reviewed(ctx, commit_message="", **kwargs)
                    for kwargs in ({}, {"root": ""}, {"root": "system_repo"})}
         assert len(set(answers.values())) == 1, answers
         assert "commit_message must be non-empty" in next(iter(answers.values()))

@@ -202,11 +202,14 @@ self-review. Mark the review `NOT_RUN` and explain why in the PR.
 ### Maintainer-grade project-native review command
 
 Ouroboros can produce review evidence in a structured SHA-bound packet.
-`scripts/run_external_review.py` is an operator wrapper over the same runtime
-operation Ouroboros uses to review a change, `review_change`: without
-`--contributor` it reviews the staged index of the checkout it runs from; with
-`--contributor` it reviews a committed `base..head` proposal and writes the
-public packet. It uses the reviewer slots actually configured on the machine:
+`scripts/run_external_review.py` is an operator wrapper over the runtime's own
+review flow: without `--contributor` it runs the commit gate's review-only
+cycle over the staged index of the checkout it runs from (in an isolated
+checkout of that staged patch, so edits during the run never reach the
+reviewers); with `--contributor` it runs the proposal's own hermetic tests and
+then the same runtime operation Ouroboros uses to review a change,
+`review_change`, over a committed `base..head` proposal, and writes the public
+packet. It uses the reviewer slots actually configured on the machine:
 `api_chat`, `agent_session`, or a mixture.
 
 Treat this command as **maintainer tooling**, not the default contributor
@@ -275,9 +278,15 @@ verdicts, and incomplete or degraded actors. It fails closed when the declared
 slot route and observable execution receipt disagree or cannot be correlated,
 or when the review record is missing or names another subject. It names the
 review record the operation wrote (its aggregate verdict, tests and cost), and
-`full-output.txt` carries every seat row with its retained answer. The
-operation runs no tests, so its record says tests `NOT_RUN`; the verification
-of section 4 is still yours to run and report.
+`full-output.txt` carries every seat row with its retained answer. Before any
+reviewer is paid the lane runs the proposal's hermetic test suite in an
+isolated checkout of the same frozen `base..head` subject: a failure is the
+typed `tests_preflight_blocked` refusal (exit 3, nothing dispatched, no
+record), and a pass lands on the review record of that exact tree as
+`tests={policy: run, result: passed, proof: candidate_bound, tree_sha}`. The
+review operation itself runs no tests, so a record without that attachment
+says `NOT_RUN`; the verification of section 4 is still yours to run and
+report.
 
 Applied reasoning effort is not currently exposed by every route. The packet
 records configured effort as requested and leaves effective effort absent
