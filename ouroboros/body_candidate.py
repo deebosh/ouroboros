@@ -547,9 +547,11 @@ def authoring_seam(ctx: Any, name: str, args: Dict[str, Any]) -> Optional[Candid
         applies = _targets_body(ctx, str(args.get("root") or "active_workspace"))
     elif name in BODY_WORKTREE_TOOLS:  # PR integration checks out and commits in the body itself
         applies = True
-    elif name == "schedule_subagent":
+    elif name == "schedule_subagent":  # only an own-body copy asks the scheduler's own folder selection
+        from ouroboros.tools.control_scheduling import child_copies_serving_body
+
         applies = (str(args.get("write_surface") or "").strip().lower() == "self_worktree"
-                   and not str(args.get("workspace_root") or "").strip() and _targets_body(ctx, "active_workspace"))
+                   and child_copies_serving_body(ctx, args))
     else:
         applies = False
     if not applies or _refusal_before_prepare(ctx) is not None:
@@ -565,7 +567,7 @@ def authoring_seam(ctx: Any, name: str, args: Dict[str, Any]) -> Optional[Candid
     return None
 
 
-def process_environment(ctx: Any, work_dir: Any) -> Optional[Dict[str, str]]:
+def process_environment(ctx: Any, work_dir: Any, *, source=None) -> Optional[Dict[str, str]]:
     """The isolated environment for a process whose cwd is inside the bound candidate.
 
     Reuses the test-environment owner: its own HOME, data root, settings, caches
@@ -576,9 +578,15 @@ def process_environment(ctx: Any, work_dir: Any) -> Optional[Dict[str, str]]:
     started with the serving environment instead.
     """
     bound = descriptor(ctx)
-    if not bound or not is_bound(ctx):
-        return None
-    candidate = pathlib.Path(str(bound["path"])).resolve(strict=False)
+    if bound and is_bound(ctx):
+        candidate = pathlib.Path(str(bound["path"])).resolve(strict=False)
+    else:
+        from ouroboros.workspace_copies import is_system_copy
+        from ouroboros.tools.tool_resolution import active_repo_dir_for
+
+        if not is_system_copy(ctx):
+            return None
+        candidate = active_repo_dir_for(ctx).resolve(strict=False)
     cwd = pathlib.Path(work_dir).resolve(strict=False)
     if cwd != candidate and not cwd.is_relative_to(candidate):
         return None
@@ -587,7 +595,7 @@ def process_environment(ctx: Any, work_dir: Any) -> Optional[Dict[str, str]]:
         from ouroboros.test_environment import isolated_environment
 
         return isolated_environment(candidate.with_name(candidate.name + ".env"), candidate,
-                                    source=runtime_environ())
+                                    source=runtime_environ() if source is None else source)
     except Exception as exc:
         log.warning("candidate process environment unavailable", exc_info=True)
         raise CandidateRefused(
@@ -595,6 +603,21 @@ def process_environment(ctx: Any, work_dir: Any) -> Optional[Dict[str, str]]:
             f"the isolated environment for body candidate {bound.get('candidate_id')} could not be prepared "
             f"({type(exc).__name__}: {exc}); a process inside the candidate is not started with the serving "
             "environment") from exc
+
+
+def executor_environment(ctx: Any, cwd: Any, *, executor, map_path) -> Optional[Dict[str, str]]:
+    """Project the body's isolated defaults into an executor without inherited credentials."""
+    env = process_environment(ctx, cwd, source={} if executor.kind != "local" else None)
+    if env is None or executor.kind == "local":
+        return env
+    try:
+        return {key: "/dev/null" if key == "GIT_CONFIG_GLOBAL" else
+                map_path(executor, pathlib.Path(value)) if pathlib.Path(value).is_absolute() else value
+                for key, value in env.items()}
+    except ValueError as exc:
+        raise CandidateRefused(
+            "CANDIDATE_ENVIRONMENT_UNAVAILABLE",
+            f"the executor must map both the body copy and its sibling .env directory: {exc}") from exc
 
 
 def record_reviewed_commit(ctx: Any, commit_sha: str, *, row: Optional[Dict[str, Any]] = None) -> None:
@@ -699,7 +722,7 @@ def unique_work(row: Dict[str, Any]) -> Dict[str, Any]:
                  if not _patch_exclude_reason(rel) or ("/" not in rel and not (path / rel).is_dir()
                                                        and _patch_exclude_reason(rel).startswith("top-level"))]
         tip = _git(path, "rev-parse", "--verify", "HEAD^{commit}").stdout.strip()
-        serving = pathlib.Path(str(row.get("git_dir") or row.get("repo_dir") or path))
+        serving = pathlib.Path(str(row["repo_dir"]))
         # Only the serving checkout establishes adoption. Another candidate or a
         # temporary child's branch can retain this tip without ever having adopted it.
         ahead = _git(serving, "rev-list", "--count", tip, "--not", "HEAD").stdout.strip()
@@ -813,6 +836,8 @@ def retention_verdict(row: Dict[str, Any], *, expired: bool, data_dir: Optional[
         return {"remove": True, "keep_branch": True, "reason": "checkout_missing", "pin": ""}
     if not expired:
         return {"remove": False, "keep_branch": True, "reason": "within_retention", "pin": ""}
+    if _retained_scratch(row):
+        return {"remove": False, "keep_branch": True, "reason": "retained_process_environment", "pin": ""}
     if not _recorded_terminal(str(row.get("task_id") or ""), data_dir):
         # Its owner may still be working, or its record is unreadable: unknown is not ended.
         return {"remove": False, "keep_branch": True, "reason": "owner_not_terminal", "pin": ""}
@@ -848,6 +873,8 @@ def verdict_holds(row: Dict[str, Any], verdict: Dict[str, Any], *, data_dir: Opt
     """
     if not verdict.get("remove"):
         return True
+    if _retained_scratch(row):
+        return False
     if verdict.get("reason") == "checkout_missing":
         return not pathlib.Path(str(row.get("path") or "")).is_dir()
     if verdict.get("owner") != _owner_stamp(row):
@@ -866,9 +893,18 @@ def verdict_holds(row: Dict[str, Any], verdict: Dict[str, Any], *, data_dir: Opt
     return True
 
 
-def discard_scratch(row: Dict[str, Any]) -> None:
-    """Delete the candidate's reproducible process-environment root."""
+def _retained_scratch(row: Dict[str, Any]) -> bool:
+    """Unconfirmed nested preflight readers retain both their env and source checkout."""
+    from ouroboros.test_environment import retention_markers
+
     path = pathlib.Path(str(row.get("path") or ""))
     env_root = path.with_name(path.name + ".env")
-    if path.name and _wt._deletable(env_root, _wt._resolve_root()) and env_root.exists():
+    return env_root.exists() and bool(retention_markers(env_root))
+
+
+def discard_scratch(row: Dict[str, Any]) -> None:
+    """Delete reproducible scratch only when no nested teardown retained it."""
+    path = pathlib.Path(str(row.get("path") or ""))
+    env_root = path.with_name(path.name + ".env")
+    if path.name and _wt._deletable(env_root, _wt._resolve_root()) and env_root.exists() and not _retained_scratch(row):
         _wt._force_rmtree(env_root)

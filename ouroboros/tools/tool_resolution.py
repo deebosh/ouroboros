@@ -80,7 +80,7 @@ def system_repo_dir_for(ctx: Any) -> pathlib.Path:
     return pathlib.Path(getattr(ctx, "system_repo_dir", None) or getattr(ctx, "repo_dir"))
 
 
-_PATH_NORMALIZED_TOOLS = frozenset({"read_file", "write_file", "edit_text", "list_files", "search_code", "query_code"})
+_PATH_NORMALIZED_TOOLS = frozenset({"read_file", "write_file", "edit_text", "apply_patch", "edit_batch", "list_files", "search_code", "query_code"})
 _TOP_LEVEL_PATH_WRITE_TOOLS = frozenset({"write_file", "edit_text"})
 _ROOT_SELECTED_READ_TOOLS = frozenset({"read_file", "list_files", "search_code"})
 
@@ -206,6 +206,7 @@ def _normalize_dispatch_path_args_result(
             serving_alias = serving_alias_root(ctx, norm_root)
 
             def _normalize(text: str) -> str:
+                text = text.strip().replace("\\", "/")
                 relative = _registry().normalize_root_relative(norm_root, text)
                 if serving_alias is not None and relative == text:
                     relative = _registry().normalize_root_relative(serving_alias, text)
@@ -214,10 +215,14 @@ def _normalize_dispatch_path_args_result(
             for _key in ("path", "dir"):
                 if isinstance(args.get(_key), str) and args[_key]:
                     args[_key] = _normalize(args[_key])
-            if isinstance(args.get("files"), list):
-                for _f in args["files"]:
+            for entries in (args.get("files"), args.get("edits")):
+                for _f in entries if isinstance(entries, list) else []:
                     if isinstance(_f, dict) and isinstance(_f.get("path"), str) and _f["path"]:
                         _f["path"] = _normalize(_f["path"])
+            if name == "apply_patch" and isinstance(args.get("patch"), str):
+                from ouroboros.tools.edit_ops import normalize_patch_paths
+
+                args["patch"] = normalize_patch_paths(args["patch"], _normalize)
         except Exception:
             pass
         return _DispatchPathNormalization()

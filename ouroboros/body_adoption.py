@@ -272,10 +272,12 @@ def _archive(data_dir: Any, handoff: Dict[str, Any], outcome: str) -> None:
     shutil.rmtree(directory, ignore_errors=True)
 
 
-def abandon(data_dir: Any, reason: str) -> None:
-    """Close a handoff that was never armed; the tree was not touched."""
+def abandon(data_dir: Any, reason: str, *, task_id: str = "", candidate_id: str = "") -> None:
+    """Close an unarmed handoff, scoped to the caller's identity when supplied."""
     handoff = read(data_dir)
-    if handoff.get("phase") == "authorized":
+    if (handoff.get("phase") == "authorized"
+            and (not task_id or handoff.get("task_id") == task_id)
+            and (not candidate_id or handoff.get("candidate_id") == candidate_id)):
         _archive(data_dir, handoff, f"abandoned:{reason}")
 
 

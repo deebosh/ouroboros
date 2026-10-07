@@ -971,11 +971,9 @@ def update_evolution_transaction(task_id: str, **updates: Any) -> bool:
 
 
 def _cleanup_worktree_after_cycle(tx: Dict[str, Any], task_id: str) -> None:
-    """Restore a no-op/abandoned admitted cycle's base, preserving dirty/ahead work
-    in recorded stash/local refs. Never reset a positively unadmitted cycle or
-    another live writer; unknown base, live tests and the cleanup kill-switch skip
-    cleanup with a reason. Never raises (OUROBOROS_EVOLUTION_CYCLE_CLEANUP=false).
-    """
+    """Restore an ended cycle's base, preserving dirty/ahead work in stash/local refs.
+    Unadmitted cycles, other writers, unknown base, live tests or disabled cleanup
+    retain their reason. Never raises (OUROBOROS_EVOLUTION_CYCLE_CLEANUP=false)."""
     if str(os.environ.get("OUROBOROS_EVOLUTION_CYCLE_CLEANUP", "true") or "true").lower() in {"0", "false", "no", "off"}:
         tx["cleanup_status"] = "disabled"
         return
@@ -987,9 +985,11 @@ def _cleanup_worktree_after_cycle(tx: Dict[str, Any], task_id: str) -> None:
         tx["cleanup_status"] = "skipped_no_base"
         return
     from ouroboros import body_adoption, body_candidate
-    if body_candidate.find(str(task_id)) is not None:  # its work is in the retained candidate;
+    candidate = body_candidate.find(str(task_id))
+    if candidate is not None:                         # its work is in the retained candidate;
         tx["cleanup_status"] = "candidate_retained"    # serving dirt belongs to someone else
-        return body_adoption.abandon(_evolution_campaign_path().parents[1], "evolution_cycle_ended")
+        return body_adoption.abandon(_evolution_campaign_path().parents[1], "evolution_cycle_ended",
+                                     task_id=str(task_id), candidate_id=str(candidate["candidate_id"]))
     update_lock_fh = None
     release_update_lock = None
     try:

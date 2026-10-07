@@ -1231,6 +1231,8 @@ def remove_worktree(
     wt_path = Path(match.get("path") or "")
     if _deletable(wt_path, root) and wt_path.exists():
         _force_rmtree(wt_path)  # the checkout's files go first, OUTSIDE the lock (#1241)
+    from ouroboros import body_candidate
+    body_candidate.discard_scratch(match)  # an own-body copy's sibling process environment, unless retained
     with _ops_lock(root, op="remove_worktree", task_id=str(task_id or ""), timeout_sec=lock_wait_sec):
         _remove_paths(Path(match.get("git_dir") or match.get("repo_dir") or "."), wt_path, match.get("branch") or "", allowed_root=root)
         survivors = [
@@ -1299,6 +1301,7 @@ def prune_orphans(
             if created < cutoff or not path_exists:
                 if repo_dir or wt_path:
                     _remove_paths(Path(repo_dir or "."), Path(wt_path), entry.get("branch") or "", allowed_root=root)
+                body_candidate.discard_scratch(entry)
                 removed.append(entry)
             else:
                 kept.append(entry)

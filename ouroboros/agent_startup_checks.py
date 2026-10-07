@@ -30,6 +30,14 @@ from ouroboros.config import runtime_setting
 
 log = logging.getLogger(__name__)
 
+
+def _candidate_restart_guidance(tx, commit_sha, *, held=True):
+    prefix = "Reviewed candidate awaits deliberate adoption." if held else "Candidate availability is unconfirmed; inspect the retained transaction."
+    return (f"{prefix} Nothing was adopted automatically. When adoption is authorized, "
+            f"select the ended owner's candidate with prepare_self_change(resume={str(tx.get('task_id') or '')!r}), "
+            f"then request_restart(adopt_commit={commit_sha!r}); an active owner resumes its own task.")
+
+
 _TASK_RESULT_PROCESS_EVIDENCE_FIELDS = frozenset({
     # These are raw reasoning/transport records, not terminal task authority.
     # Exact immutable refs and compact terminal facts remain top-level and are
@@ -1200,10 +1208,11 @@ def verify_restart(env: Any, git_sha: str) -> None:
                     commit_sha = adopt_evolution_commit_intent(campaign, tx, observed_sha)
                     if commit_sha:
                         expected_sha, reachable = commit_sha, True
-                    elif adopt_evolution_commit_intent(campaign, tx):
+                    elif (recovered := adopt_evolution_commit_intent(campaign, tx)):
                         # ...or the task's body candidate holds it (#1539): its receipt and
                         # reviewed provenance are restored, but only the serving SHA proves a
                         # restart, so the unadopted commit stays open until adoption lands it.
+                        tx["restart_guidance"] = _candidate_restart_guidance(tx, recovered)
                         if gen:
                             campaign["last_boot_reconcile_gen"] = gen
                         campaign["updated_at"] = utc_now_iso()
@@ -1257,7 +1266,8 @@ def verify_restart(env: Any, git_sha: str) -> None:
                     # Before its restart-bound adoption the serving HEAD lacks the candidate's
                     # commit: keep the exact transaction, receipt and backlog link; adopt nothing.
                     tx.update({"restart_required": True, "restart_verified": False,
-                               "restart_observed_sha": observed_sha, "updated_at": now})
+                               "restart_observed_sha": observed_sha, "updated_at": now,
+                               "restart_guidance": _candidate_restart_guidance(tx, commit_sha, held=held)})
                     campaign.update({"last_boot_reconcile_gen": gen, "active_transaction": tx, "updated_at": now})
                     reason = "candidate_holds_commit" if held else "candidate_unreadable"
                     campaign["progress_notes"] = (

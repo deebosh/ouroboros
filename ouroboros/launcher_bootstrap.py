@@ -59,7 +59,8 @@ def remember_loaded_checkout(repo_dir: pathlib.Path) -> str:
     return _LOADED_CHECKOUT_SHA
 
 
-def launcher_sources_changed(repo_dir: pathlib.Path, loaded_sha: str | None = None) -> bool:
+def launcher_sources_changed(repo_dir: pathlib.Path, loaded_sha: str | None = None, *,
+                             bundle_dir: pathlib.Path | None = None) -> bool:
     """True when the landed checkout changed a module the launcher process has loaded.
 
     The launcher imports its helpers once; a body adoption (or any release) that
@@ -69,6 +70,8 @@ def launcher_sources_changed(repo_dir: pathlib.Path, loaded_sha: str | None = No
     checkout's own history, not the file system: the commit the launcher imported
     from (``loaded_sha``, "" when unknown: never a relaunch) against the commit
     that now serves, over the loaded modules' repository paths plus ``launcher.py``.
+    A packaged launcher loaded its modules from ``bundle_dir`` (PyInstaller names
+    them ``<pkg>/<module>.pyc`` there); they count under their repository paths.
     """
     import sys
 
@@ -76,16 +79,21 @@ def launcher_sources_changed(repo_dir: pathlib.Path, loaded_sha: str | None = No
     head = checkout_sha(repo_dir)
     if not loaded_sha or not head or head == loaded_sha:
         return False
-    repo = pathlib.Path(repo_dir).resolve()
+    roots = [pathlib.Path(root).resolve() for root in (repo_dir, bundle_dir) if root]
     loaded = {"launcher.py"}
     for module in list(sys.modules.values()):
         source = getattr(module, "__file__", None)
         if not source:
             continue
         try:
-            loaded.add(pathlib.Path(source).resolve().relative_to(repo).as_posix())
-        except (OSError, ValueError):
+            path = pathlib.Path(source).resolve()
+        except OSError:
             continue
+        for root in roots:
+            if path.is_relative_to(root):
+                relative = path.relative_to(root)
+                loaded.add((relative.with_suffix(".py") if relative.suffix == ".pyc" else relative).as_posix())
+                break
     probe = subprocess.run(["git", "diff", "--quiet", loaded_sha, head, "--", *sorted(loaded)],
                            cwd=str(repo_dir), capture_output=True, check=False)
     return probe.returncode == 1
@@ -1186,12 +1194,12 @@ def parse_launch_options(argv):
                         help="Automatic boot entry preserves an explicit Panic stop.")
     parser.add_argument("--host-update", type=pathlib.Path,
                         help="External host Python installer; also supports read-only --check.")
-    parser.add_argument("--seed-bundle", type=pathlib.Path, help="Keep immutable seed provenance while running an external host from source.")
+    parser.add_argument("--seed-bundle", type=pathlib.Path, help="Keep immutable seed provenance when relaunching from source; presentation is unchanged.")
     # Desktop launchers may supply platform arguments (for example Finder's
     # process serial number). Retain their previously ignored behavior.
     options, _ = parser.parse_known_args(argv)
-    if (options.host_update is not None or options.seed_bundle is not None) and not options.no_ui:
-        parser.error("--host-update and --seed-bundle require --no-ui")
+    if options.host_update is not None and not options.no_ui:
+        parser.error("--host-update requires --no-ui")
     return options
 
 

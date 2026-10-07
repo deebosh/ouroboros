@@ -150,6 +150,7 @@ def test_boot_settles_an_adoption_as_unready_when_the_bootstrap_failed(body, mon
     assert seen == [True, False, False]
 
 
+@pytest.mark.serial  # real cold entries
 @pytest.mark.parametrize("fails", ["pointer", "armed_record"])
 def test_arming_interrupted_on_either_side_of_the_pointer_settles_unapplied_and_never_holds_the_checkout(
         body, monkeypatch, fails):
@@ -247,6 +248,33 @@ def test_launcher_relaunches_only_when_a_loaded_module_changed_in_the_checkout(t
     assert launcher.launcher_sources_changed(repo) is True  # the remembered commit is the default base
     assert launcher.launcher_sources_changed(repo, "") is False  # unknown import-time commit: never a guess
     assert launcher.checkout_sha(tmp_path / "not-a-repo") == ""
+
+
+def test_packaged_launcher_counts_helpers_it_loaded_from_its_bundle(tmp_path, monkeypatch):
+    """A frozen launcher imported its helpers from the bundle, not the checkout:
+    PyInstaller presents them as ``<bundle>/<pkg>/<module>.pyc`` (not a native app run)."""
+    from ouroboros import launcher_bootstrap as launcher
+    from ouroboros import launcher_server_reaper as helper
+
+    repo, bundle = tmp_path / "repo", tmp_path / "bundle"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "t@example.invalid")
+    git(repo, "config", "user.name", "t")
+    for rel in ("launcher.py", "ouroboros/launcher_server_reaper.py", "ouroboros/other.py"):
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text("GEN = 1\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "one")
+    loaded = git(repo, "rev-parse", "HEAD")
+    monkeypatch.setattr(helper, "__file__", str(bundle / "ouroboros" / "launcher_server_reaper.pyc"))
+    (repo / "ouroboros/other.py").write_text("GEN = 2\n")
+    git(repo, "commit", "-qam", "unrelated")
+    assert launcher.launcher_sources_changed(repo, loaded, bundle_dir=bundle) is False
+    (repo / "ouroboros/launcher_server_reaper.py").write_text("GEN = 2\n")
+    git(repo, "commit", "-qam", "helper")
+    assert launcher.launcher_sources_changed(repo, loaded) is False  # the checkout alone never names it
+    assert launcher.launcher_sources_changed(repo, loaded, bundle_dir=bundle) is True
 
 
 # --------------------------------------------------------------------------- #

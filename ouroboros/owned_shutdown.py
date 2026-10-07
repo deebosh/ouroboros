@@ -520,7 +520,12 @@ def begin_owned_stop(drive_root: Any = None) -> None:
 
 
 def stop_owned_work(drive_root: Any = None) -> Dict[str, Any]:
-    """Start the generation's one stop, or join the running one until it completes or its deadline."""
+    """Start/join the one stop; completed evidence includes any subsequently registered targets."""
+    if drive_root is None:
+        from ouroboros.config import resolve_data_dir
+
+        drive_root = resolve_data_dir()
+    root = installation_root(drive_root)
     stop = _GENERATION_STOP
     with stop.lock:
         starting = not stop.started
@@ -531,20 +536,29 @@ def stop_owned_work(drive_root: Any = None) -> Dict[str, Any]:
         deadline = stop.deadline
     if not starting:
         stop.done.wait(max(0.0, deadline - time.monotonic()))
-        return dict(stop.outcome or {"state": "in_progress", "joined": True})
+        return _current_stop_outcome(root, stop.outcome or {"state": "in_progress", "joined": True})
     outcome: Dict[str, Any] = {"state": "failed"}
     try:
-        if drive_root is None:
-            from ouroboros.config import resolve_data_dir
-
-            drive_root = resolve_data_dir()
-        outcome = _run_stop(installation_root(drive_root), deadline)
+        outcome = _run_stop(root, deadline)
     except Exception:
         log.critical("Owned-work stop failed; the set keeps its records for the next start", exc_info=True)
     finally:
         stop.outcome = outcome
         stop.done.set()
-    return dict(outcome)
+    return _current_stop_outcome(root, outcome)
+
+
+def _current_stop_outcome(root: Any, outcome: Dict[str, Any]) -> Dict[str, Any]:
+    """Late targets keep their next-start recovery; no second stop or wait is added."""
+    result = dict(outcome)
+    if result.get("state") == "completed":
+        try:
+            remaining = [entry["record_id"] for entry in owned_records(root, strict=True) if _is_stop_target(entry)]
+        except Exception:
+            remaining = ["ownership_set_unreadable"]
+        if remaining:
+            result.update(state="unconfirmed", unconfirmed=remaining)
+    return result
 
 
 def import_inherited_records(drive_root: Any) -> Optional[int]:

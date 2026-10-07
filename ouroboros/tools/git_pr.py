@@ -454,7 +454,7 @@ def _stage_adaptations(ctx: ToolContext) -> str:
         + "\n".join(f"  {f}" for f in files[:20])
         + (f"\n  ... and {len(files)-20} more" if len(files) > 20 else "")
         + f"\n\nNext: stage_pr_merge(branch='{current_branch}') — do NOT commit here;\n"
-          f"  adaptation changes land in the merge commit on ouroboros."
+          f"  adaptation changes land in the merge commit on {ctx.branch_dev}."
     )
 
 
@@ -701,10 +701,10 @@ def get_tools() -> List[ToolEntry]:
         ToolEntry("stage_pr_merge", {
             "name": "stage_pr_merge",
             "description": (
-                "Stage a no-fast-forward merge of an integration branch into ouroboros "
+                "Stage a no-fast-forward merge of an integration branch into the body's working branch "
                 "WITHOUT committing (git merge --no-ff --no-commit). Sets MERGE_HEAD so "
                 "commit_reviewed creates a proper merge commit with both parents. Target is "
-                "always ouroboros (commit_reviewed always checks out branch_dev before "
+                "branch_dev (the bound candidate branch during self-development; commit_reviewed checks it out before "
                 "committing — any other target would lose MERGE_HEAD). The "
                 "integration-branch history (with original author commits) is permanently "
                 "linked. Finalize via preflight_review + commit_reviewed."

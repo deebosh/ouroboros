@@ -568,3 +568,69 @@ def test_index_checks_the_whole_staged_candidate_even_with_narrow_paths(candidat
     report = admission.release_metadata_diagnostics(repo, ["VERSION"], source="index")
     assert report["status"] == "clean"
     assert report["findings"] == []
+
+
+@pytest.mark.parametrize("path,change", [
+    ("README.md", "version"), ("README.md", "delete"), ("README.md", "rename"),
+    ("docs/ARCHITECTURE.md", "version"), ("docs/ARCHITECTURE.md", "delete"),
+])
+def test_documentation_carriers_preserved_through_all_consumers(candidate, path, change):
+    repo = candidate.repo_dir
+    if change == "version":
+        target = repo / path
+        target.write_text(target.read_text().replace("1.2.3", "1.2.4"))
+    elif change == "delete":
+        (repo / path).unlink()
+    else:
+        (repo / path).rename(repo / "history.md")
+    _git(repo, "add", "-A")
+    staged, prepared, bound = _three_consumers(candidate)
+    assert staged and "PREFLIGHT_BLOCKED" in staged and path in staged, staged
+    for report in (prepared, bound, admission.release_metadata_diagnostics(repo, source="worktree", neutral_allowed=False)):
+        assert report["status"] == "blocked" and any(path in f for f in report["findings"]), report
+
+
+def test_documentation_prose_keeps_doc_only_exemption(candidate):
+    repo = candidate.repo_dir
+    for path in ("README.md", "docs/ARCHITECTURE.md"):
+        target = repo / path
+        target.write_text(target.read_text() + "## Usage\n\nOrdinary prose.\n")
+    _git(repo, "add", "-A")
+    staged, prepared, bound = _three_consumers(candidate)
+    assert staged is None
+    for report in (prepared, bound):
+        assert (report["status"], report["form"]) == ("not_applicable", "doc_only"), report
+
+
+@pytest.mark.parametrize("carrier", ["readme_badge", "readme_history", "readme_download_refs", "architecture_header"])
+@pytest.mark.parametrize("change", ["edit", "remove"])
+def test_each_documentation_span_is_protected_without_a_code_change(candidate, carrier, change):
+    from ouroboros.tools.release_sync import VERSION_CARRIER_SPANS, locate_carrier_span
+    repo = candidate.repo_dir
+    if carrier == "readme_download_refs":
+        target = repo / "README.md"
+        target.write_text(target.read_text() + "[download-macos-arm64]: https://example.invalid/v1.2.3/app\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-qm", "fixture download span")
+    span = next(span for span in VERSION_CARRIER_SPANS if span.carrier_id == carrier)
+    target = repo / span.path
+    text = target.read_text()
+    _, location = locate_carrier_span(text, span)
+    assert location
+    start, end = location
+    replacement = text[start:end].replace("1.2.3", "1.2.4") if change == "edit" else ""
+    target.write_text(text[:start] + replacement + text[end:])
+    _git(repo, "add", "-A")
+    staged, prepared, bound = _three_consumers(candidate)
+    assert staged and "PREFLIGHT_BLOCKED" in staged and carrier in staged
+    for report in (prepared, bound):
+        assert report["status"] == "blocked" and carrier in " ".join(report["findings"])
+
+
+def test_docs_only_introduction_of_download_span_is_not_prose(candidate):
+    target = candidate.repo_dir / "README.md"
+    target.write_text(target.read_text() + "[download-macos-arm64]: https://example.invalid/v1.2.4/app\n")
+    _git(candidate.repo_dir, "add", "-A")
+    staged, prepared, bound = _three_consumers(candidate)
+    assert staged and "PREFLIGHT_BLOCKED" in staged and "readme_download_refs" in staged
+    assert all(report["status"] == "blocked" for report in (prepared, bound))

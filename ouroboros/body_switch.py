@@ -189,9 +189,11 @@ def _dir_state(root, path, switch_paths):
     paths (the other side's own files, which the deletions ordered ahead of this path remove) and
     bytecode caches; foreign ("directory") when anything else lives there."""
     for dirpath, dirnames, filenames in os.walk(os.path.join(root, path)):
-        dirnames[:] = [name for name in dirnames if name != "__pycache__"]
-        for name in filenames:
-            if os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/") not in switch_paths:
+        for name in filenames + [name for name in dirnames if os.path.islink(os.path.join(dirpath, name))]:
+            full = os.path.join(dirpath, name)
+            bytecode = (os.path.basename(dirpath) == "__pycache__" and name.endswith(".pyc")
+                        and not os.path.islink(full))
+            if not bytecode and os.path.relpath(full, root).replace(os.sep, "/") not in switch_paths:
                 return ("directory", "directory")
     return (None, None)
 
@@ -260,6 +262,16 @@ def _put(root, path, mode, sha):
         return
     directory = os.path.dirname(full)
     os.makedirs(directory, exist_ok=True)
+    if os.path.isdir(full) and not os.path.islink(full):
+        # Other switch paths were deleted first. Historical caches have no current
+        # source row; remove only bytecode and empty directories, never foreign files.
+        for parent, _dirs, names in os.walk(full, topdown=False):
+            if os.path.basename(parent) == "__pycache__":
+                for name in names:
+                    cache = os.path.join(parent, name)
+                    if name.endswith(".pyc") and not os.path.islink(cache):
+                        os.unlink(cache)
+            os.rmdir(parent)
     data = _git(root, "cat-file", "blob", sha)[1]
     if mode == "120000":
         tmp = os.path.join(directory, "%s%d.link" % (_TMP_PREFIX, os.getpid()))

@@ -745,7 +745,7 @@ def get_evolution_status_snapshot(*, budget_projection: Optional[Dict[str, Any]]
         detail = "Evolution control is unknown: runtime state is unavailable or recovering from a backup."
     elif restart_blocked:
         status = "waiting_for_restart_verify"
-        detail = "Waiting for restart verification before the next absorbed evolution cycle."
+        detail = str(active_tx.get("restart_guidance") or "Waiting for restart verification before the next absorbed evolution cycle.")
     elif isinstance(running_task, dict):
         status = "running"
         detail = "Evolution task is running now."

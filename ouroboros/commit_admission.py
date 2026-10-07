@@ -197,6 +197,10 @@ def release_metadata_diagnostics(
     else:
         report["form"] = "doc_only" if touched else "none"
         report["status"] = "not_applicable"
+        # Documentation may carry release identity too. The prose exemption does
+        # not permit changing, introducing or removing a declared carrier span.
+        findings.extend(_neutral_carrier_findings(repo_dir, touched & set(CARRIER_SPAN_PATHS), source,
+                                                  read_text, unavailable, removed))
     if unavailable:
         report["status"] = "unavailable"
     elif findings:

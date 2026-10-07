@@ -92,6 +92,7 @@ def test_candidate_starts_from_the_accepted_commit_not_from_serving_dirt(body):
     assert (serving / "owner-untracked.txt").read_text() == "mine\n"
 
 
+@pytest.mark.serial  # real child process
 def test_explicit_prepare_gives_processes_the_candidate_cwd_and_an_isolated_environment(body):
     serving, data = body
     before = _tree_bytes(serving)
@@ -288,6 +289,11 @@ def test_pr_integration_runs_in_the_candidate_and_never_moves_the_serving_checko
     assert (git(serving, "rev-parse", "HEAD"), git(serving, "rev-parse", "--abbrev-ref", "HEAD")) == (head, "ouroboros")
     bound = body_candidate.descriptor(ctx)
     candidate = pathlib.Path(bound["path"])
+    assert bound["branch"] in adapted.text and "always `ouroboros`" not in adapted.text
+    from ouroboros.tools.git_pr import get_tools
+    schema = next(tool.schema for tool in get_tools() if tool.name == "stage_pr_merge")
+    assert "always `ouroboros`" not in schema["description"]
+    assert "candidate" in schema["description"]
     assert git(candidate, "rev-parse", "--abbrev-ref", "HEAD") == bound["branch"]
     assert git(candidate, "merge-base", "integrate/pr-7", bound["branch"]) == bound["base_sha"]
     assert git(candidate, "rev-parse", "MERGE_HEAD") == git(candidate, "rev-parse", "integrate/pr-7")
@@ -346,6 +352,7 @@ def test_protected_path_policy_applies_to_the_candidate_as_to_the_body(body, mon
     assert (candidate / "BIBLE.md").read_text() == "# Constitution\n"
 
 
+@pytest.mark.serial  # real child process
 def test_bound_task_cannot_reach_the_serving_checkout_through_another_root(body, monkeypatch, tmp_path):
     serving, data = body
     monkeypatch.setenv("HOME", str(tmp_path))  # the serving checkout sits under the owner's home, as installed
@@ -740,6 +747,7 @@ def test_commit_seams_use_the_candidate_branch_and_never_the_serving_push(body, 
     assert body_candidate.publication_note(plain) == ""
 
 
+@pytest.mark.serial  # real child process
 def test_candidate_start_service_uses_isolated_environment(body):
     """An ordinary (non-executor) service launched inside a candidate must not inherit live data."""
     import json
@@ -752,7 +760,7 @@ def test_candidate_start_service_uses_isolated_environment(body):
         "name": "candidate-env",
         "cwd": str(candidate),
         "cmd": [sys.executable, "-c", "import os; print(os.environ['OUROBOROS_DATA_DIR'], flush=True)"],
-        "readiness": {"timeout_sec": 2},
+        "readiness": {"log_contains": str(candidate.with_name(candidate.name + ".env") / "data"), "timeout_sec": 2},
     })
     result, _ = json.JSONDecoder().raw_decode(result_text.lstrip())
     assert result["state"] in {"running", "exited"}
