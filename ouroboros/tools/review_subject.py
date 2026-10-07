@@ -58,7 +58,7 @@ import pathlib
 import shutil
 import subprocess
 import uuid
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from ouroboros.tools import review_binary_context as _rbc
 from ouroboros.tools.review_binary_context import StagedDiffUnavailable
@@ -855,12 +855,18 @@ def freeze_subject(ctx: Any, spec: ReviewSubjectSpec, *, checkout: str = "") -> 
 
 
 @contextlib.contextmanager
-def isolated_checkout(ctx: Any, spec: ReviewSubjectSpec) -> Iterator[FrozenSubject]:
+def isolated_checkout(ctx: Any, spec: ReviewSubjectSpec, *,
+                      retain: Optional[Callable[[], Mapping[str, Any]]] = None) -> Iterator[FrozenSubject]:
     """A detached worktree at the subject's parent with its patch applied to the
     index, under the install's data root (``state/review_checkouts/<token>/repo``);
     the yielded subject reads there, so edits in the primary worktree during the
     run cannot change what the reviewers see. The checkout's ``write-tree`` must
-    equal the frozen ``tree_sha`` or the subject is refused; removed on exit."""
+    equal the frozen ``tree_sha`` or the subject is refused.
+
+    Removed on exit unless ``retain()`` names open custody then (a reviewer seat
+    whose answer is still owed, an open preflight run): a checkout a paid worker
+    may still read is kept for reconciliation, and the caller records the fact.
+    An unreadable custody answer is disclosed as unknown and keeps the checkout."""
     from ouroboros.tool_access_paths import canonical_data_root
 
     spec = _normalized_spec(ctx, spec)
@@ -894,8 +900,23 @@ def isolated_checkout(ctx: Any, spec: ReviewSubjectSpec) -> Iterator[FrozenSubje
                                         f"subject tree {frozen.tree_sha[:12]}")
         yield frozen
     finally:
-        _git_bytes(spec.root, ["worktree", "remove", "--force", str(checkout)])
-        shutil.rmtree(checkout_root, ignore_errors=True)
+        if checkout_retention(retain):
+            log.warning("review checkout %s retained: custody unresolved", checkout)
+        else:
+            _git_bytes(spec.root, ["worktree", "remove", "--force", str(checkout)])
+            shutil.rmtree(checkout_root, ignore_errors=True)
+
+
+def checkout_retention(retain: Optional[Callable[[], Mapping[str, Any]]]) -> Dict[str, Any]:
+    """The custody facts that keep an isolated checkout alive, ``{}`` when none.
+    A ``retain`` that cannot answer is not permission to destroy the checkout."""
+    if retain is None:
+        return {}
+    try:
+        return dict(retain() or {})
+    except Exception as exc:
+        log.warning("review checkout custody is unreadable; retaining", exc_info=True)
+        return {"custody_unreadable": f"{type(exc).__name__}: {exc}"}
 
 
 def assigned_seats(triad_seat_ids: Any, scope_seat_ids: Any) -> Tuple[Tuple[str, str], ...]:

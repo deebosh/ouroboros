@@ -35,6 +35,8 @@ from scripts.run_external_review import (
 )
 from tests import _contributor_packet_shared as shared
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 @pytest.mark.parametrize('delivery,refused', [('native', False), ('packet', True), ('', True)])
 def test_contributor_config_roundtrip_keeps_direct_api_delivery(monkeypatch, delivery, refused):
@@ -124,26 +126,77 @@ def test_contributor_trust_boundary_covers_functional_review_dependencies():
 
 
 def test_external_review_script_is_a_wrapper_over_the_review_operation():
+    import scripts.contributor_review_evidence as evidence
+    import scripts.run_external_review as module
+
     source = Path("scripts/run_external_review.py").read_text(encoding="utf-8")
     assert "v6.10.0" not in source
     assert "Google Colab" not in source
+    # Contributor lane: the review operation over the frozen base..head subject.
     assert "ouroboros.tools import review_change" in source
     assert 'root="system_repo", surface="change"' in source
+    assert 'subject="base..head"' in source
+    # Operator lane: the exact commit-gate dry-run, in the runtime's isolated
+    # checkout of the staged index, with the advisory pre-review recorded in full.
+    assert "_run_non_committing_review_cycle(" in source
+    assert "skip_advisory_review=False" in source
+    assert '"advisory.txt"' in source
+    assert 'kind="index", surface="commit_gate"' in source
     assert "adaptive_quorum" not in source
     assert "aggregate_review_verdict" not in source
-    # The review flow lives in the runtime: the wrapper neither runs the old
-    # commit-gate cycle nor materializes, replays or re-executes anything.
-    for retired in ("_run_non_committing_review_cycle", "_run_on_trusted_base", "skip_advisory_review",
-                    '"advisory.txt"', '"worktree", "add"', "git apply", "sys.executable"):
+    # Neither lane materializes, replays or re-executes anything itself: the
+    # runtime's isolated_checkout owns the worktree and the patch bytes.
+    for retired in ("_run_on_trusted_base", '"worktree", "add"', "git apply", "sys.executable",
+                    "operator_binding", "_handle_advisory_pre_review"):
         assert retired not in source, retired
-    assert "operator_binding" not in source
-    assert "_handle_advisory_pre_review" not in source
-    assert "_CONTRIBUTOR_PROFILE = \"external_pr_readiness\"" in source
+    assert source.count("isolated_checkout(host_ctx, spec") == 2
+    # The packet vocabulary has one owner; the wrapper's literals mirror it.
+    assert module._CONTRIBUTOR_PROFILE == evidence.CONTRIBUTOR_PROFILE == "external_pr_readiness"
+    assert module._EXIT_CLASS == evidence.EXIT_CLASS
 
 
 def test_external_review_script_defaults_to_pro_mode():
     source = Path("scripts/run_external_review.py").read_text(encoding="utf-8")
     assert 'setdefault("OUROBOROS_RUNTIME_MODE", "pro")' in source
+
+
+def test_external_review_advisory_warning_uses_safe_canonical_reason(monkeypatch):
+    import scripts.run_external_review as module
+    from ouroboros.tools import claude_advisory_review as advisory
+
+    monkeypatch.setattr(advisory, "advisory_gate_unavailability_reason", lambda: "agent_session_route_unavailable")
+    warning = module._advisory_unavailability_warning()
+    assert "agent_session_route_unavailable" in warning
+    assert advisory.ADVISORY_REVIEW_CHOICE_GUIDANCE in warning
+    assert "ANTHROPIC_API_KEY" not in warning
+
+    secret_error = "secret-setting-value-must-not-leak"
+
+    def _malformed():
+        raise ValueError(secret_error)
+
+    monkeypatch.setattr(advisory, "advisory_gate_unavailability_reason", _malformed)
+    warning = module._advisory_unavailability_warning()
+    assert "invalid_advisory_configuration" in warning
+    assert secret_error not in warning
+
+
+def test_external_review_checks_advisory_after_settings_load_without_key_heuristic():
+    """The operator lane asks the advisory gate's own availability answer only after
+    the settings landed in the environment, and never guesses from a key's presence."""
+    import inspect
+    import scripts.run_external_review as module
+
+    main_source = inspect.getsource(module.main)
+    prepare_source = inspect.getsource(module._prepare_review_configuration)
+    operator_source = inspect.getsource(module._operator_lane)
+    assert "_load_settings_into_env()" in prepare_source
+    assert main_source.index("_prepare_review_configuration(args)") < main_source.index("_operator_lane(")
+    assert "_advisory_unavailability_warning()" in operator_source
+    assert operator_source.index("_advisory_unavailability_warning()") < operator_source.index(
+        "_run_non_committing_review_cycle(")
+    for source in (main_source, operator_source):
+        assert 'os.environ.get("ANTHROPIC_API_KEY"' not in source
 
 
 def test_external_review_script_resolves_models_and_efforts(monkeypatch):
@@ -204,9 +257,14 @@ def _contributor_fakes(module, monkeypatch, repo: Path, drive: Path) -> None:
 
 
 def _run_golden_contributor_review(tmp_path: Path, monkeypatch) -> SimpleNamespace:
-    """The golden capture's invocation (see the golden's provenance), with the
-    runtime review operation where the wrapper's own cycle used to run."""
+    """The golden capture's invocation (see the golden's provenance) through the
+    REAL review operation: only the paid seam (the review substrate) and the
+    commit gate's hermetic test runner are stand-ins, answering as the golden's
+    seats did."""
+    import ouroboros.review_substrate as substrate
     import scripts.run_external_review as module
+    from ouroboros.tools import review_change as operation_module
+    from ouroboros.tools import review_helpers
 
     fixture = shared.init_installed_body(tmp_path)
     drive, output = (tmp_path / "drive").resolve(), (tmp_path / "out").resolve()
@@ -215,15 +273,22 @@ def _run_golden_contributor_review(tmp_path: Path, monkeypatch) -> SimpleNamespa
     (host / "settings.json").write_text('{"OUROBOROS_REVIEW_ENFORCEMENT": "advisory"}\n', encoding="utf-8")
     _contributor_fakes(module, monkeypatch, Path(fixture["repo"]), drive)
     monkeypatch.setattr(module, "DATA", host)
+    monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "1")
+    briefs: list[dict] = []
+    monkeypatch.setattr(substrate, "run_review_request", shared.golden_substrate(briefs))
+    monkeypatch.setattr(review_helpers, "_run_review_preflight_tests", shared.passing_test_runner)
     calls: list[dict] = []
-    operation, wrapper_running = shared.golden_review_change(calls), [False]
+    operation, wrapper_running = operation_module.run_review_change, [False]
 
     def review_change(ctx, **arguments):
         wrapper_running[0] = False  # what the runtime operation spawns is the runtime's business
         try:
-            return operation(ctx, **arguments)
+            result = operation(ctx, **arguments)
         finally:
             wrapper_running[0] = True
+        calls.append({"arguments": dict(arguments), "repo_dir": str(ctx.repo_dir), "pid": os.getpid(),
+                      "record_id": result.get("record_id"), "result": result})
+        return result
 
     monkeypatch.setattr(module, "run_review_change", review_change)
     spawned: list[dict] = []
@@ -233,7 +298,11 @@ def _run_golden_contributor_review(tmp_path: Path, monkeypatch) -> SimpleNamespa
         def __init__(self, args, *rest, **kwargs):
             if wrapper_running[0]:
                 command = [str(part) for part in args] if isinstance(args, (list, tuple)) else [str(args)]
-                spawned.append({"command": command, "env": kwargs.get("env")})
+                env = kwargs.get("env")
+                # Rewritten: an inherited variable changed, or a non-git variable added.
+                spawned.append({"command": command, "env": env, "env_rewritten": env is not None and any(
+                    os.environ[key] != value if key in os.environ else not key.startswith("GIT_")
+                    for key, value in env.items())})
             super().__init__(args, *rest, **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", RecordingPopen)
@@ -253,7 +322,15 @@ def _run_golden_contributor_review(tmp_path: Path, monkeypatch) -> SimpleNamespa
             del os.environ[key]
         os.environ.update(environ_before)
     return SimpleNamespace(fixture=fixture, output=output, calls=calls, spawned=spawned, exit_code=exit_code,
-                           host=host, host_before=host_before)
+                           host=host, host_before=host_before, briefs=briefs, drive=drive)
+
+
+def _installed_rules_source() -> dict:
+    """R5: the record's rules source is the git blob id of the executing install's
+    checklist bytes, whatever tree that install is checked out at."""
+    blob = subprocess.run(["git", "hash-object", "docs/CHECKLISTS.md"], cwd=str(REPO_ROOT),
+                          capture_output=True, text=True, check=True).stdout.strip()
+    return {"path": "docs/CHECKLISTS.md", "sha": blob}
 
 
 def test_contributor_packet_is_the_pre_move_packet(tmp_path, monkeypatch):
@@ -276,11 +353,12 @@ def test_contributor_packet_is_the_pre_move_packet(tmp_path, monkeypatch):
     review_record = new.pop("review_record")
     assert new == old
 
-    # The review ran the installed body's rules, not the proposal's relaxed checklist:
-    # the rules source names the installed checklist bytes or the installed HEAD.
-    installed_rules = hashlib.sha256(shared.BASE_FILES["docs/CHECKLISTS.md"].encode("utf-8")).hexdigest()
-    assert installed["rules_source"]["path"] == "docs/CHECKLISTS.md"
-    assert installed["rules_source"]["sha"] in {installed_rules, "<base_sha>"}
+    # The review ran the installed body's rules, not the proposal's relaxed
+    # checklist: the rules source is the blob id of the executing install's
+    # checklist bytes (R5), never the fixture's or the proposal's.
+    rules_source = _installed_rules_source()
+    assert installed["rules_source"] == rules_source
+    assert rules_source["sha"] != hashlib.sha256(shared.BASE_FILES["docs/CHECKLISTS.md"].encode()).hexdigest()
     assert installed["executing_checkout_head"] == "<base_sha>"
     assert "installed body's review flow and rules" in installed["statement"]
     assert review_record["record_id"] == run.calls[0]["record_id"]
@@ -289,10 +367,25 @@ def test_contributor_packet_is_the_pre_move_packet(tmp_path, monkeypatch):
     assert review_record["subject"]["root"] == "$REPO"
     assert {key: review_record["subject"][key] for key in ("kind", "base", "head", "tree_sha")} == {
         "kind": "base..head", "base": "<base_sha>", "head": "<head_sha>", "tree_sha": "<head_tree_sha>"}
-    assert review_record["checklist"]["rules_source"] == installed["rules_source"]
-    assert review_record["tests"]["policy"] == "NOT_RUN"
+    assert review_record["checklist"]["rules_source"] == rules_source
+    assert review_record["checklist"]["layer"] == "body"
+    # R2: the proposal's hermetic test preflight ran on the reviewed tree and is
+    # attached to the record as the gate's own candidate-bound fact.
+    assert review_record["tests"] == {"policy": "run", "result": "passed", "proof": "candidate_bound",
+                                      "tree_sha": "<head_tree_sha>"}
     assert review_record["path"].startswith("$REVIEW_DRIVE")
     assert review_record["path"].endswith(f"{review_record['record_id']}.json")
+    # Every seat was briefed on the frozen base..head subject through the body
+    # layer; the retrieving seats read the frozen checkout, never the installed repo.
+    assert sorted(brief["slot_id"] for brief in run.briefs) == ["s1", "t1", "t2"]
+    checkouts = run.drive / "state" / "review_checkouts"
+    for brief in run.briefs:
+        text = "\n".join(str(message.get("content") or "") for message in brief["messages"]) + brief["session_task"]
+        assert "Ouroboros Body Layer" in text and shared.PROPOSAL_TITLE in text, brief["slot_id"]
+        if brief["slot_id"] in {"t2", "s1"}:
+            assert Path(brief["session_root"]).parent.parent == checkouts, brief["session_root"]
+        else:
+            assert brief["session_root"] == ""
 
     full_output = (run.output / "full-output.txt").read_text(encoding="utf-8")
     sections = shared.full_output_sections(full_output)
@@ -328,12 +421,67 @@ def test_contributor_review_runs_in_this_process_on_the_installed_body(tmp_path,
         "base": run.fixture["base_sha"], "head": run.fixture["head_sha"]}
     assert f"External PR title: {shared.PROPOSAL_TITLE}" in call["arguments"]["goal"]
     assert run.spawned and all(item["command"][0] == "git" for item in run.spawned)
-    assert all(item["env"] is None for item in run.spawned)
+    # The runtime's git helpers may drop a variable (GIT_DIFF_OPTS); nothing is rewritten.
+    assert not any(item["env_rewritten"] for item in run.spawned)
     assert {path.name: path.read_bytes() for path in run.host.iterdir()} == run.host_before
     repo = Path(run.fixture["repo"])
     assert shared.git(repo, "rev-parse", "HEAD") == run.fixture["base_sha"]
     assert shared.git(repo, "status", "--porcelain") == ""
     assert shared.git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
+
+
+def test_contributor_lane_refuses_before_review_when_the_proposal_tests_fail(tmp_path, monkeypatch):
+    """R2: the proposal's hermetic suite runs on an isolated checkout of the frozen
+    base..head subject BEFORE any reviewer is paid; a failed suite is a typed
+    refusal (exit 3, $0, no record, no checkout left behind)."""
+    import ouroboros.review_substrate as substrate
+    import scripts.run_external_review as module
+    from ouroboros.tools import review_helpers
+
+    fixture = shared.init_installed_body(tmp_path)
+    repo, drive, output = Path(fixture["repo"]), (tmp_path / "drive").resolve(), (tmp_path / "out").resolve()
+    _contributor_fakes(module, monkeypatch, repo, drive)
+    monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "1")
+    monkeypatch.setattr(substrate, "run_review_request",
+                        lambda *_args, **_kwargs: pytest.fail("no reviewer is dispatched after a failed preflight"))
+    monkeypatch.setattr(module, "run_review_change",
+                        lambda *_args, **_kwargs: pytest.fail("the review operation runs only after the tests pass"))
+    tested: list[dict] = []
+
+    def failing_test_runner(ctx, **_kwargs):
+        tested.append({"repo_dir": Path(ctx.repo_dir), "tree": shared.git(Path(ctx.repo_dir), "write-tree")})
+        ctx._preflight_tests_passed = False
+        return "FAILED tests/test_change.py::test_proposal - assert 1 == 2"
+
+    monkeypatch.setattr(review_helpers, "_run_review_preflight_tests", failing_test_runner)
+    monkeypatch.setattr(module.sys, "argv", [
+        "run_external_review.py", "--contributor", "--base-ref=base", f"--head-ref={fixture['head_sha']}",
+        f"--output={output}", f"--drive-root={drive}", "--run-cap-usd=5", "--attach-host-engine",
+        "--", shared.PROPOSAL_TITLE,
+    ])
+
+    exit_code = module.main()
+
+    assert exit_code == 3
+    [run] = tested
+    assert run["tree"] == fixture["head_tree_sha"] and run["repo_dir"] != repo
+    assert run["repo_dir"].parent.parent == drive / "state" / "review_checkouts"
+    outcome = json.loads((output / "outcome.json").read_text(encoding="utf-8"))
+    assert outcome["exit_code"] == 3 and outcome["outcome"]["block_reason"] == "tests_preflight_blocked"
+    assert "FAILED tests/test_change.py::test_proposal" in outcome["outcome"]["message"]
+    assert outcome["outcome"]["tested_tree_sha"] == fixture["head_tree_sha"]
+    evidence = json.loads((output / "review-evidence.json").read_text(encoding="utf-8"))
+    assert evidence["result"] == "INCOMPLETE"
+    assert evidence["review_record"] == {"record_id": None, "available": False}
+    assert evidence["review_execution"]["receipts"] == [] and evidence["review_execution"]["mismatches"] == []
+    assert evidence["production_outcome"]["block_reason"] == "tests_preflight_blocked"
+    assert evidence["cost_report"]["reported_actor_cost_usd"] == 0
+    assert evidence["cost_report"]["reported_cost_slots"] == [] and evidence["raw_evidence_refs"] == []
+    assert not list(drive.rglob("rl-*.json")), "no review record: nothing was dispatched"
+    assert not (drive / "state" / "review_checkouts").exists() or not any(
+        (drive / "state" / "review_checkouts").iterdir())
+    assert shared.git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
+    assert shared.git(repo, "rev-parse", "HEAD") == fixture["base_sha"]
 
 
 def test_the_wrapper_run_from_the_proposal_refuses_before_any_review(tmp_path, monkeypatch, capsys):
@@ -386,9 +534,14 @@ def test_the_review_record_decides_the_typed_outcome_and_exit():
     assert _record_outcome(_record("PASS", subject={"kind": "index"}), "")["status"] == "passed"
 
 
-def test_operator_lane_reviews_the_staged_index_through_the_same_operation(tmp_path, monkeypatch, capsys):
+def _operator_fixture(tmp_path: Path, monkeypatch) -> tuple[Path, list[dict]]:
+    """An installed body with a staged README edit; the operator lane's paid seam
+    (the review substrate) and hermetic test runner are the golden stand-ins, and
+    the gate reads the golden panel from the frozen slot plan."""
+    import ouroboros.review_substrate as substrate
     import scripts.run_external_review as module
-    from ouroboros import review_ledger
+    from ouroboros.tools import git as git_mod
+    from ouroboros.tools import review_helpers
 
     fixture = shared.init_installed_body(tmp_path)
     repo = Path(fixture["repo"])
@@ -397,53 +550,111 @@ def test_operator_lane_reviews_the_staged_index_through_the_same_operation(tmp_p
     monkeypatch.setattr(module, "REPO", repo)
     monkeypatch.setattr(module, "_load_settings_into_env", lambda: None)
     monkeypatch.setattr(module, "_resolved_review_config",
-                        lambda *, profile="production_commit_gate": {"profile": profile})
+                        lambda *, profile="production_commit_gate": json.loads(json.dumps(shared.GOLDEN_CONFIG)))
     monkeypatch.setattr(module, "_select_healthy_openrouter_key", lambda **_kwargs: False)
-    calls: list[dict] = []
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps(module._slot_plan_payload(shared.GOLDEN_CONFIG)))
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
+    monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "1")
+    briefs: list[dict] = []
+    monkeypatch.setattr(substrate, "run_review_request", shared.golden_substrate(briefs))
+    monkeypatch.setattr(review_helpers, "_run_review_preflight_tests", shared.passing_test_runner)
+    monkeypatch.setattr(git_mod, "_run_review_preflight_tests", shared.passing_test_runner)
+    return repo, briefs
 
-    def review(ctx, **arguments):
-        calls.append({"repo_dir": Path(ctx.repo_dir), **arguments})
-        drive = review_ledger.ledger_root(ctx)
-        record = review_ledger.build_commit_gate_record({"repo_dir": str(ctx.repo_dir), "triad_raw": [
-            {"slot_id": "t1", "model_id": "openai/m", "status": "responded", "cost_usd": 0.5,
-             "raw_text": "t1 operator answer"}], "scope_raw": {"raw_results": [
-            {"slot_id": "s1", "model_id": "openai/m", "status": "responded", "raw_text": "s1 operator answer"}]},
-        }, drive_root=drive)
-        return {"record_id": review_ledger.write_record(drive, record)["record_id"]}
 
-    def run(*, review_change) -> tuple[int, Path]:
-        output = tmp_path / f"out-{len(calls)}"
-        monkeypatch.setattr(module, "run_review_change", review_change)
-        monkeypatch.setattr(module.sys, "argv", [
-            "run_external_review.py", f"--output={output}", f"--drive-root={tmp_path / 'drive'}", "fix: one"])
-        return module.main(), output
+def _run_operator_lane(module, monkeypatch, tmp_path: Path, *extra: str) -> tuple[int, Path]:
+    output = tmp_path / f"out-{len(list(tmp_path.glob('out-*')))}"
+    monkeypatch.setattr(module.sys, "argv", [
+        "run_external_review.py", f"--output={output}", f"--drive-root={tmp_path / 'drive'}", *extra, "fix: one"])
+    return module.main(), output
 
-    exit_code, output = run(review_change=review)
 
-    assert exit_code == 0
-    [call] = calls
-    assert call["repo_dir"] == repo
-    assert {key: call[key] for key in ("root", "surface", "subject")} == {
-        "root": "system_repo", "surface": "change", "subject": "index"}
-    assert "Intended commit message:\nfix: one" in call["goal"]
+def test_operator_lane_is_the_commit_gate_dry_run_in_an_isolated_checkout(tmp_path, monkeypatch):
+    """R3: the operator lane runs the commit gate's own non-committing cycle over the
+    staged index, in the runtime's isolated checkout of the staged patch, and records
+    the advisory pre-review in full; the primary worktree is never touched."""
+    import scripts.run_external_review as module
+
+    repo, briefs = _operator_fixture(tmp_path, monkeypatch)
+    staged_before = shared.git(repo, "diff", "--cached")
+    checkouts = tmp_path / "drive" / "state" / "review_checkouts"
+
+    exit_code, output = _run_operator_lane(module, monkeypatch, tmp_path)
+
+    assert exit_code == 0, (output / "outcome.json").read_text(encoding="utf-8")
+    outcome = json.loads((output / "outcome.json").read_text(encoding="utf-8"))
+    assert outcome["exit_code"] == 0 and outcome["outcome"]["status"] == "passed"
+    assert outcome["outcome"]["review_record_id"].startswith("rl-")
+    assert "retained_checkout" not in outcome["outcome"]
+    # The gate's advisory pre-review is recorded in full, whatever its availability.
+    advisory = json.loads((output / "advisory.txt").read_text(encoding="utf-8"))
+    assert advisory.get("status")
     sections = shared.full_output_sections((output / "full-output.txt").read_text(encoding="utf-8"))
     seats = json.loads(sections["REVIEW SEAT RECORDS (ledger rows with retained answers, full, untruncated)"])
     assert [(seat["seat_id"], seat["answer"]) for seat in seats] == [
-        ("t1", "t1 operator answer"), ("s1", "s1 operator answer")]
+        (slot, shared.ANSWERS[slot]) for slot in ("t1", "t2", "s1")]
     verdict = json.loads(sections["AGGREGATE VERDICT"])
-    assert verdict["review_record"]["aggregate"] == "PASS"
-    assert verdict["cost_report"]["unreported_or_unknown_cost_slots"] == ["s1"]
-    assert json.loads((output / "outcome.json").read_text(encoding="utf-8"))["exit_code"] == 0
-    assert not (output / "advisory.txt").exists()
+    assert verdict["review_record"]["record_id"] == outcome["outcome"]["review_record_id"]
+    assert (verdict["review_record"]["aggregate"], verdict["review_record"]["surface"]) == ("PASS", "commit_gate")
+    assert verdict["cost_report"]["unreported_or_unknown_cost_slots"] == ["t2"]
+    # Every seat read the isolated checkout of the staged patch, never this worktree.
+    assert sorted(brief["slot_id"] for brief in briefs) == ["s1", "t1", "t2"]
+    for brief in briefs:
+        if brief["session_root"]:
+            assert Path(brief["session_root"]).parent.parent == checkouts
+            assert Path(brief["session_root"]) != repo
+    # Custody settled: the checkout is gone; the primary worktree still holds the staged edit.
+    assert not checkouts.exists() or not any(checkouts.iterdir())
+    assert shared.git(repo, "diff", "--cached") == staged_before
+    assert shared.git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
+    # The cycle's own hygiene (``_ensure_gitignore``) added a file the operator never
+    # staged: the untracked-safe comparison surfaces exactly that, loudly, as drift.
+    drift = (output / "reviewed-tree-drift.diff").read_text(encoding="utf-8")
+    assert "+++ b/.gitignore" in drift and "+staged edit" in drift
+    assert not (repo / ".gitignore").exists()
 
-    def crash(_ctx, **_arguments):
-        raise RuntimeError("engine unavailable")
 
-    exit_code, output = run(review_change=crash)
+def test_operator_lane_retains_the_checkout_while_a_seat_is_open(tmp_path, monkeypatch):
+    """R4 (operator lane): a reviewer seat still owed after the cycle keeps the
+    isolated checkout alive for reconciliation, named in the typed outcome."""
+    import ouroboros.review_substrate as substrate
+    import scripts.run_external_review as module
+
+    repo, _briefs = _operator_fixture(tmp_path, monkeypatch)
+    settled = substrate.run_review_request
+
+    def one_seat_open(request, *, slots, **kwargs):
+        result = settled(request, slots=slots, **kwargs)
+        for actor in result.actors:
+            if actor["slot_id"] == "t2":
+                actor.update(status="error", raw_text="", error="logical wait expired",
+                             operation_state="in_flight", late_result_pending=True)
+        return result
+
+    monkeypatch.setattr(substrate, "run_review_request", one_seat_open)
+
+    exit_code, output = _run_operator_lane(module, monkeypatch, tmp_path)
+
     outcome = json.loads((output / "outcome.json").read_text(encoding="utf-8"))
-    assert (exit_code, outcome["exit_code"], outcome["outcome"]["block_reason"]) == (
-        3, 3, "review_record_unavailable")
-    assert "RuntimeError: engine unavailable" in outcome["outcome"]["message"]
+    assert (exit_code, outcome["exit_code"], outcome["outcome"]["status"]) == (3, 3, "blocked")
+    retained = Path(outcome["outcome"]["retained_checkout"])
+    assert retained.is_dir() and retained.parent.parent == tmp_path / "drive" / "state" / "review_checkouts"
+    reviewers = outcome["outcome"]["retained_custody"]["reviewers"]
+    assert {row["slot_id"] for _surface, row in reviewers if row.get("late_result_pending")} == {"t2"}
+    assert outcome["outcome"]["retention_reason"]
+    assert shared.git(repo, "worktree", "list", "--porcelain").count("worktree ") == 2
+
+
+def test_operator_lane_without_isolation_reviews_this_worktree(tmp_path, monkeypatch):
+    import scripts.run_external_review as module
+
+    repo, briefs = _operator_fixture(tmp_path, monkeypatch)
+
+    exit_code, output = _run_operator_lane(module, monkeypatch, tmp_path, "--no-isolated-checkout")
+
+    assert exit_code == 0, (output / "outcome.json").read_text(encoding="utf-8")
+    assert {Path(brief["session_root"]) for brief in briefs if brief["session_root"]} == {repo}
+    assert not (tmp_path / "drive" / "state" / "review_checkouts").exists()
 
 
 def _write_target_config(repo: Path) -> None:
@@ -692,7 +903,8 @@ def test_contributor_lane_names_its_proposal_and_the_operator_lane_none(monkeypa
     for argv, message in (
         (["--contributor", "--run-cap-usd", "5"], "--contributor requires --head-ref"),
         (["--head-ref", "proposal"], "--base-ref/--head-ref require --contributor"),
-        (["--no-isolated-checkout"], "unrecognized arguments: --no-isolated-checkout"),
+        (["--contributor", "--head-ref", "proposal", "--run-cap-usd", "5", "--no-isolated-checkout"],
+         "--contributor requires the frozen isolated checkout"),
     ):
         monkeypatch.setattr(module.sys, "argv", ["run_external_review.py", *argv])
         with pytest.raises(SystemExit) as refused:

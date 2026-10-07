@@ -516,11 +516,32 @@ def _scope_rows(scope_raw: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows or ([scope_raw] if scope_raw.get("status") else [])
 
 
-def _seats_open(forensic: Dict[str, Any]) -> bool:
+def _open_seats(forensic: Dict[str, Any]) -> List[str]:
     rows = [*forensic.get("triad_raw", []), *_scope_rows(forensic.get("scope_raw") or {})]
-    return bool(forensic.get("custody_lost")) or any(
-        bool(row.get("late_result_pending")) or str(row.get("operation_state") or "") in {"in_flight", "custody_lost"}
-        for row in rows)
+    return [str(row.get("slot_id") or "") for row in rows
+            if bool(row.get("late_result_pending")) or str(row.get("operation_state") or "") in {"in_flight", "custody_lost"}]
+
+
+def _seats_open(forensic: Dict[str, Any]) -> bool:
+    return bool(forensic.get("custody_lost")) or bool(_open_seats(forensic))
+
+
+def _checkout_custody(ctx: ToolContext, forensic: Dict[str, Any]) -> Dict[str, Any]:
+    """What keeps the isolated checkout alive after the wave, ``{}`` when nothing:
+    a seat whose answer is still owed (late, in flight, custody lost) or an open
+    preflight run on this context — read INSIDE the wave context, where the wave's
+    own review state is still on ``ctx`` (``git_review_cycle._review_custody_pending``)."""
+    from ouroboros.tools import git as git_mod
+
+    facts: Dict[str, Any] = {}
+    seats = _open_seats(forensic)
+    if seats:
+        facts["seats"] = seats
+    if forensic.get("custody_lost"):
+        facts["custody_lost"] = True
+    if git_mod._review_custody_pending(ctx):
+        facts["review_custody_pending"] = True
+    return facts
 
 
 def seat_findings(triad_raw: Sequence[Dict[str, Any]], scope_raw: Dict[str, Any],
@@ -583,13 +604,17 @@ def wave_facts(ctx: ToolContext, wave: _Wave, *, outcome: Dict[str, Any], forens
     }
 
 
-def subject_facts(frozen: Any) -> Dict[str, Any]:
+def subject_facts(frozen: Any, retention: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The record's subject; ``retained_checkout`` names the isolated checkout kept
+    alive by open custody (``retention`` says what), ``""`` when it was removed."""
     spec = frozen.spec
+    checkout = str(getattr(frozen, "checkout", "") or "")
     return {"root_kind": str(spec.root_kind), "root": str(spec.root), "kind": str(spec.kind),
             "base": str(spec.base or getattr(frozen, "parent_sha", "") or ""), "head": str(spec.head or ""),
             "governance_root": str(getattr(spec, "governance_root", "") or ""),
             "tree_sha": str(getattr(frozen, "tree_sha", "") or ""), "diff_sha": str(getattr(frozen, "diff_sha", "") or ""),
-            "checkout": str(getattr(frozen, "checkout", "") or "")}
+            "checkout": checkout, "retained_checkout": checkout if retention else "",
+            "retention": dict(retention or {})}
 
 
 def _assigned_verdict(record: Any, rows: List[Dict[str, Any]], outcome: Dict[str, Any]) -> Dict[str, Any]:
@@ -604,8 +629,9 @@ def _assigned_verdict(record: Any, rows: List[Dict[str, Any]], outcome: Dict[str
     return verdict
 
 
-def _finish_record(record: Any, wave: _Wave, outcome: Dict[str, Any], *, reuse_key: str) -> None:
-    record.subject = {**dict(record.subject or {}), **subject_facts(wave.frozen)}
+def _finish_record(record: Any, wave: _Wave, outcome: Dict[str, Any], *, reuse_key: str,
+                   retention: Optional[Dict[str, Any]] = None) -> None:
+    record.subject = {**dict(record.subject or {}), **subject_facts(wave.frozen, retention)}
     record.brief = {**dict(record.brief or {}), "author_questions": list(wave.request.author_questions),
                     "checklist": {"layer": wave.layer, "body_fact": str(wave.fact.body), "how": str(wave.fact.how),
                                   "treat_as_body": wave.request.treat_as_body,
@@ -625,13 +651,14 @@ def _finish_record(record: Any, wave: _Wave, outcome: Dict[str, Any], *, reuse_k
     record.panel = {**panel, **wave.panel.facts}
 
 
-def _settle(ctx: ToolContext, wave: _Wave, facts: Dict[str, Any], outcome: Dict[str, Any]) -> Dict[str, Any]:
+def _settle(ctx: ToolContext, wave: _Wave, facts: Dict[str, Any], outcome: Dict[str, Any],
+            retention: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Build, finish and write the one record; the result is read back from it."""
     from ouroboros.reviewer_slot_config import bind_reviewer_slot_record_id
 
     drive = ledger_root(ctx)
     record = build_wave_record(facts, surface=SURFACE, record_id=wave.record_id, drive_root=drive)
-    _finish_record(record, wave, outcome, reuse_key=str(facts.get("reuse_key") or ""))
+    _finish_record(record, wave, outcome, reuse_key=str(facts.get("reuse_key") or ""), retention=retention)
     durable = True
     try:
         payload = write_record(drive, record)
@@ -733,7 +760,9 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
     spec = ReviewSubjectSpec(root_kind=root_kind, root=str(root), kind=request.subject, base=request.base,
                              head=request.head, governance_root=str(system), surface=SURFACE,
                              body_fact=str(fact.body), body_how=str(fact.how), layer=layer)
-    frozen_subject = (isolated_checkout(ctx, spec) if request.subject == "base..head"
+    # Open custody after the wave keeps the isolated checkout (review_subject.isolated_checkout).
+    retention: Dict[str, Any] = {}
+    frozen_subject = (isolated_checkout(ctx, spec, retain=lambda: retention) if request.subject == "base..head"
                       else contextlib.nullcontext(freeze_subject(ctx, spec)))
     with frozen_subject as frozen, _panel_in_force(panel):
         if not str(getattr(frozen, "diff_text", "") or "").strip():
@@ -748,7 +777,8 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
         with _wave_context(ctx, wave):
             outcome = _dispatch(ctx, wave)
             forensic = _forensic(ctx)
-        return _settle(ctx, wave, wave_facts(ctx, wave, outcome=outcome, forensic=forensic), outcome)
+            retention.update(_checkout_custody(ctx, forensic))
+        return _settle(ctx, wave, wave_facts(ctx, wave, outcome=outcome, forensic=forensic), outcome, retention)
 
 
 def _handle_review_change(

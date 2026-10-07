@@ -182,6 +182,10 @@ from types import SimpleNamespace
 _MACHINERY = "installed"
 
 
+class ReviewChangeArgumentError(ValueError):
+    """The operation's typed argument refusal, part of the wrapper's contract."""
+
+
 def run_review_change(ctx, **arguments):
     from ouroboros import config
     from ouroboros.claudexor_daemon import ensure_owned_gateway, read_owned_gateway

@@ -304,6 +304,25 @@ def test_late_settle_raises_revision_and_a_stale_snapshot_never_overwrites(tmp_p
         "disposition": "accepted", "rationale": "ok", "reused_record_id": record.record_id}
 
 
+def test_tests_evidence_lands_only_on_the_record_of_the_tested_tree(tmp_path):
+    """A hermetic test run proves ONE tree. Its fact is written on the record whose
+    subject is that tree and refused (record untouched, ``None``) for any other, so
+    an external runner cannot stamp a passed suite onto a different candidate."""
+    record = rl.build_commit_gate_record(_facts(_three(), _scope()), drive_root=tmp_path)
+    written = rl.write_record(tmp_path, record)
+    assert written["subject"]["tree_sha"] == TREE and written["tests"]["policy"] != "run"
+    tests = {"policy": "run", "result": "passed", "proof": "candidate_bound"}
+
+    assert rl.attach_tests_evidence(tmp_path, record.record_id, tests=tests, tree_sha="x" * 40) is None
+    assert rl.attach_tests_evidence(tmp_path, record.record_id, tests=tests, tree_sha="") is None
+    assert rl.attach_tests_evidence(tmp_path, "rl-absent", tests=tests, tree_sha=TREE) is None
+    assert rl.load_record(tmp_path, record.record_id) == written, "a refused attachment changes nothing"
+
+    revised = rl.attach_tests_evidence(tmp_path, record.record_id, tests=tests, tree_sha=TREE)
+    assert revised["revision"] == 2 and revised["tests"] == {**tests, "tree_sha": TREE}
+    assert rl.load_record(tmp_path, record.record_id)["tests"] == {**tests, "tree_sha": TREE}
+
+
 # --- commit gate hook ---------------------------------------------------------
 
 

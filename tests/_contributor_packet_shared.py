@@ -59,25 +59,18 @@ GOLDEN_CONFIG = {
     "context_mode": "max",
     "runtime_mode": "pro",
 }
-GOLDEN_STRUCTURED = {
-    "triad_rows": [
-        {"slot_id": "t1", "model": "openai/gpt-5.6-sol", "route": "api_chat", "effort": "high"},
-        {"slot_id": "t2", "model": "codex=gpt-5.6-sol", "route": "agent_session", "effort": "high",
-         "session_target": "codex=gpt-5.6-sol", "session_profile": "pinned"},
-    ],
-    "scope_rows": [{"slot_id": "s1", "model": "openai/gpt-5.6-sol", "route": "api_chat", "effort": "xhigh"}],
-    "triad_quorum": 2,
-    "scope_quorum": 1,
-    "triad_prompt": "Triad brief of the frozen base..head subject.",
-    "scope_brief": "Scope brief of the frozen base..head subject.",
-}
 ANSWERS = {
     "t1": json.dumps([{"item": "code_quality", "verdict": "PASS", "severity": "advisory",
                        "reason": "t1 read build.sh"}]),
     "t2": json.dumps([{"item": "tests_affected", "verdict": "PASS", "severity": "advisory",
                        "reason": "t2 session read the tests"}]),
-    "s1": json.dumps([{"item": "intent_alignment", "verdict": "PASS", "severity": "advisory",
-                       "reason": "s1 scope matches the title"}]),
+    # The scope seat answers the whole Intent / Scope Review Checklist: the REAL
+    # scope reviewer refuses a partial coverage as a contract failure.
+    "s1": json.dumps([{"item": item, "verdict": "PASS", "severity": "advisory",
+                       "reason": "s1 scope matches the title"}
+                      for item in ("intent_alignment", "forgotten_touchpoints", "cross_surface_consistency",
+                                   "regression_surface", "prompt_doc_sync", "architecture_fit",
+                                   "cross_module_bugs", "implicit_contracts")]),
 }
 SESSION_TRANSCRIPT = "full session transcript of t2\nEOF_SENTINEL"
 SESSION_RUN_ID = "run-golden"
@@ -186,39 +179,59 @@ def persist_golden_actors(drive: pathlib.Path) -> tuple[list[dict], dict]:
     return [t1, t2], {"status": "responded", "model_id": "openai/gpt-5.6-sol", "raw_results": [s1]}
 
 
-def golden_review_change(calls: list[dict]):
-    """A ``run_review_change`` stand-in: one wave of the golden seats, written as a
-    real ledger record for the frozen subject, appended to ``calls``."""
+def golden_substrate(briefs: list[dict]):
+    """A ``review_substrate.run_review_request`` stand-in under the REAL review
+    operation: the paid seam only. Each seat answers from ``ANSWERS`` with the golden's
+    persisted receipts (``persist_golden_actors``), so the operation's record rows carry
+    the pre-move packet's refs; what each seat was GIVEN is appended to ``briefs``."""
+    import threading
+    from types import SimpleNamespace
 
-    def run_review_change(ctx, **arguments) -> dict:
-        from dataclasses import replace
+    persisted: dict[str, dict] = {}
+    lock = threading.Lock()
+    usage = {
+        "t1": {"provider": "openrouter", "resolved_model": "openai/gpt-5.6-sol",
+               "prompt_tokens": 1200, "completion_tokens": 300, "cost": 0.0125},
+        "t2": {"provider": "claudexor", "delegated_route": "codex", "resolved_model": "gpt-5.6-sol",
+               "applied_profile": "pinned", "applied_access": "readonly", "delegated_run_id": SESSION_RUN_ID,
+               "custody_durable": True, "output_conformance": "passed", "verdict_method": "schema"},
+        "s1": {"provider": "openrouter", "resolved_model": "openai/gpt-5.6-sol",
+               "prompt_tokens": 3000, "completion_tokens": 500, "cost": 0.02},
+    }
 
-        from ouroboros import review_ledger
+    def run_review_request(request, *, slots, drive_root, llm=None, usage_ctx=None):
+        with lock:
+            if not persisted:
+                triad, scope = persist_golden_actors(pathlib.Path(drive_root))
+                persisted.update({row["slot_id"]: row for row in [*triad, *scope["raw_results"]]})
+        # The gate reserves every seat's operation id before any send; an answer
+        # that does not carry the reserved id is not that seat's answer.
+        reserved = (getattr(usage_ctx, "_review_reserved_operations", None) or {}).get(request.surface) or {}
+        actors = []
+        for slot in slots:
+            row = persisted[slot.slot_id]
+            briefs.append({"slot_id": slot.slot_id, "surface": request.surface, "model": slot.model,
+                           "messages": [dict(m) for m in request.messages], "session_task": request.session_task,
+                           "session_root": request.session_root})
+            actors.append({
+                "slot_id": slot.slot_id, "model": slot.model, "status": "ok", "raw_text": row["raw_text"],
+                "usage": dict(usage[slot.slot_id]), "prompt_ref": row["prompt_ref"], "response_ref": row["response_ref"],
+                "operation_id": str(reserved.get(slot.slot_id) or f"op-{slot.slot_id}"),
+                "operation_state": "settled", "late_result_pending": False,
+            })
+        return SimpleNamespace(actors=actors)
 
-        drive = review_ledger.ledger_root(ctx)
-        repo = pathlib.Path(ctx.repo_dir)
-        triad_raw, scope_raw = persist_golden_actors(drive)
-        record = review_ledger.build_commit_gate_record({
-            "repo_dir": str(repo), "goal": arguments.get("goal"), "scope": arguments.get("scope"),
-            "structured": GOLDEN_STRUCTURED, "triad_raw": triad_raw, "scope_raw": scope_raw,
-        }, drive_root=drive)
-        base, head = str(arguments.get("base") or ""), str(arguments.get("head") or "")
-        patch = subprocess.run(["git", "diff", "--binary", base, head], cwd=str(repo),
-                               capture_output=True, check=True).stdout if head else b""
-        subject = {"root_kind": "system_repo", "root": str(repo), "kind": arguments.get("subject"),
-                   "base": base, "head": head,
-                   "tree_sha": git(repo, "rev-parse", f"{head}^{{tree}}") if head else "",
-                   "diff_sha": hashlib.sha256(patch).hexdigest(), "checkout": ""}
-        payload = review_ledger.write_record(drive, replace(record, surface="change", subject=subject))
-        calls.append({"arguments": dict(arguments), "repo_dir": str(repo), "drive": str(drive),
-                      "pid": os.getpid(), "environ": dict(os.environ), "record_id": payload["record_id"]})
-        return {"record_id": payload["record_id"], "aggregate": payload["verdict"]["aggregate"],
-                "per_question": payload["verdict"]["per_question"], "panel": payload["panel"],
-                "rows": payload["rows"], "subject": payload["subject"],
-                "checklist": {"layer": "body", "body_fact": "true", "how": "dir"},
-                "tests": payload["tests"], "cost": payload["cost"], "reused": False}
+    return run_review_request
 
-    return run_review_change
+
+def passing_test_runner(ctx, **_kwargs):
+    """The commit gate's hermetic runner stand-in: attests a passed suite of the
+    checkout it was handed (the process-held proof the gate's tests fact reads)."""
+    from ouroboros.commit_admission import capture_preflight_test_subject
+
+    ctx._preflight_tests_passed = True
+    ctx._preflight_test_proof = capture_preflight_test_subject(ctx.repo_dir)
+    return None
 
 
 def full_output_sections(text: str) -> dict[str, str]:

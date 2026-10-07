@@ -321,6 +321,28 @@ def note_author_decision(drive_root: Any, record_id: str, decision: Dict[str, An
         return None
 
 
+def attach_tests_evidence(drive_root: Any, record_id: str, *, tests: Dict[str, Any],
+                          tree_sha: str) -> Optional[Dict[str, Any]]:
+    """Attach a test run's facts (the commit gate's ``tests`` vocabulary) to the record
+    of the SAME candidate: written only when ``tree_sha`` is the record's subject tree,
+    so a proof of one tree never lands on the record of another. Returns the revised
+    record, or ``None`` when the record is absent or names a different tree."""
+    record = load_record(drive_root, record_id)
+    if record is None:
+        return None
+    recorded = str((record.get("subject") or {}).get("tree_sha") or "")
+    if not tree_sha or recorded != str(tree_sha):
+        log.warning("tests evidence for tree %s not attached to record %s of tree %s",
+                    str(tree_sha)[:12], record_id, recorded[:12])
+        return None
+
+    def _mutate(payload: Dict[str, Any]) -> Dict[str, Any]:
+        payload["tests"] = {**dict(tests), "tree_sha": str(tree_sha)}
+        return payload
+
+    return revise_record(drive_root, record_id, _mutate)
+
+
 def index_row(drive_root: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
     """Bounded projection of one record. Heavy fields are stripped only when the record
     and every retained source it names resolve on disk
@@ -644,16 +666,17 @@ def _retain_wave_sources(drive_root: Any, task_id: str, record_id: str, rows: Li
                                                           role="response", part=seat["parts"][0], text=seat["raw_text"]))
 
 
-def _checklist_facts(repo_dir: Any, *, layer: str = "", body_fact: str = "", how: str = "") -> Dict[str, Any]:
-    """The rules the wave was judged by (``review_helpers.checklist_fingerprint``): the
-    sha256 of the layered checklist text and ``rules_source`` = ``docs/CHECKLISTS.md``
-    at the governance root's blob, plus the subject's layer and body fact (``unknown``
-    when nobody established them). The gate's wave is the body's (layer ``body``)."""
+def _checklist_facts(*, layer: str = "", body_fact: str = "", how: str = "") -> Dict[str, Any]:
+    """The rules the wave was judged by (``review_checklist.checklist_fingerprint``):
+    the sha256 of the layered checklist text and ``rules_source`` = the blob id of the
+    executing install's ``docs/CHECKLISTS.md`` — the bytes the brief builders read,
+    whatever root the subject lives in (D31) — plus the subject's layer and body fact
+    (``unknown`` when nobody established them; the gate's wave is the body's)."""
     from ouroboros.tools.review_checklist import checklist_fingerprint
 
     facts = _empty_checklist()
     try:
-        facts.update(checklist_fingerprint(layer or "body", pathlib.Path(repo_dir) / "docs" / "CHECKLISTS.md"))
+        facts.update(checklist_fingerprint(layer or "body"))
     except (OSError, TypeError, ValueError):
         pass
     facts.update({k: v for k, v in (("layer", layer), ("body_fact", body_fact), ("how", how)) if str(v or "").strip()})
@@ -758,8 +781,7 @@ def build_wave_record(facts: Dict[str, Any], *, surface: str, record_id: str = "
                    "base": str(parents[0]) if isinstance(parents, list) and parents else str(parents or ""), "head": "",
                    "tree_sha": str(binding.get("tree_sha") or ""), "diff_sha": str(binding.get("diff_sha256") or "")}
     subject["candidate_branch"] = str(facts.get("candidate_branch") or "")
-    checklist = _checklist_facts(facts.get("governance_root") or facts.get("repo_dir"),
-                                 layer=str(facts.get("layer") or structured.get("layer") or ""),
+    checklist = _checklist_facts(layer=str(facts.get("layer") or structured.get("layer") or ""),
                                  body_fact=str(facts.get("body_fact") or ""), how=str(facts.get("body_how") or ""))
     enforcement, contract_fp = str(facts.get("enforcement") or ""), str(facts.get("review_contract_fingerprint") or "")
     reuse_key = str(facts.get("reuse_key") or structured.get("reuse_key") or "") or reuse_key_digest(

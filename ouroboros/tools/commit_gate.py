@@ -1297,6 +1297,25 @@ def _review_preflight_facts(ctx: ToolContext, commit_message: str, advisory_path
             "record_id": snapshot_hash if run is not None else "", "advisory_status": status or "missing"}
 
 
+def _review_body_facts(ctx: ToolContext) -> Dict[str, Any]:
+    """The gate reviews the system repository (``_repo_commit_push`` refuses any other
+    root), so its wave runs the body layer; the record states that through the same
+    predicate ``review_change`` uses (``review_body_fact.body_fact``), never by assertion.
+    An unanswerable predicate leaves the layer facts out (the ledger says ``unknown``)."""
+    try:
+        from ouroboros.review_body_fact import body_fact, layer_for
+        from ouroboros.review_ledger import ledger_root
+        from ouroboros.tools.tool_resolution import system_repo_dir_for
+
+        system = str(system_repo_dir_for(ctx))
+        fact = body_fact(ctx.repo_dir, system_repo=system, data_dir=ledger_root(ctx))
+        return {"governance_root": system, "layer": layer_for(fact), "body_fact": str(fact.body),
+                "body_how": str(fact.how)}
+    except Exception:
+        log.warning("review body fact unavailable for the commit gate record", exc_info=True)
+        return {}
+
+
 def _review_ledger_facts(ctx: ToolContext, commit_message: str, *, goal: str, scope: str, pre_fingerprint: dict,
                          advisory_paths: Optional[List[str]], blocked: bool, block_reason: str,
                          combined_findings: Optional[list], dispatch_refusal: Optional[dict], pending: bool) -> Dict[str, Any]:
@@ -1318,6 +1337,7 @@ def _review_ledger_facts(ctx: ToolContext, commit_message: str, *, goal: str, sc
     tests_passed = getattr(ctx, "_preflight_tests_passed", None)
     pre_fingerprint = pre_fingerprint or {}
     return {
+        **_review_body_facts(ctx),
         "task_id": task_id, "root_task_id": resolve_root_task_id(ctx),
         "review_wave_id": resolve_review_wave(ReviewRequest(
             surface="commit_gate", goal=goal or commit_message, task_id=task_id,

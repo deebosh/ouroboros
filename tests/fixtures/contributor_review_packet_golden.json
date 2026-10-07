@@ -1,5 +1,5 @@
 {
-  "_provenance": "Captured from scripts/run_external_review.py at 578360c41, the wrapper before the review moved into ouroboros.tools.review_change: contributor lane over tests/_contributor_packet_shared.py with its commit-gate review cycle replaced by persist_golden_actors, normalized by normalized(). This is the pre-move side of an equivalence; never regenerate it from a later wrapper.",
+  "_provenance": "Captured from scripts/run_external_review.py at 578360c41, the wrapper before the review moved into ouroboros.tools.review_change: contributor lane over tests/_contributor_packet_shared.py with its commit-gate review cycle replaced by persist_golden_actors, normalized by normalized(). This is the pre-move side of an equivalence; never regenerate it from a later wrapper. One input was re-derived on 2026-10-07 with the SAME capture function (persist_golden_actors), not a later wrapper: the scope seat's fixture answer now covers the whole Intent / Scope Review Checklist, because the real scope reviewer refuses partial coverage; only s1's response blob identity (sha256/size) changed with it.",
   "answered_slots_in_full_output": [
     "s1",
     "t1",
@@ -170,9 +170,9 @@
             "compressed_size": "<compressed_size>",
             "encoding": "gzip",
             "kind": "json",
-            "path": "$REVIEW_DRIVE/observability/blobs/94433e50e7ed298ebfd587e75db5cb1bf660999efb46485cc6a6c5d0a909489e.json.gz",
-            "sha256": "94433e50e7ed298ebfd587e75db5cb1bf660999efb46485cc6a6c5d0a909489e",
-            "size": 234
+            "path": "$REVIEW_DRIVE/observability/blobs/81b5a3cb7e1a21c90ec814fe67448dea038513f545ae3cc25bf7769576e40676.json.gz",
+            "sha256": "81b5a3cb7e1a21c90ec814fe67448dea038513f545ae3cc25bf7769576e40676",
+            "size": 1155
           },
           "redaction": {
             "count": 0,

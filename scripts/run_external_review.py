@@ -30,6 +30,7 @@ Usage (from repo/):
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -39,7 +40,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import zipfile
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 DATA = pathlib.Path(
@@ -55,6 +55,12 @@ from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS  # noqa: E40
 from ouroboros.review_run_isolation import (  # noqa: E402
     PINNED_PANEL_KEYS, isolate_review_data, parse_run_cap, retire_comma_lists, run_cap_from_env)
 from ouroboros.settings_integrity import SETTINGS_INTEGRITY_ENV  # noqa: E402
+from scripts.contributor_review_evidence import (  # noqa: E402, F401 -- the packet leaf; the wrapper's names stay
+    CONTRIBUTOR_PROFILE as _CONTRIBUTOR_PROFILE,
+    EXIT_CLASS as _EXIT_CLASS,
+    contributor_result as _contributor_result,
+    write_contributor_packet as _write_contributor_packet,
+)
 
 # Release diffs touch protected core paths; only pro mode may stage them for
 # review. An explicit operator env value still wins.
@@ -64,10 +70,8 @@ os.environ.setdefault("OUROBOROS_RUNTIME_MODE", "pro")
 # non-passed outcome is environment/infrastructure and is safe to retry after
 # fixing the environment.
 _GENUINE_BLOCK_REASONS = {"critical_findings"}
-_EXIT_CLASS = {0: "passed", 1: "genuine_review_block", 3: "infrastructure"}
 _OPENROUTER_MIN_REMAINING_USD = 10.0
 _CONTRIBUTOR_DEFAULT_BASE_REF = "upstream/ouroboros"
-_CONTRIBUTOR_PROFILE = "external_pr_readiness"
 _CONTRIBUTOR_LANDING_OBLIGATION_ITEMS = frozenset({
     "version_bump",
     "changelog_and_badge",
@@ -208,10 +212,31 @@ def _load_settings_into_env() -> None:
     _fallback("OPENROUTER_API_KEY", "openrouter")
 
 
-def _git_text(args: list[str]) -> str:
+def _advisory_unavailability_warning() -> str:
+    """Return a safe route-aware operator warning, or ``""`` when available."""
+    from ouroboros.tools.claude_advisory_review import (
+        ADVISORY_REVIEW_CHOICE_GUIDANCE,
+        advisory_gate_unavailability_reason,
+    )
+
+    try:
+        reason = advisory_gate_unavailability_reason()
+    except ValueError:
+        reason = "invalid_advisory_configuration"
+    if reason is None:
+        return ""
+    return (
+        f"WARN: configured advisory review is unavailable ({reason}). "
+        "The production flow keeps its existing reason-specific behavior; "
+        "inspect advisory.txt and the typed review outcome. "
+        f"{ADVISORY_REVIEW_CHOICE_GUIDANCE}"
+    )
+
+
+def _git_text(args: list[str], *, cwd: pathlib.Path | None = None) -> str:
     result = subprocess.run(
         ["git", *args],
-        cwd=str(REPO),
+        cwd=str(cwd or REPO),
         capture_output=True,
         text=True,
         timeout=120,
@@ -222,10 +247,10 @@ def _git_text(args: list[str]) -> str:
     return result.stdout
 
 
-def _git_bytes(args: list[str]) -> bytes:
+def _git_bytes(args: list[str], *, cwd: pathlib.Path | None = None) -> bytes:
     result = subprocess.run(
         ["git", *args],
-        cwd=str(REPO),
+        cwd=str(cwd or REPO),
         capture_output=True,
         timeout=120,
     )
@@ -540,6 +565,23 @@ def run_review_change(ctx, **arguments) -> dict:
     return review_change.run_review_change(ctx, **arguments)
 
 
+def _call_review_change(ctx, **arguments) -> tuple[dict, dict]:
+    """``(result, refusal)``: a deterministic argument refusal of the operation
+    (``ReviewChangeArgumentError``, nothing dispatched, $0) is a typed outcome of its
+    own; any other failure is infrastructure read through the missing record."""
+    from ouroboros.tools.review_change import ReviewChangeArgumentError
+
+    try:
+        result = run_review_change(ctx, **arguments)
+    except ReviewChangeArgumentError as exc:
+        return {}, {"status": "blocked", "block_reason": "review_change_argument_error", "message": str(exc)}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}, {}
+    if not isinstance(result, dict):
+        return {"error": f"the review operation returned {type(result).__name__}, not a record"}, {}
+    return result, {}
+
+
 def _review_record(ctx, result: dict) -> tuple[dict | None, str]:
     """The ledger record the operation wrote, or ``(None, why it is unavailable)``."""
     from ouroboros.review_ledger import ledger_root, load_record
@@ -553,6 +595,84 @@ def _review_record(ctx, result: dict) -> tuple[dict | None, str]:
     except ValueError as exc:
         return None, str(exc)
     return (record, "") if record else (None, f"review ledger record {record_id} is absent")
+
+
+def _actor_records_with_surface(ctx: object) -> list[tuple[str, dict]]:
+    """``(surface, raw actor row)`` per triad and scope seat the cycle left on ``ctx``."""
+    scope_raw = getattr(ctx, "_last_scope_raw_result", {}) or {}
+    scope_rows = scope_raw.get("raw_results") if isinstance(scope_raw, dict) else None
+    if not isinstance(scope_rows, list):
+        scope_rows = [scope_raw] if isinstance(scope_raw, dict) and any(
+            key in scope_raw for key in ("slot", "slot_id", "prompt_ref", "response_ref")) else []
+    rows = [("triad", row) for row in (getattr(ctx, "_last_triad_raw_results", []) or [])]
+    return [(surface, dict(row)) for surface, row in rows + [("scope", row) for row in scope_rows]
+            if isinstance(row, dict)]
+
+
+def _raw_actor(row: dict) -> dict:
+    """A raw ctx row in the ledger-row shape ``_record_actors`` yields."""
+    return {"slot_id": str(row.get("slot_id") or row.get("slot") or ""), "status": str(row.get("status") or ""),
+            "model_id": str(row.get("model_id") or row.get("model") or ""), "usd": row.get("cost_usd"),
+            "prompt_ref": row.get("prompt_ref") or {}, "response_ref": row.get("response_ref") or {}}
+
+
+def _pending_checkout_custody(ctx) -> dict:
+    """Retain the candidate while actual reviewer custody is unresolved."""
+    from ouroboros.review_state import _load_state_unlocked, make_repo_key
+    from ouroboros.tools.git import _review_custody_pending
+
+    facts = {}
+    reviewers = _actor_records_with_surface(ctx)
+    if _review_custody_pending(ctx) and (reviewers or getattr(ctx, "_review_custody_lost", False)):
+        facts["reviewers"] = reviewers
+        facts["custody_lost"] = bool(getattr(ctx, "_review_custody_lost", False))
+    try:
+        state = _load_state_unlocked(pathlib.Path(ctx.drive_root), strict_attempt_authority=True)
+        runs = state.filter_advisory_runs(repo_key=make_repo_key(pathlib.Path(ctx.repo_dir)))
+        active = [run.execution for run in runs if run.execution_pending]
+        if active:
+            facts["preflight"] = active
+    except Exception as exc:
+        # Unknown is disclosed as unknown; it does not assert a live worker.
+        facts["custody_unreadable"] = f"{type(exc).__name__}: {exc}"
+    return facts
+
+
+def _contributor_tests_preflight(host_ctx, proposal: dict, *, review_drive_root: pathlib.Path) -> tuple[dict, dict]:
+    """The proposal's own hermetic test suite, run by the commit gate's runner in an
+    isolated checkout of the same ``base..head`` subject the review operation freezes,
+    BEFORE any reviewer is paid. Returns ``(tests evidence bound to the tested tree,
+    refusal outcome)``; a failed suite refuses the review (nothing is dispatched)."""
+    from ouroboros.commit_admission import run_tests_preflight_with_proof
+    from ouroboros.tools.commit_gate import _review_tests_facts
+    from ouroboros.tools.registry import ToolContext
+    from ouroboros.tools.review_helpers import _run_review_preflight_tests
+    from ouroboros.tools.review_subject import ReviewSubjectSpec, isolated_checkout
+
+    spec = ReviewSubjectSpec(root_kind="system_repo", root=str(REPO), kind="base..head",
+                             base=proposal["base_sha"], head=proposal["head_sha"], surface="change")
+    with isolated_checkout(host_ctx, spec) as frozen:
+        test_ctx = ToolContext(repo_dir=pathlib.Path(frozen.checkout), drive_root=review_drive_root)
+        test_err = run_tests_preflight_with_proof(
+            test_ctx, runner=lambda c, **kw: _run_review_preflight_tests(c, **kw))
+        if test_err:
+            return {}, {"status": "blocked", "block_reason": "tests_preflight_blocked",
+                        "message": f"Hermetic test preflight failed on the proposal tree {frozen.tree_sha}; "
+                                   f"no reviewer was dispatched.\n{test_err}", "tested_tree_sha": frozen.tree_sha}
+        tests = _review_tests_facts(test_ctx, bool(getattr(test_ctx, "_preflight_tests_passed", False)))
+        return {"tests": tests, "tree_sha": frozen.tree_sha}, {}
+
+
+def _attach_tests_evidence(ctx, record: dict | None, evidence: dict) -> dict | None:
+    """The tests fact lands on the review record of the SAME tree (``review_ledger``
+    refuses any other); the record read back carries it, or stays as written."""
+    if record is None or not evidence:
+        return record
+    from ouroboros.review_ledger import attach_tests_evidence, ledger_root
+
+    revised = attach_tests_evidence(ledger_root(ctx), str(record.get("record_id") or ""),
+                                    tests=evidence["tests"], tree_sha=evidence["tree_sha"])
+    return revised or record
 
 
 def _record_outcome(record: dict | None, problem: str, *, subject: dict | None = None) -> dict:
@@ -860,173 +980,6 @@ def _apply_contributor_landing_obligations(
     }
 
 
-def _replace_public_paths(value, replacements: list[tuple[str, str]]):
-    if isinstance(value, dict):
-        return {
-            str(key): _replace_public_paths(item, replacements)
-            for key, item in value.items()
-        }
-    if isinstance(value, (list, tuple)):
-        return [_replace_public_paths(item, replacements) for item in value]
-    if isinstance(value, str):
-        result = value
-        for raw, replacement in replacements:
-            if raw:
-                result = result.replace(raw, replacement)
-        return result
-    return value
-
-
-def _public_projection(value, *, replacements: list[tuple[str, str]]):
-    """Apply the runtime secret scrubber and remove machine-local path prefixes."""
-    from ouroboros.observability import redact_projection
-
-    redacted = redact_projection(value).value
-    return _replace_public_paths(redacted, replacements)
-
-
-def _contributor_result(exit_code: int) -> str:
-    """The exit code is the whole input: no proposal fact downgrades a result."""
-    if exit_code != 0:
-        return "BLOCKED" if exit_code == 1 else "INCOMPLETE"
-    return "READY_FOR_INTEGRATION"
-
-
-def _write_contributor_packet(
-    *,
-    output_dir: pathlib.Path,
-    snapshot: dict,
-    resolved_config: dict,
-    outcome: dict,
-    exit_code: int,
-    evidence_refs: list[dict],
-    cost_report: dict,
-    elapsed_sec: float,
-    seats: list[dict],
-    review_record: dict,
-    execution_receipts: list[dict],
-    execution_mismatches: list[str],
-    session_transcripts: list[dict],
-    degraded_reasons: list[str],
-    replacements: list[tuple[str, str]],
-) -> pathlib.Path:
-    result = _contributor_result(exit_code)
-    telemetry_limitations = [
-        f"{item.get('surface')}:{item.get('slot_id')}:observed_model_is_display_label"
-        for item in execution_receipts
-        if item.get("model_verification") == "observed_display_label"
-    ]
-    public_transcripts = _public_projection(session_transcripts, replacements=replacements)
-    for item in public_transcripts:
-        transcript = str(item.get("transcript") or "")
-        item["chars"] = len(transcript)
-        item["sha256"] = hashlib.sha256(
-            transcript.encode("utf-8", "replace")
-        ).hexdigest()
-    public_snapshot = {
-        key: value
-        for key, value in snapshot.items()
-        if key not in ("patch", "installed_head_sha")
-    }
-    evidence = {
-        "schema_version": 3,
-        "review_profile": _CONTRIBUTOR_PROFILE,
-        "result": result,
-        "complete": exit_code == 0,
-        "exit_code": exit_code,
-        "exit_class": _EXIT_CLASS.get(exit_code, "unknown"),
-        "reviewed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "snapshot": public_snapshot,
-        "review_config": resolved_config,
-        "review_execution": {
-            "receipts": execution_receipts,
-            "mismatches": execution_mismatches,
-            "consistent": not execution_mismatches,
-            "telemetry_limitations": telemetry_limitations,
-            "session_transcript_artifacts": [
-                {key: value for key, value in item.items() if key != "transcript"}
-                for item in public_transcripts
-            ],
-            "effort_note": (
-                "Configured effort is recorded under configured slots. Applied effort "
-                "is null unless the execution route exposes it."
-            ),
-        },
-        "review_completeness": {
-            "contract": "production_triad_quorum_plus_authoritative_scope",
-            "degraded_reasons": list(degraded_reasons),
-        },
-        "advisory": {
-            "included": False,
-            "reason": "excluded_by_external_pr_readiness_profile",
-        },
-        "release_metadata": {
-            "contributor_version_bump_required": False,
-            "owner": "maintainer_final_landing",
-            "final_production_review_required": True,
-        },
-        "trust": {
-            "execution_receipts_consistent": not execution_mismatches,
-            # Diagnostic evidence only, never a gate (D31).
-            "review_substrate_changed": snapshot.get("review_substrate_changed", []),
-            "installed_body_execution": {
-                "statement": (
-                    "The installed body's review flow and rules ran this review: the "
-                    "wrapper ran from a clean checkout that does not contain the "
-                    "proposal, and the review operation froze base..head as a subject "
-                    "it only reads (D31)."
-                ),
-                "executing_checkout_head": snapshot.get("installed_head_sha"),
-                "rules_source": (review_record.get("checklist") or {}).get("rules_source"),
-            },
-            "note": (
-                "Contributor evidence is not merge authorization or cryptographic "
-                "proof of execution."
-            ),
-        },
-        "production_outcome": outcome,
-        "review_record": review_record,
-        "raw_evidence_refs": evidence_refs,
-        "cost_report": cost_report,
-        "budget": {
-            "run_cap_usd": (resolved_config.get("data_isolation") or {}).get("run_cap_usd"),
-            "authority": "isolated_review_ledger",
-            "note": ("The run cap is the whole global limit of a ledger that starts empty and sees no "
-                     "host spend or concurrent host work; agent-session seats are recorded at settlement."),
-        },
-        "elapsed_sec": round(elapsed_sec, 1),
-    }
-    public_evidence = _public_projection(evidence, replacements=replacements)
-    public_triad = _public_projection(
-        [seat for seat in seats if "coupling" not in (seat.get("parts") or [])], replacements=replacements)
-    public_scope = _public_projection(
-        [seat for seat in seats if "coupling" in (seat.get("parts") or [])], replacements=replacements)
-
-    evidence_path = output_dir / "review-evidence.json"
-    outcome_path = output_dir / "outcome.json"
-    full_output_path = output_dir / "full-output.txt"
-    _write_json(evidence_path, public_evidence)
-    _write_json(outcome_path, _public_projection({"exit_code": exit_code, "outcome": outcome},
-                                                 replacements=replacements))
-    sep = "=" * 80
-    full_output = "\n".join([
-        sep, "CONTRIBUTOR REVIEW EVIDENCE", sep,
-        _json_text(public_evidence),
-        sep, "TRIAD SEAT RECORDS (ledger rows with retained answers, full, redacted)", sep,
-        _json_text(public_triad),
-        sep, "SCOPE SEAT RECORDS (ledger rows with retained answers, full, redacted)", sep,
-        _json_text(public_scope),
-        sep, "AGENT SESSION TRANSCRIPTS (full, redacted)", sep,
-        _json_text(public_transcripts),
-    ])
-    full_output_path.write_text(full_output + "\n", encoding="utf-8")
-    packet_path = output_dir / "review-packet.zip"
-    with zipfile.ZipFile(packet_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for path in (evidence_path, outcome_path, full_output_path):
-            archive.write(path, arcname=path.name)
-    return packet_path
-
-
 def _diff_size_refusal(args, resolved_config: dict, reviewable_chars: int, cap: int) -> bool:
     """The cap binds packet recipients; configured retrieving actors read files.
 
@@ -1056,9 +1009,10 @@ def _parse_args():
 
     parser = argparse.ArgumentParser(
         description=(
-            "Review through the runtime review_change operation without committing: "
-            "this checkout's staged index, or --contributor a committed base..head "
-            "PR-readiness proposal."
+            "Review without committing: this checkout's staged index through the commit "
+            "gate's own non-committing cycle in an isolated checkout, or --contributor a "
+            "committed base..head PR-readiness proposal through the runtime review_change "
+            "operation."
         )
     )
     parser.add_argument(
@@ -1124,10 +1078,15 @@ def _parse_args():
     parser.add_argument("--attach-host-engine", action="store_true", help=(
         "With --contributor: use the host's running Claudexor engine attach-only; "
         "never start, prepare, rotate, claim or stop one."))
+    parser.add_argument("--no-isolated-checkout", action="store_true", help=(
+        "Operator lane only: run the gate cycle in this worktree instead of a frozen "
+        "isolated checkout of the staged patch (edits during the run then reach the reviewers)."))
     args = parser.parse_args()
 
     if not args.contributor and (args.base_ref or args.head_ref):
         parser.error("--base-ref/--head-ref require --contributor")
+    if args.contributor and args.no_isolated_checkout:
+        parser.error("--contributor requires the frozen isolated checkout")
     if args.contributor and not args.head_ref:
         parser.error(
             "--contributor requires --head-ref: the review runs this checkout's review "
@@ -1149,8 +1108,9 @@ def _build_review_request(
     args,
     version: str,
     contributor_snapshot: dict | None,
-) -> tuple[str, str]:
-    """The goal and scope the review operation is handed."""
+) -> tuple[str, str, str]:
+    """The commit message (operator lane: what the gate cycle is told it reviews),
+    goal and scope the review is handed."""
     if args.contributor:
         contract = json.dumps(
             _CONTRIBUTOR_CONTRACT,
@@ -1175,19 +1135,20 @@ def _build_review_request(
             "to the final maintainer landing.\n\nContributor-declared scope:\n"
             + (args.scope or "All files in the target-base..head proposal diff.")
         )
-        return goal, scope
+        return "external-pr-readiness", goal, scope
 
+    commit_message = args.commit_message or (
+        f"release: Ouroboros v{version} deep core capability release"
+    )
     goal = args.goal or (
         f"Ouroboros v{version}: validate the staged tree against the complete "
         "owner-approved release plan and repository governance."
     )
-    if args.commit_message:
-        goal += f"\n\nIntended commit message:\n{args.commit_message}"
     scope = args.scope or (
         "Only the staged owner-approved release changes are in scope. Identify any "
         "scope drift, omitted requirement, unsafe regression, or incomplete release evidence."
     )
-    return goal, scope
+    return commit_message, goal, scope
 
 
 def _prepare_review_configuration(args) -> tuple[dict | None, dict]:
@@ -1290,21 +1251,11 @@ def main() -> int:
         )
         return 3
 
-    sha8 = (
-        str(proposal["head_sha"])[:8]
-        if proposal is not None
-        else subprocess.run(
-            ["git", "rev-parse", "--short=8", "HEAD"],
-            cwd=str(REPO),
-            capture_output=True,
-            text=True,
-        ).stdout.strip() or "nohead"
-    )
+    sha8 = (str(proposal["head_sha"])[:8] if proposal is not None
+            else subprocess.run(["git", "rev-parse", "--short=8", "HEAD"], cwd=str(REPO), capture_output=True,
+                                text=True).stdout.strip() or "nohead")
     output_dir = pathlib.Path(
-        args.output
-        or pathlib.Path.home()
-        / "ouro"
-        / "review_runs"
+        args.output or pathlib.Path.home() / "ouro" / "review_runs"
         / f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}_{sha8}"
     ).expanduser().resolve(strict=False)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1316,104 +1267,199 @@ def main() -> int:
         if args.drive_root
         else pathlib.Path(tempfile.mkdtemp(prefix="ouroboros-external-review-"))
     )
-    review_drive_root.mkdir(parents=True, exist_ok=True)
     (review_drive_root / "logs").mkdir(parents=True, exist_ok=True)
 
-    ctx = ToolContext(repo_dir=REPO, drive_root=review_drive_root)
-    goal, scope = _build_review_request(
-        args=args,
-        version=version,
-        contributor_snapshot=proposal,
-    )
-    subject: dict = {"subject": "index"}
-    expected_subject = None
+    host_ctx = ToolContext(repo_dir=REPO, drive_root=review_drive_root)
+    commit_message, goal, scope = _build_review_request(args=args, version=version, contributor_snapshot=proposal)
     if proposal is not None:
-        subject = {"subject": "base..head", "base": proposal["base_sha"], "head": proposal["head_sha"]}
-        expected_subject = {"base": proposal["base_sha"], "head": proposal["head_sha"],
-                            "tree_sha": proposal["head_tree_sha"]}
-        print(
-            "Contributor profile: Claude advisory excluded; the installed review flow "
-            "and rules read the frozen base..head subject through the configured "
-            "triad + scope routes.",
-            file=sys.stderr,
-        )
+        return _contributor_lane(args, host_ctx, proposal, resolved_config=resolved_config, goal=goal,
+                                 scope=scope, output_dir=output_dir, review_drive_root=review_drive_root)
+    return _operator_lane(args, host_ctx, commit_message, goal=goal, scope=scope, staged=staged,
+                          resolved_config=resolved_config, output_dir=output_dir,
+                          review_drive_root=review_drive_root)
 
+
+def _contributor_lane(args, host_ctx, proposal: dict, *, resolved_config: dict, goal: str, scope: str,
+                      output_dir: pathlib.Path, review_drive_root: pathlib.Path) -> int:
+    """The runtime review operation over the frozen ``base..head`` proposal, after the
+    proposal's own hermetic tests passed in an isolated checkout of the same subject."""
+    from scripts.contributor_review_evidence import finalize_contributor_outcome
+
+    print(
+        "Contributor profile: Claude advisory excluded; the proposal's hermetic test "
+        "preflight runs first, then the installed review flow and rules read the frozen "
+        "base..head subject through the configured triad + scope routes.",
+        file=sys.stderr,
+    )
     t0 = time.time()
-    try:
-        result = run_review_change(ctx, root="system_repo", surface="change", goal=goal, scope=scope, **subject)
-    except Exception as exc:
-        result = {"error": f"{type(exc).__name__}: {exc}"}
-    if not isinstance(result, dict):
-        result = {"error": f"the review operation returned {type(result).__name__}, not a record"}
-    record, problem = _review_record(ctx, result)
-    outcome = _record_outcome(record, problem, subject=expected_subject)
+    tests_evidence, refusal = _contributor_tests_preflight(host_ctx, proposal, review_drive_root=review_drive_root)
+    result: dict = {}
+    if not refusal:
+        result, refusal = _call_review_change(
+            host_ctx, root="system_repo", surface="change", goal=goal, scope=scope,
+            subject="base..head", base=proposal["base_sha"], head=proposal["head_sha"])
+    record, problem = _review_record(host_ctx, result) if not refusal else (None, refusal["message"])
+    expected_subject = {"base": proposal["base_sha"], "head": proposal["head_sha"],
+                        "tree_sha": proposal["head_tree_sha"]}
+    outcome = refusal or _record_outcome(record, problem, subject=expected_subject)
+    if not refusal and "subject_mismatches" not in outcome:
+        record = _attach_tests_evidence(host_ctx, record, tests_evidence)
+    if record is not None and "subject_mismatches" not in outcome:
+        proposal["reviewed_tree_sha"] = str((record.get("subject") or {}).get("tree_sha") or "")
     actors = _record_actors(record)
     evidence_refs, cost_report = _review_evidence_and_cost(actors)
-    seats = _seat_records(record, review_drive_root)
-    review_record = _record_link(record, result, review_drive_root)
-    if proposal is not None:
-        from scripts.contributor_review_evidence import finalize_contributor_outcome
+    outcome = _apply_contributor_landing_obligations(
+        outcome, release_sensitive=bool(proposal.get("release_metadata_or_machinery_changed", False)))
+    exit_code = _classify_exit(outcome)
+    # A typed refusal before the operation dispatched anything has no receipts
+    # to bind; the refusal itself is the outcome, not a receipt mismatch.
+    execution_receipts, execution_mismatches, session_transcripts = ([], [], []) if refusal else (
+        _contributor_execution_receipts(actors, resolved_config, review_drive_root))
+    exit_code, outcome = finalize_contributor_outcome(
+        outcome=outcome, exit_code=exit_code, mismatches=execution_mismatches,
+    )
+    checkout = str(((record or {}).get("subject") or {}).get("checkout") or "")
+    replacements = sorted(
+        [
+            *([(checkout, "$REVIEW_CHECKOUT")] if checkout else []),
+            (str(review_drive_root), "$REVIEW_DRIVE"),
+            (str(REPO), "$REPO"),
+            (str(pathlib.Path.home()), "$HOME"),
+        ],
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    packet_path = _write_contributor_packet(
+        output_dir=output_dir,
+        snapshot=proposal,
+        resolved_config=resolved_config,
+        outcome=outcome,
+        exit_code=exit_code,
+        evidence_refs=evidence_refs,
+        cost_report=cost_report,
+        elapsed_sec=time.time() - t0,
+        seats=_seat_records(record, review_drive_root),
+        review_record=_record_link(record, result, review_drive_root),
+        execution_receipts=execution_receipts,
+        execution_mismatches=execution_mismatches,
+        session_transcripts=session_transcripts,
+        degraded_reasons=list(((record or {}).get("verdict") or {}).get("degraded_reasons") or []),
+        replacements=replacements,
+    )
+    print((output_dir / "full-output.txt").read_text(encoding="utf-8"))
+    print(f"Artifacts: {output_dir}", file=sys.stderr)
+    print(f"Shareable packet: {packet_path}", file=sys.stderr)
+    return exit_code
 
-        if record is not None and "subject_mismatches" not in outcome:
-            proposal["reviewed_tree_sha"] = str((record.get("subject") or {}).get("tree_sha") or "")
-        outcome = _apply_contributor_landing_obligations(
-            outcome,
-            release_sensitive=bool(proposal.get("release_metadata_or_machinery_changed", False)),
-        )
-        exit_code = _classify_exit(outcome)
-        execution_receipts, execution_mismatches, session_transcripts = (
-            _contributor_execution_receipts(actors, resolved_config, review_drive_root)
-        )
-        exit_code, outcome = finalize_contributor_outcome(
-            outcome=outcome, exit_code=exit_code, mismatches=execution_mismatches,
-        )
-        checkout = str(((record or {}).get("subject") or {}).get("checkout") or "")
-        replacements = sorted(
-            [
-                *([(checkout, "$REVIEW_CHECKOUT")] if checkout else []),
-                (str(review_drive_root), "$REVIEW_DRIVE"),
-                (str(REPO), "$REPO"),
-                (str(pathlib.Path.home()), "$HOME"),
-            ],
-            key=lambda item: len(item[0]),
-            reverse=True,
-        )
-        packet_path = _write_contributor_packet(
-            output_dir=output_dir,
-            snapshot=proposal,
-            resolved_config=resolved_config,
-            outcome=outcome,
-            exit_code=exit_code,
-            evidence_refs=evidence_refs,
-            cost_report=cost_report,
-            elapsed_sec=time.time() - t0,
-            seats=seats,
-            review_record=review_record,
-            execution_receipts=execution_receipts,
-            execution_mismatches=execution_mismatches,
-            session_transcripts=session_transcripts,
-            degraded_reasons=list(((record or {}).get("verdict") or {}).get("degraded_reasons") or []),
-            replacements=replacements,
-        )
-        print((output_dir / "full-output.txt").read_text(encoding="utf-8"))
-        print(f"Artifacts: {output_dir}", file=sys.stderr)
-        print(f"Shareable packet: {packet_path}", file=sys.stderr)
-        return exit_code
 
+def _write_advisory_record(output_dir: pathlib.Path, review_drive_root: pathlib.Path, repo_dir) -> None:
+    """``advisory.txt``: the full recorded advisory pre-review of this cycle."""
+    from dataclasses import asdict
+
+    from ouroboros.review_state import load_state, make_repo_key
+
+    runs = load_state(review_drive_root).filter_advisory_runs(repo_key=make_repo_key(pathlib.Path(repo_dir)))
+    record = asdict(runs[-1]) if runs else {"status": "not_run", "reason": "cycle did not reach preflight"}
+    advisory_text = json.dumps(record, ensure_ascii=False, indent=2)
+    (output_dir / "advisory.txt").write_text(advisory_text + "\n", encoding="utf-8")
+    print("ADVISORY PRE-REVIEW (recorded full source)\n" + advisory_text)
+
+
+def _reviewed_tree_drift(checkout: pathlib.Path, staged: str, output_dir: pathlib.Path) -> bool:
+    """The cycle may auto-sync release metadata (version carriers) in the checkout; a
+    drifted tree means reviewers approved MORE than the operator's staged patch — surface
+    that loudly. The cycle's final ``git reset HEAD`` turns NEW files untracked, and ``git
+    diff HEAD`` would not show them — re-stage everything so the comparison is homogeneous
+    with the operator's staged patch."""
+    subprocess.run(["git", "add", "-A"], cwd=str(checkout), capture_output=True, text=True, timeout=120)
+    post_tree = _git_bytes(["diff", "--cached", "--binary"], cwd=checkout).decode("utf-8", errors="surrogateescape")
+    if post_tree.strip() == staged.strip():
+        return False
+    print(
+        "WARN: the reviewed checkout tree drifted from the staged patch (release-metadata "
+        "auto-sync?). Reconcile the primary worktree before committing what was reviewed.",
+        file=sys.stderr,
+    )
+    (output_dir / "reviewed-tree-drift.diff").write_bytes(post_tree.encode("utf-8", errors="surrogateescape"))
+    return True
+
+
+def _operator_lane(args, host_ctx, commit_message: str, *, goal: str, scope: str, staged: str,
+                   resolved_config: dict, output_dir: pathlib.Path, review_drive_root: pathlib.Path) -> int:
+    """The commit gate's own non-committing cycle (advisory, tests preflight, triad +
+    scope, ledger record) over the staged index, run in an isolated checkout of the
+    staged patch that the runtime materializes (``review_subject.isolated_checkout``):
+    edits in this worktree during the run cannot reach the reviewers, and the checkout
+    is retained when review custody is still open after the cycle."""
+    from ouroboros.tools.git import _run_non_committing_review_cycle
+    from ouroboros.tools.registry import ToolContext
+    from ouroboros.tools.review_subject import ReviewSubjectSpec, isolated_checkout
+
+    spec = ReviewSubjectSpec(root_kind="system_repo", root=str(REPO), kind="index", surface="commit_gate")
+    retained: dict = {}
+    outcome: dict = {}
+    ctx, checkout = host_ctx, None
+    t0 = time.time()
+    with contextlib.ExitStack() as stack:
+        if not args.no_isolated_checkout:
+            try:
+                frozen = stack.enter_context(isolated_checkout(host_ctx, spec, retain=lambda: retained))
+            except Exception as exc:
+                print(f"ERROR: isolated checkout failed: {exc}", file=sys.stderr)
+                _write_json(output_dir / "outcome.json", {
+                    "exit_code": 3, "outcome": {"status": "blocked", "block_reason": "isolated_checkout_failed"}})
+                return 3
+            checkout = pathlib.Path(frozen.checkout)
+            ctx = ToolContext(repo_dir=checkout, drive_root=review_drive_root)
+            print(f"Isolated review checkout: {checkout}", file=sys.stderr)
+        # The shared cycle owns preparation, admission and any paid preflight.
+        advisory_warning = _advisory_unavailability_warning()
+        if advisory_warning:
+            print(advisory_warning, file=sys.stderr)
+        try:
+            outcome = _run_non_committing_review_cycle(
+                ctx, commit_message, skip_advisory_review=False, goal=goal, scope=scope)
+            _write_advisory_record(output_dir, review_drive_root, ctx.repo_dir)
+            if checkout is not None and not _pending_checkout_custody(ctx):
+                _reviewed_tree_drift(checkout, staged, output_dir)
+        finally:
+            if checkout is not None:
+                retained.update(_pending_checkout_custody(ctx))
+            if retained:
+                outcome.update(status="blocked", block_reason=outcome.get("block_reason") or "review_custody_unresolved",
+                               retained_checkout=str(checkout), retained_custody=retained,
+                               review_drive_root=str(review_drive_root),
+                               retention_reason="review custody unresolved; reconcile before cleanup")
+                _write_json(output_dir / "outcome.json", {"exit_code": 3, "outcome": outcome})
+                print(f"Review checkout retained for reconciliation: {checkout} (custody drive: {review_drive_root})",
+                      file=sys.stderr)
+
+    record_id = str(outcome.get("review_record_id") or getattr(ctx, "_current_review_record_id", "") or "")
+    record, _problem = _review_record(ctx, {"record_id": record_id})
+    # Seat evidence reads the ledger record (the contributor packet's vocabulary); the
+    # raw ctx rows stand in only when the cycle wrote no record.
+    actors = _record_actors(record) if record else [
+        (surface, _raw_actor(row)) for surface, row in _actor_records_with_surface(ctx)]
+    evidence_refs, cost_report = _review_evidence_and_cost(actors)
     exit_code = _classify_exit(outcome)
     sep = "=" * 80
     out = "\n".join([
         sep, "RESOLVED REVIEW CONFIG", sep,
         _json_text({**resolved_config, "drive_root": str(review_drive_root)}),
+        sep, "TRIAD RAW RESULTS (full, untruncated)", sep,
+        _json_text(getattr(ctx, "_last_triad_raw_results", [])),
+        sep, "SCOPE RAW RESULT (full, untruncated)", sep,
+        _json_text(getattr(ctx, "_last_scope_raw_result", {})),
         sep, "REVIEW SEAT RECORDS (ledger rows with retained answers, full, untruncated)", sep,
-        _json_text(seats),
+        _json_text(_seat_records(record, review_drive_root)),
         sep, "AGGREGATE VERDICT", sep,
         _json_text({
             "complete": exit_code == 0,
             "exit_code": exit_code,
             "exit_class": _EXIT_CLASS.get(exit_code, "unknown"),
             "production_outcome": outcome,
-            "review_record": review_record,
+            "scope_model": getattr(ctx, "_last_scope_model", ""),
+            "review_record": _record_link(record, {"record_id": record_id}, review_drive_root),
             "raw_evidence_refs": evidence_refs,
             "cost_report": cost_report,
             "elapsed_sec": round(time.time() - t0, 1),

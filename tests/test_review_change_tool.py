@@ -176,13 +176,16 @@ def _install_seams(monkeypatch: pytest.MonkeyPatch, h: Harness) -> None:
         return Frozen(spec, diff, _sha(diff), tree, _git(root, "rev-parse", base))
 
     @contextlib.contextmanager
-    def checkout(ctx: Any, spec: ReviewSubjectSpec):
+    def checkout(ctx: Any, spec: ReviewSubjectSpec, *, retain=None):
         h.calls.append(("checkout", spec))
         root = pathlib.Path(spec.root)
         diff = _git(root, "diff", "--binary", spec.base, spec.head)
         yield Frozen(spec, diff, _sha(diff), _git(root, "rev-parse", f"{spec.head}^{{tree}}"),
                      _git(root, "rev-parse", spec.base), checkout=str(h.drive / "checkouts" / "head"))
-        h.calls.append(("checkout_closed", spec))
+        # The runtime's exit question (review_subject.checkout_retention): kept or removed.
+        from ouroboros.tools.review_subject import checkout_retention
+
+        h.calls.append(("checkout_retained" if checkout_retention(retain) else "checkout_closed", spec))
 
     def write(drive_root: Any, record: Any) -> Dict[str, Any]:
         payload = rl.write_record(drive_root, record)
