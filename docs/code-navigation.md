@@ -64,7 +64,8 @@ usable grammar can still contribute text evidence. Text evidence is line-level:
 the first match on a line without syntax context anchors that line, so one long
 line may hold further raw matches. `callers` selects recognized callee positions
 and does not promote text matches to calls. A qualified callee keeps its final
-name, so PHP `\A\B\foo()` is a `foo` call. A computed callee such as
+name, so PHP `\A\B\foo()` is a `foo` call. Type arguments are not an operand, so
+where a C# grammar loads, `Target<int>()` is a `Target` call. A computed callee such as
 `getters[key]()` has no callee name; its receiver and index stay ordinary
 references. Go spells type arguments with the same brackets, so syntax alone
 cannot tell `handlers[i]()` from the generic call `Make[int]()`: tree-sitter-go

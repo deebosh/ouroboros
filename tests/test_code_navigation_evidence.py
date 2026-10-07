@@ -267,6 +267,76 @@ def test_php_qualified_callees_keep_their_final_name(project):
     assert "x.php:3:4 namespace_name in run" in body(query("references", query="A"))
 
 
+def test_csharp_generic_callee_keeps_its_name_or_reports_no_grammar(project):
+    from ouroboros import code_intelligence as ci
+
+    repo, ctx = project
+    # C# Target<int>() is generic_name(identifier, type_argument_list): the type
+    # arguments are no operand, so the call names Target as Direct() names Direct,
+    # while the computed getters[key]() still names nothing. A runtime that cannot
+    # load the C# grammar (tree-sitter 0.23 rejects its ABI 15) keeps it visibly unparsed.
+    write(repo, "x.cs", "class C {\n  void Run() {\n    Target<int>();\n    obj.Target<List<int>>();\n"
+          "    Direct();\n    getters[key]();\n  }\n}\n")
+    query = public(repo, ctx)
+    digest = query("digest", path="x.cs")
+    if ci._ts_parser("csharp") is None:
+        assert "Status: structural_unavailable:cs" in digest and "Calls:" not in digest, digest
+        callers = query("callers", query="Target")
+        assert not body(callers) and "no grammar: cs" in callers, callers
+        return
+    assert [line for line in digest.splitlines() if line.startswith("  Calls:")] == ["  Calls: Target, Target, Direct"]
+    assert body(query("callers", query="Target")).splitlines() == [
+        "x.cs:3:5 generic_name call? in C / Run |     Target<int>();",
+        "x.cs:4:9 generic_name call? in C / Run |     obj.Target<List<int>>();"]
+    for token in ("getters", "key", "obj", "int", "List"):
+        assert not body(query("callers", query=token)), token
+        assert "call?" not in body(query("references", query=token)), token
+
+
+class _Node:
+    """The slice of the tree-sitter Node API that the shared callee leaf reads."""
+
+    def __init__(self, kind, *children, text=None, field=None, named=True):
+        self.type, self.text, self.field, self.is_named = kind, text and text.encode(), field, named
+        self.children = list(children)
+        self.named_children = [child for child in children if child.is_named]
+        self.child_count = len(children)
+
+    def child_by_field_name(self, name):
+        return next((child for child in self.children if child.field == name), None)
+
+    def field_name_for_child(self, index):
+        return self.children[index].field
+
+
+def _generic(field=None):
+    # tree-sitter-c-sharp 0.23.1 labels neither part: (generic_name (identifier) (type_argument_list ...)).
+    arguments = _Node("type_argument_list", _Node("<", named=False), _Node("predefined_type", text="int"),
+                      _Node(">", named=False))
+    return _Node("generic_name", _Node("identifier", text="Target"), arguments, field=field)
+
+
+@pytest.mark.parametrize("callee,leaf", [
+    (_generic("function"), "Target"),
+    (_Node("member_access_expression", _Node("identifier", text="obj", field="expression"),
+           _Node(".", named=False), _generic("name"), field="function"), "Target"),
+    (_Node("parenthesized_expression", _Node("(", named=False), _generic(), _Node(")", named=False),
+           field="function"), "Target"),
+    (_Node("identifier", text="Direct", field="function"), "Direct"),
+    (_Node("element_access_expression", _Node("identifier", text="getters", field="expression"),
+           _Node("bracketed_argument_list", _Node("argument", _Node("identifier", text="key")), field="subscript"),
+           field="function"), None),
+    (_Node("generic_name", _Node("type_argument_list", _Node("predefined_type", text="int")), field="function"), None),
+])
+def test_shared_callee_leaf_skips_only_type_arguments(callee, leaf):
+    from ouroboros import code_intelligence as ci
+
+    # Grammar-free tree roles: digest call facts and callers both read this one
+    # leaf, so the generic call keeps its name without the optional C# grammar.
+    found = ci._ts_callee_leaf(_Node("invocation_expression", callee, _Node("argument_list", field="arguments")))
+    assert (found.text.decode() if found is not None else None) == leaf
+
+
 def test_unknown_grammar_event_config_and_comment_source(project):
     repo, ctx = project
     write(repo, "emit.js", 'bus.emit("ready");\n')

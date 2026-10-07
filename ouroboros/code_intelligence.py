@@ -632,10 +632,10 @@ def _ts_callee_leaf(node: Any) -> Any:
         if target.child_count == 0:
             return target if target.type in _TS_NAME_TYPES else None
         child = next((c for c in map(target.child_by_field_name, ("attribute", "property", "field", "name", "function")) if c is not None), None)
-        if child is None:
-            labels = [target.field_name_for_child(i) for i, c in enumerate(target.children) if c.is_named]
-            if labels[-1:] == [None] and None not in labels[:-1] and (len(labels) == 1 or target.named_children[-1].type in _TS_NAME_TYPES):
-                child = target.named_children[-1]
+        if child is None:  # type arguments are no operand, so C# Target<int>() still names Target
+            ops = [(target.field_name_for_child(i), c) for i, c in enumerate(target.children) if c.is_named and c.type != "type_argument_list"]
+            if ops and ops[-1][0] is None and None not in [label for label, _ in ops[:-1]] and (len(ops) == 1 or ops[-1][1].type in _TS_NAME_TYPES):
+                child = ops[-1][1]
         target = child
     return None
 
