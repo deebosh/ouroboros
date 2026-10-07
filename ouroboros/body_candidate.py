@@ -40,7 +40,6 @@ KIND = "body_candidate"
 BRANCH_PREFIX = "candidate/"
 # Private preservation pins: reachable objects for retained work, never a published line.
 PIN_PREFIX = "refs/ouroboros/candidates/"
-_WRITE_TOOLS = frozenset({"write_file", "edit_text", "apply_patch", "edit_batch"})
 # Parallel tool calls of one task reach the seam together: only one may provision, and none
 # may bind a checkout that is still being populated.
 _prepare_lock = threading.RLock()
@@ -82,6 +81,22 @@ def serving_repo_dir_for(ctx: Any) -> pathlib.Path:
     """The checkout the running server imports, whatever this context authors."""
     serving = getattr(ctx, "serving_repo_dir", None)
     return pathlib.Path(serving or getattr(ctx, "system_repo_dir", None) or getattr(ctx, "repo_dir"))
+
+
+def serving_alias_root(ctx: Any, root: Any) -> Optional[pathlib.Path]:
+    """The serving checkout whose spelling of a body path still names ``root``'s file.
+
+    Only when ``root`` IS this context's bound candidate and holds no entry named like
+    the serving checkout (which would make ``repo/x`` a genuine nested path).
+    """
+    bound = descriptor(ctx)
+    if not bound or not is_bound(ctx):
+        return None
+    candidate = pathlib.Path(str(bound["path"])).resolve(strict=False)
+    serving = serving_repo_dir_for(ctx).resolve(strict=False)
+    if pathlib.Path(root).resolve(strict=False) != candidate or (candidate / serving.name).exists():
+        return None
+    return serving
 
 
 def _git(cwd: Any, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -515,17 +530,23 @@ def _targets_body(ctx: Any, root: str) -> bool:
 
 
 def authoring_seam(ctx: Any, name: str, args: Dict[str, Any]) -> Optional[CandidateRefused]:
-    """Bind the candidate BEFORE an ordinary body write or an acting body child resolves a target.
+    """Bind the candidate BEFORE an ordinary body write, a PR-integration verb or an acting
+    body child resolves a target.
 
     Process tools are deliberately absent: no command text is classified. The
     mind prepares explicitly before process-first work. A refusal that the
     existing mode gates own (light, subagent, resolver) is left to them.
     """
+    from ouroboros.tools.git_pr import BODY_WORKTREE_TOOLS
+    from ouroboros.tools.tool_resolution import _ROOT_ARG_REPO_WRITE_TOOLS
+
     marker = _metadata(ctx).get("body_candidate")
     if is_bound(ctx) or (isinstance(marker, dict) and marker.get("in_place")):
         return None
-    if name in _WRITE_TOOLS:
+    if name in _ROOT_ARG_REPO_WRITE_TOOLS:  # the one set every repo-write fence keys on
         applies = _targets_body(ctx, str(args.get("root") or "active_workspace"))
+    elif name in BODY_WORKTREE_TOOLS:  # PR integration checks out and commits in the body itself
+        applies = True
     elif name == "schedule_subagent":
         applies = (str(args.get("write_surface") or "").strip().lower() == "self_worktree"
                    and not str(args.get("workspace_root") or "").strip() and _targets_body(ctx, "active_workspace"))
@@ -576,16 +597,64 @@ def process_environment(ctx: Any, work_dir: Any) -> Optional[Dict[str, str]]:
             "environment") from exc
 
 
-def record_reviewed_commit(ctx: Any, commit_sha: str) -> None:
-    """The commit gate created ``commit_sha`` on this candidate under the configured enforcement."""
-    bound = descriptor(ctx)
+def record_reviewed_commit(ctx: Any, commit_sha: str, *, row: Optional[Dict[str, Any]] = None) -> None:
+    """The commit gate created ``commit_sha`` on this candidate under the configured enforcement
+    (``row``: the candidate whose interrupted gate an evolution intent proves)."""
+    bound = row or descriptor(ctx)
     if not bound or not commit_sha:
         return
     try:
-        _update_row(bound, lambda entry: entry.__setitem__(
-            "reviewed_commits", [*list(entry.get("reviewed_commits") or []), str(commit_sha)]))
+        _update_row(bound, lambda entry: entry.__setitem__("reviewed_commits", [
+            *[sha for sha in entry.get("reviewed_commits") or [] if sha != commit_sha], str(commit_sha)]))
     except Exception:
         log.warning("reviewed candidate commit %s was not recorded on its row", commit_sha[:12], exc_info=True)
+
+
+def intent_capture(task_id: str, serving_capture):
+    """``(capture, recover)`` for matching an interrupted evolution gate's commit intent.
+
+    A task that authored in its body candidate committed THERE: ``capture`` runs Git
+    in that checkout and ``recover`` restores the reviewed provenance the gate writes
+    after the receipt. Otherwise (no task, no candidate) the serving capture, unchanged.
+    """
+    row = find(task_id) if task_id else None
+    if row is None or not pathlib.Path(str(row.get("path") or "")).is_dir():
+        return serving_capture, lambda sha: sha
+
+    def capture(cmd):
+        done = subprocess.run(cmd, cwd=str(row["path"]), capture_output=True, text=True, timeout=30)
+        return done.returncode, done.stdout, done.stderr
+
+    def recover(sha: str) -> str:
+        record_reviewed_commit(None, sha, row=row)
+        return sha
+
+    return capture, recover
+
+
+def holds_commit(task_id: str, commit_sha: str, data_dir: Optional[Any] = None) -> Optional[bool]:
+    """Whether ``task_id``'s own candidate still holds ``commit_sha`` on its branch (what adoption needs).
+
+    ``False`` only on evidence: no candidate of that task, no checkout, or Git
+    answering that the commit is gone or off the branch. An unreadable registry or
+    an unanswered Git is ``None``: unknown never proves the reviewed commit lost.
+    """
+    try:
+        row = next((entry for entry in _rows(data_dir, strict=True, op="read_body_candidate_commit")
+                    if task_id and entry.get("task_id") == task_id), None)
+    except Exception:
+        return None
+    if row is None or not commit_sha or not row.get("path") or not pathlib.Path(str(row["path"])).is_dir():
+        return False
+    try:
+        for args in (("rev-parse", "--verify", "--quiet", f"{commit_sha}^{{commit}}"),
+                     ("merge-base", "--is-ancestor", commit_sha, "HEAD")):
+            code = subprocess.run(["git", *args], cwd=str(row["path"]), capture_output=True, timeout=30).returncode
+            if code:
+                return False if code == 1 else None
+        return True
+    except Exception:
+        return None
 
 
 def publication_note(ctx: Any) -> str:

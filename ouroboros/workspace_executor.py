@@ -980,11 +980,14 @@ def start_service(
         drive_root=_drive_root_from_ctx(ctx),
     )
     if executor.kind == "local":
+        from ouroboros import body_candidate
+        from ouroboros.process_custody import spawn_supervised
+
+        # A service inside the bound body candidate runs isolated; a refusal precedes any log.
+        base_env = body_candidate.process_environment(ctx, host_cwd) or _executor_service_env()
         log_path = pathlib.Path(getattr(ctx, "drive_root")) / "services" / record.task_id / f"{name}.executor.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_fh = log_path.open("ab")
-        from ouroboros import body_candidate
-        from ouroboros.process_custody import spawn_supervised
 
         def publish_process(proc):
             record.local_proc = proc
@@ -1001,8 +1004,7 @@ def start_service(
                 owner_task_id=record.task_id, on_spawn=publish_process, cwd=str(host_cwd),
                 stdout=log_fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                 # Host interpreter overlay applies only to the local executor.
-                env=overlay_env(overlay_env(  # a service inside the bound body candidate runs isolated
-                    body_candidate.process_environment(ctx, host_cwd) or _executor_service_env(), env_overlay), env),
+                env=overlay_env(overlay_env(base_env, env_overlay), env),
             )
         finally:
             log_fh.close()

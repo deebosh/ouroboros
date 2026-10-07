@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -159,6 +160,147 @@ def test_acting_body_child_copies_the_candidate_and_returns_into_it(body, monkey
     assert candidate.is_dir()
 
 
+@pytest.mark.parametrize("spelling", ["root_basename", "absolute"])
+def test_serving_spellings_of_a_body_path_reach_the_same_candidate_file_before_and_after_binding(body, spelling):
+    """``repo/server.py`` and the absolute serving path name the body file, on the first
+    write (which binds the candidate) and on every later one (bound)."""
+    serving, data = body
+    before = _tree_bytes(serving)
+    ctx = make_ctx(serving, data, f"root-spelling-{spelling}")
+    registry = _registry(serving, data, ctx)
+
+    def target(rel: str) -> str:
+        return str(serving / rel) if spelling == "absolute" else f"{serving.name}/{rel}"
+
+    entry = (serving / "server.py").read_text() + "# candidate entry\n"
+    first = registry.execute_result("write_file", {"path": target("server.py"), "content": entry})
+    later = registry.execute_result("write_file", {"path": target("ouroboros/mod_a.py"),
+                                                   "content": "GEN = 'GEN_CAND'\n"})
+    edited = registry.execute_result("edit_text", {"path": target("ouroboros/mod_b.py"),
+                                                   "old_str": "GEN_OLD", "new_str": "GEN_EDIT"})
+
+    candidate = pathlib.Path(body_candidate.descriptor(ctx)["path"])
+    assert [r.status for r in (first, later, edited)] == ["ok", "ok", "ok"], (first, later, edited)
+    assert (candidate / "server.py").read_text() == entry
+    assert (candidate / "ouroboros/mod_a.py").read_text() == "GEN = 'GEN_CAND'\n"
+    assert (candidate / "ouroboros/mod_b.py").read_text() == "GEN = 'GEN_EDIT'\n"
+    assert not (candidate / serving.name).exists()
+    assert _tree_bytes(serving) == before and git(serving, "status", "--porcelain") == ""
+
+
+def test_candidate_refusals_reach_the_model_as_typed_blocked_results(body):
+    """Automatic (first write) and explicit preparation refusals are registered codes,
+    never a generic tool error, and leave the serving tree and foreign work untouched."""
+    serving, data = body
+    before = _tree_bytes(serving)
+    ctx = make_ctx(serving, data, "root-occupied")
+    occupied = subagent_worktrees._resolve_root() / f"body_{subagent_worktrees._safe_name('root-occupied')}"
+    occupied.mkdir(parents=True)
+    (occupied / "foreign.txt").write_text("not this task's\n")
+    registry = _registry(serving, data, ctx)
+
+    automatic = registry.execute_result("write_file", {"path": f"{serving.name}/server.py", "content": "# x\n"})
+    explicit = registry.execute_result("prepare_self_change", {})
+    missing = registry.execute_result("prepare_self_change", {"resume": "no-such-candidate"})
+
+    for result, code in ((automatic, "CANDIDATE_PATH_OCCUPIED"), (explicit, "CANDIDATE_PATH_OCCUPIED"),
+                         (missing, "CANDIDATE_MISSING")):
+        assert (result.status, result.code) == ("blocked", code), result
+        assert result.text.startswith(f"⚠️ {code}: "), result
+    assert _tree_bytes(serving) == before and not body_candidate.is_bound(ctx)
+    assert [path.name for path in occupied.iterdir()] == ["foreign.txt"]
+
+
+def test_candidate_environment_failure_refuses_the_process_and_never_uses_the_serving_environment(body, monkeypatch):
+    serving, data = body
+    ctx = make_ctx(serving, data, "root-env-refused")
+    registry = _registry(serving, data, ctx)
+    assert "body candidate" in registry.execute("prepare_self_change", {})
+    candidate = pathlib.Path(ctx.repo_dir)
+    script = [sys.executable, "-c", "import pathlib; pathlib.Path('ran.txt').write_text('ran')"]
+    service = {"name": "env-refused", "cwd": str(candidate), "cmd": script, "readiness": {"timeout_sec": 2}}
+
+    from ouroboros import test_environment
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError("isolated root could not be created")
+
+    monkeypatch.setattr(test_environment, "isolated_environment", unavailable)
+    started = registry.execute_result("start_service", dict(service))
+    command = registry.execute_result("run_command", {"cmd": script})
+    # The executor-backed (local) start refuses the same typed way, before any process or log.
+    ctx.executor_ref = {"type": "local", "workspace_host_path": str(candidate), "workspace_backend_path": "/workspace"}
+    executor = registry.execute_result("start_service", dict(service))
+    ctx.executor_ref = None
+    # No branch of the service start falls back to the serving environment, whatever fails.
+    monkeypatch.setattr(body_candidate, "process_environment",
+                        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("registry unreadable")))
+    unknown = registry.execute_result("start_service", dict(service))
+    registry.execute("stop_service", {"name": "env-refused"})
+
+    for result in (started, command, executor):
+        assert (result.status, result.code) == ("blocked", "CANDIDATE_ENVIRONMENT_UNAVAILABLE"), result
+        assert result.meta.get("operation_outcome") == "completed_no_effect", result
+    assert unknown.status == "error" and "registry unreadable" in unknown.text, unknown  # fails closed
+    assert not (candidate / "ran.txt").exists()
+    assert not list((data / "services").rglob("env-refused.executor.log"))
+
+
+def test_every_candidate_refusal_code_is_a_registered_blocked_tool_code():
+    import re
+
+    from ouroboros.tools.tool_result import TOOL_CODE_SPECS
+
+    source = pathlib.Path(body_candidate.__file__).read_text(encoding="utf-8")
+    codes = set(re.findall(r'CandidateRefused\(\s*"([A-Z_]+)"', source))
+    assert {"CANDIDATE_MISSING", "CANDIDATE_PATH_OCCUPIED", "CANDIDATE_ENVIRONMENT_UNAVAILABLE"} <= codes
+    statuses = {code: getattr(TOOL_CODE_SPECS.get(code), "status", None) for code in codes}
+    assert statuses == dict.fromkeys(codes, "blocked")
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+def test_pr_integration_runs_in_the_candidate_and_never_moves_the_serving_checkout(body, prepared):
+    """fetch → integration branch → cherry-pick → adaptation → staged merge, as the tools chain
+    them, from an unbound task and from a prepared one: the serving checkout keeps its branch
+    and bytes, the integration branch starts at the candidate, the contributor keeps the credit."""
+    serving, data = body
+    git(serving, "checkout", "-q", "-b", "pr/7")  # what fetch_pr_ref leaves: the PR head as a local ref
+    (serving / "ouroboros/contrib.py").write_text("X = 7\n")
+    git(serving, "add", "-A")
+    git(serving, "commit", "-q", "-m", "contribution",
+        env={"GIT_AUTHOR_NAME": "Contributor", "GIT_AUTHOR_EMAIL": "contrib@example.invalid"})
+    pr_sha = git(serving, "rev-parse", "HEAD")
+    git(serving, "checkout", "-q", "ouroboros")
+    before, head = _tree_bytes(serving), git(serving, "rev-parse", "HEAD")
+    ctx = make_ctx(serving, data, f"root-pr-{prepared}")
+    registry = _registry(serving, data, ctx)
+    if prepared:
+        assert "body candidate" in registry.execute("prepare_self_change", {})
+
+    created = registry.execute_result("create_integration_branch", {"pr_number": 7})
+    picked = registry.execute_result("cherry_pick_pr_commits", {"shas": [pr_sha]})
+    registry.execute("write_file", {"path": "ouroboros/contrib.py", "content": "X = 8\n"})  # the adaptation
+    adapted = registry.execute_result("stage_adaptations", {})
+    staged = registry.execute_result("stage_pr_merge", {"branch": "integrate/pr-7"})
+
+    assert [r.status for r in (created, picked, adapted, staged)] == ["ok"] * 4, (created, picked, adapted, staged)
+    assert _tree_bytes(serving) == before and git(serving, "status", "--porcelain") == ""
+    assert (git(serving, "rev-parse", "HEAD"), git(serving, "rev-parse", "--abbrev-ref", "HEAD")) == (head, "ouroboros")
+    bound = body_candidate.descriptor(ctx)
+    candidate = pathlib.Path(bound["path"])
+    assert git(candidate, "rev-parse", "--abbrev-ref", "HEAD") == bound["branch"]
+    assert git(candidate, "merge-base", "integrate/pr-7", bound["branch"]) == bound["base_sha"]
+    assert git(candidate, "rev-parse", "MERGE_HEAD") == git(candidate, "rev-parse", "integrate/pr-7")
+    credited = git(candidate, "log", "-1", "--format=%an <%ae>", "integrate/pr-7")
+    assert credited == "Contributor <contrib@example.invalid>"
+    assert "Co-authored-by: Contributor <contrib@example.invalid>" in staged.text
+    assert (candidate / "ouroboros/contrib.py").read_text() == "X = 8\n"
+    from ouroboros.review_substrate import review_repo_dirs_for
+
+    assert review_repo_dirs_for(ctx) == (serving.resolve(), candidate.resolve())  # review reads the staged merge here
+    assert "ouroboros/contrib.py" in git(candidate, "diff", "--cached", "--name-only")
+
+
 def test_seam_leaves_reads_processes_and_foreign_roots_alone(body):
     serving, data = body
     ctx = make_ctx(serving, data, "root-reads")
@@ -216,8 +358,12 @@ def test_bound_task_cannot_reach_the_serving_checkout_through_another_root(body,
     target = serving / "ouroboros/mod_a.py"
 
     by_label = registry.execute("write_file", {"root": "user_files", "path": str(target), "content": "X = 1\n"})
-    by_shell = registry.execute("run_command", {"cmd": ["sh", "-c", f"echo hacked > {target}"]})
-    in_candidate = registry.execute("run_command", {"cmd": ["sh", "-c", "pwd && echo ok > made-here.txt"]})
+    # The shell write guard reads POSIX redirects; Windows has no `sh` to exercise it with.
+    by_shell = (registry.execute("run_command", {"cmd": ["sh", "-c", f"echo hacked > {target}"]})
+                if os.name != "nt" else "BLOCKED (POSIX shell redirect guard not exercised on Windows)")
+    in_candidate = registry.execute("run_command", {"cmd": [
+        sys.executable, "-c",
+        "import os, pathlib; print(os.getcwd()); pathlib.Path('made-here.txt').write_text('ok\\n')"]})
 
     assert "USER_FILES_PATH_BLOCKED" in by_label or "blocked" in by_label.lower(), by_label
     assert "BLOCKED" in by_shell, by_shell
@@ -300,7 +446,7 @@ def test_lost_checkout_starts_a_new_candidate_and_keeps_the_old_branch(body):
     serving, data = body
     first = body_candidate.prepare(make_ctx(serving, data, "root-lost"))
     tip = candidate_commit(pathlib.Path(first["path"]))
-    subprocess.run(["rm", "-rf", first["path"]], check=True)
+    shutil.rmtree(first["path"])
 
     again_ctx = make_ctx(serving, data, "root-lost")
     assert body_candidate.restore(again_ctx) == {}  # nothing to bind; the serving tree is not a fallback target
@@ -526,7 +672,7 @@ def test_gc_counts_from_last_use_and_a_missing_checkout_keeps_its_commits(body):
     used = body_candidate.prepare(make_ctx(serving, data, "gc-used"))
     lost = body_candidate.prepare(make_ctx(serving, data, "gc-lost"))
     tip = candidate_commit(pathlib.Path(lost["path"]))
-    subprocess.run(["rm", "-rf", lost["path"]], check=True)
+    shutil.rmtree(lost["path"])
     registry_path = data / "state" / "subagent_worktrees.json"
     import json
 

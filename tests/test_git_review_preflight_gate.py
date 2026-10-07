@@ -111,6 +111,9 @@ def test_preflight_check(case_id, message, staged_files, expected, monkeypatch, 
     values = {"VERSION": "3.24.0", "README.md":
               "[![Version 3.24.0](https://img.shields.io/badge/version-3.24.0-green.svg)]\n| 3.24.0 | release |"}
     monkeypatch.setattr(review, "_git_show_staged", lambda repo, path: values.get(path))
+    from ouroboros import commit_admission
+
+    monkeypatch.setattr(commit_admission, "_head_text", lambda repo, path: values.get(path))  # HEAD == index
     result = review._preflight_check(message, staged_files, tmp_path)
     if expected is None:
         assert result is None, f"expected pass, got: {result!r}"

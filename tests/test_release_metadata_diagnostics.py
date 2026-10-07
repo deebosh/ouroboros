@@ -320,6 +320,127 @@ def test_neutral_form_keeps_every_carrier_span_byte_identical_to_head(candidate,
     assert report["form"] == "numbered" and report["status"] == "clean" and report["findings"] == []
 
 
+@pytest.mark.parametrize("change", ["deleted_with_code", "deleted_alone", "renamed_away"])
+def test_neutral_form_reports_a_removed_carrier_file_through_every_consumer(candidate, change):
+    """A carrier file the neutral diff deletes or renames away is a carrier change.
+
+    Consumers: commit_reviewed's preflight over the real staged name-status, the
+    prepared index lane (its own staged discovery) and the bound-candidate worktree
+    diagnostic. Each lists surviving paths only, so the removed file must still reach
+    the comparison with HEAD.
+    """
+    repo = candidate.repo_dir
+    if change == "renamed_away":
+        _git(repo, "mv", "pyproject.toml", "pyproject.old.toml")
+    else:
+        _git(repo, "rm", "-q", "pyproject.toml")
+    if change != "deleted_alone":
+        _write(repo, {"change.py": "value = 2\n"})
+    _git(repo, "add", "-A")
+
+    staged = review._preflight_check("neutral change", review._build_preflight_staged(str(repo)), repo)
+    prepared = _diagnose(candidate, "index")
+    bound = admission.release_metadata_diagnostics(repo, source="worktree", neutral_allowed=True)
+
+    assert staged and staged.startswith("⚠️ PREFLIGHT_BLOCKED") and "pyproject.toml" in staged, staged
+    for report in (prepared, bound):
+        assert (report["form"], report["status"]) == ("neutral", "blocked"), report
+        assert len(report["findings"]) == 1 and "pyproject.toml" in report["findings"][0], report
+
+
+def test_non_carrier_deletion_keeps_its_release_semantics(candidate):
+    repo = candidate.repo_dir
+    _git(repo, "rm", "-q", "change.py")
+    assert review._preflight_check("drop module", review._build_preflight_staged(str(repo)), repo) is None
+    prepared = _diagnose(candidate, "index")
+    assert (prepared["status"], prepared["form"]) == ("not_applicable", "none")
+    _write(repo, {"other.py": "value = 3\n"})
+    _git(repo, "add", "-A")
+    # Code with every carrier at HEAD's bytes stays the clean neutral form.
+    assert review._preflight_check("replace module", review._build_preflight_staged(str(repo)), repo) is None
+    prepared = _diagnose(candidate, "index")
+    assert (prepared["status"], prepared["form"]) == ("not_applicable", "neutral")
+
+
+def test_serving_refusal_needs_no_removal_probe_but_a_docs_only_survivor_does(candidate, tmp_path):
+    """On the serving checkout surviving code already refuses the neutral form, so an
+    unreadable removal probe (an unborn HEAD) must not mask that refusal as unavailable;
+    a docs-only survivor still needs the probe, or renaming a carrier into docs/ would
+    pass as a doc-only change."""
+    repo = candidate.repo_dir
+    _git(repo, "mv", "pyproject.toml", "docs/pyproject.old.md")
+    serving = admission.release_metadata_diagnostics(repo, source="worktree", neutral_allowed=False)
+    assert (serving["form"], serving["status"]) == ("neutral", "blocked"), serving
+    assert "VERSION is not in scope" in serving["findings"][0] and "pyproject.toml" in serving["findings"][0]
+
+    unborn = tmp_path / "unborn"
+    unborn.mkdir()
+    _git(unborn, "init", "-q")
+    _write(unborn, {"change.py": "value = 2\n", "docs/notes.md": "notes\n"})
+    _git(unborn, "add", "-A")
+    report = admission.release_metadata_diagnostics(unborn, ["change.py"], source="worktree", neutral_allowed=False)
+    assert (report["form"], report["status"], report["unavailable"]) == ("neutral", "blocked", []), report
+    assert "VERSION is not in scope" in report["findings"][0]
+
+
+_NEW_LOCK = ('{\n  "name": "ouroboros-web",\n  "version": "1.2.3",\n  "lockfileVersion": 3,\n'
+             '  "packages": {\n    "": {\n      "name": "ouroboros-web",\n      "version": "1.2.3"\n    }\n  }\n}\n')
+
+
+def _three_consumers(ctx):
+    """commit_reviewed's preflight, the prepared index lane and the bound-candidate worktree."""
+    repo = ctx.repo_dir
+    return (review._preflight_check("neutral change", review._build_preflight_staged(str(repo)), repo),
+            _diagnose(ctx, "index"),
+            admission.release_metadata_diagnostics(repo, source="worktree", neutral_allowed=True))
+
+
+def test_neutral_form_reports_a_newly_introduced_carrier_file_through_every_consumer(candidate):
+    """HEAD lacks web/package-lock.json (an optional older carrier); adding it with its
+    declared span while VERSION stays put introduces a carrier, so it is no neutral form."""
+    repo = candidate.repo_dir
+    _write(repo, {"change.py": "value = 2\n", "web/package-lock.json": _NEW_LOCK})
+    _git(repo, "add", "-A")
+
+    staged, prepared, bound = _three_consumers(candidate)
+
+    assert staged and staged.startswith("⚠️ PREFLIGHT_BLOCKED") and "web/package-lock.json" in staged, staged
+    for report in (prepared, bound):
+        assert (report["form"], report["status"]) == ("neutral", "blocked"), report
+        assert len(report["findings"]) == 1, report
+        assert "introduces" in report["findings"][0] and "web/package-lock.json" in report["findings"][0]
+
+
+def test_optional_carrier_absent_on_both_sides_stays_optional(candidate):
+    repo = candidate.repo_dir
+    _write(repo, {"change.py": "value = 2\n"})
+    _git(repo, "add", "-A")
+    staged, prepared, bound = _three_consumers(candidate)
+    assert staged is None
+    for report in (prepared, bound):
+        assert (report["form"], report["status"], report["unavailable"]) == ("neutral", "not_applicable", [])
+    # Naming the absent optional carrier explicitly does not invent a change either.
+    named = admission.release_metadata_diagnostics(
+        repo, ["change.py", "web/package-lock.json"], source="worktree", neutral_allowed=True)
+    assert (named["form"], named["status"], named["findings"]) == ("neutral", "not_applicable", [])
+
+
+def test_neutral_carrier_comparison_without_a_readable_base_is_unavailable(candidate, tmp_path):
+    """An unborn HEAD has no tree to compare with: unavailable evidence, never a clean neutral."""
+    repo = tmp_path / "unborn"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _write(repo, {"change.py": "value = 2\n", "web/package-lock.json": _NEW_LOCK})
+    _git(repo, "add", "-A")
+
+    staged, prepared, bound = _three_consumers(SimpleNamespace(**{**vars(candidate), "repo_dir": repo}))
+
+    assert staged and staged.startswith("⚠️ PREFLIGHT_UNAVAILABLE"), staged
+    for report in (prepared, bound):
+        assert (report["form"], report["status"], report["findings"]) == ("neutral", "unavailable", []), report
+        assert any("web/package-lock.json" in item for item in report["unavailable"]), report
+
+
 @pytest.mark.parametrize("source", ["", "other"])
 def test_explicit_source_is_required_before_any_context_access(source):
     result = _diagnose(object(), source)

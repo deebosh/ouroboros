@@ -114,9 +114,10 @@ def read_release_file(repo_dir, path: str, *, source: str) -> str | None:
 
 def release_metadata_diagnostics(
     repo_dir, paths: list[str] | None = None, *, source: str = "worktree", read_text=None,
-    neutral_allowed: Optional[bool] = None,
+    neutral_allowed: Optional[bool] = None, deleted: list[str] | None = None,
 ) -> dict:
-    """Read-only release report; an index reader may supply already-classified active paths.
+    """Read-only release report; an index reader may supply already-classified active
+    paths (and the ``deleted`` ones it classified apart).
 
     Source acquisition failures are unavailable evidence, independent of candidate
     findings. Optional carriers absent from older trees remain optional; VERSION
@@ -153,8 +154,18 @@ def release_metadata_diagnostics(
     except Exception as exc:
         unavailable.append(f"Changed {source} paths could not be read ({type(exc).__name__}).")
 
-    version_in_scope = "VERSION" in touched
     from ouroboros.tools.git_review_cycle import _diff_is_doc_only
+
+    version_in_scope = "VERSION" in touched
+    removed: set = set()
+    neutral_ok = neutral_allowed if neutral_allowed is not None else source == "index"
+    if not version_in_scope and (neutral_ok or not touched or _diff_is_doc_only(sorted(touched))):
+        # Discovery above lists surviving paths; a carrier the diff deletes or renames
+        # away is still a carrier change. Other deletions keep their release semantics.
+        # Surviving code already refuses the neutral form where it is not allowed.
+        removed = (set(deleted or ()) & CARRIER_SPAN_PATHS if read_text else
+                   _removed_carriers(repo_dir, source, paths if source == "worktree" else None, unavailable))
+        touched |= removed
     if version_in_scope:
         report["form"] = "numbered"
         if source == "index" and version_in_scope and "README.md" not in touched:
@@ -172,9 +183,9 @@ def release_metadata_diagnostics(
         findings.extend(release_metadata_findings(texts))
     elif touched and not _diff_is_doc_only(sorted(touched)):
         report["form"] = "neutral"
-        if neutral_allowed if neutral_allowed is not None else source == "index":
+        if neutral_ok:
             findings.extend(_neutral_carrier_findings(repo_dir, touched & set(CARRIER_SPAN_PATHS), source,
-                                                      read_text, unavailable))
+                                                      read_text, unavailable, removed))
         else:
             findings.append(
                 "Changed files are present but VERSION is not in scope. "
@@ -193,42 +204,64 @@ def release_metadata_diagnostics(
     return report
 
 
-def _neutral_carrier_findings(repo_dir, carriers: set, source: str, read_text, unavailable: list) -> list:
-    """Carrier spans a version-neutral change moved away from HEAD's, as findings."""
+def _removed_carriers(repo_dir, source: str, paths, unavailable: list) -> set:
+    """Carrier files present at HEAD that the selected source deletes or renames away."""
+    from ouroboros.tools.release_sync import CARRIER_SPAN_PATHS
+
+    try:
+        result = subprocess.run(
+            ["git", "--no-optional-locks", "diff", "--cached" if source == "index" else "HEAD", "--no-renames",
+             "--name-only", "--diff-filter=D", "-z", "--", *(paths or sorted(CARRIER_SPAN_PATHS))],
+            cwd=str(repo_dir), capture_output=True, timeout=10, check=True,
+        )
+    except Exception as exc:
+        unavailable.append(f"Removed {source} carrier files could not be read ({type(exc).__name__}).")
+        return set()
+    return set(result.stdout.decode("utf-8").split("\0")) & CARRIER_SPAN_PATHS
+
+
+def _head_text(repo_dir, path: str) -> str | None:
+    """HEAD's text for ``path``; None only when HEAD's readable tree lacks it."""
+    # Establish absence independently: git-show fails alike for an absent path and an unreadable HEAD.
+    listed = subprocess.run(["git", "ls-tree", "-z", "--name-only", "HEAD", "--", path], cwd=str(repo_dir),
+                            capture_output=True, timeout=10, check=True)
+    if not listed.stdout:
+        return None
+    shown = subprocess.run(["git", "show", f"HEAD:{path}"], cwd=str(repo_dir), capture_output=True,
+                           timeout=10, check=True)
+    return shown.stdout.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _neutral_carrier_findings(repo_dir, carriers: set, source: str, read_text, unavailable: list,
+                              removed: set = frozenset()) -> list:
+    """Carrier spans a version-neutral change moved away from HEAD's, as findings.
+
+    A ``removed`` carrier file has no span left, and a file HEAD's tree lacks had
+    none, so each declared span present on one side only moved. An unreadable HEAD
+    is unavailable evidence, never an absent file.
+    """
     from ouroboros.tools.release_sync import carrier_spans_for, locate_carrier_span
 
     findings = []
     for path in sorted(carriers):
         try:
-            after = read_text(path) if read_text else read_release_file(repo_dir, path, source=source)
-            shown = subprocess.run(["git", "show", f"HEAD:{path}"], cwd=str(repo_dir), capture_output=True, timeout=10)
-            before = (shown.stdout.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-                      if shown.returncode == 0 else None)
+            after = None if path in removed else (
+                read_text(path) if read_text else read_release_file(repo_dir, path, source=source))
+            before = _head_text(repo_dir, path)
         except Exception as exc:
             unavailable.append(f"{source}:{path} could not be compared with HEAD ({type(exc).__name__}).")
             continue
-        spans = carrier_spans_for(path)
-        if after is None or before is None:
-            if before is not None and after is None:
-                moved = [span.carrier_id for span in spans
-                         if locate_carrier_span(before, span)[0] == "ok"]
-                if moved:
-                    findings.append(
-                        f"Version-neutral change removes carrier file {path} with declared carrier(s) "
-                        f"{', '.join(moved)} while VERSION is unchanged. Choose a numbered release or preserve the carriers.")
-            continue  # a removed/new carrier file is handled above; other cases are release checks' concern
         moved = []
-        for span in spans:
+        for span in carrier_spans_for(path):
             (status_after, loc_after), (status_before, loc_before) = (locate_carrier_span(after, span),
                                                                        locate_carrier_span(before, span))
-            if status_before == "ok" and status_after != "ok":
-                moved.append(span.carrier_id)
-            elif status_after != status_before or (
+            if status_after != status_before or (
                     loc_after and loc_before and after[slice(*loc_after)] != before[slice(*loc_before)]):
                 moved.append(span.carrier_id)
         if moved:
+            change = "removes" if after is None else "introduces" if before is None else "alters"
             findings.append(
-                f"Version-neutral change alters the version carrier(s) {', '.join(moved)} in {path} while "
+                f"Version-neutral change {change} the version carrier(s) {', '.join(moved)} in {path} while "
                 "VERSION is unchanged. A neutral contribution keeps every carrier span byte-identical to HEAD; "
                 "a numbered release bumps VERSION and syncs all carriers in the same diff. Choose one form.")
     return findings

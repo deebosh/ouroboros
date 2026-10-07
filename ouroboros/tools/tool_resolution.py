@@ -198,14 +198,26 @@ def _normalize_dispatch_path_args_result(
     root_arg = root_arg or "active_workspace"
     if root_arg in ("active_workspace", "system_repo"):
         try:
+            from ouroboros.body_candidate import serving_alias_root
+
             norm_root = active_repo_dir_for(ctx) if root_arg == "active_workspace" else system_repo_dir_for(ctx)
+            # A bound candidate keeps the serving spelling of a body path (`repo/x`, the
+            # absolute serving path) naming the same file it named on the binding write.
+            serving_alias = serving_alias_root(ctx, norm_root)
+
+            def _normalize(text: str) -> str:
+                relative = _registry().normalize_root_relative(norm_root, text)
+                if serving_alias is not None and relative == text:
+                    relative = _registry().normalize_root_relative(serving_alias, text)
+                return relative
+
             for _key in ("path", "dir"):
                 if isinstance(args.get(_key), str) and args[_key]:
-                    args[_key] = _registry().normalize_root_relative(norm_root, args[_key])
+                    args[_key] = _normalize(args[_key])
             if isinstance(args.get("files"), list):
                 for _f in args["files"]:
                     if isinstance(_f, dict) and isinstance(_f.get("path"), str) and _f["path"]:
-                        _f["path"] = _registry().normalize_root_relative(norm_root, _f["path"])
+                        _f["path"] = _normalize(_f["path"])
         except Exception:
             pass
         return _DispatchPathNormalization()

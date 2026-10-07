@@ -150,6 +150,57 @@ def test_boot_settles_an_adoption_as_unready_when_the_bootstrap_failed(body, mon
     assert seen == [True, False, False]
 
 
+@pytest.mark.parametrize("fails", ["pointer", "armed_record"])
+def test_arming_interrupted_on_either_side_of_the_pointer_settles_unapplied_and_never_holds_the_checkout(
+        body, monkeypatch, fails):
+    """`armed` is recorded only after the pointer is published: an unwritable Git dir leaves an
+    unarmed record, and a death between the two leaves a pointer to a record the helper ignores."""
+    from tests.body_candidate_support import run_entry
+
+    serving, data = body
+    ctx = make_ctx(serving, data, "root-arm-interrupted")
+    body_candidate.prepare(ctx)
+    cand = rich_commit(ctx.repo_dir)
+    body_candidate.record_reviewed_commit(ctx, cand)
+    old = git(serving, "rev-parse", "HEAD")
+    body_adoption.authorize(ctx, cand, reason="adopt it")
+    restart_receipt(data, cand, "adopt it")
+    assert body_adoption.bind_restart(lambda **_kw: (True, "ok"), data, "adopt it")()[0]
+    pointer = pathlib.Path(body_switch.pointer_path(str(serving)))
+    real_record = body_switch.record
+
+    real_write = pathlib.Path.write_text
+
+    def git_dir_not_writable(path, *args, **kwargs):
+        if path.parent == pointer.parent:
+            raise PermissionError("Git dir not writable")
+        return real_write(path, *args, **kwargs)
+
+    def dies_before_armed(helper, handoff, phase, detail=""):
+        if phase == "armed":
+            raise KeyboardInterrupt  # stands for the process dying here
+        return real_record(helper, handoff, phase, detail)
+
+    with monkeypatch.context() as patch:
+        if fails == "pointer":
+            patch.setattr(pathlib.Path, "write_text", git_dir_not_writable)
+            assert body_adoption.arm(data, worker_exits=EXITED, live_children=[], owner_restart=False,
+                                     owned_stop={"state": "completed", "unconfirmed": []}) == ""
+        else:
+            patch.setattr(body_switch, "record", dies_before_armed)
+            with pytest.raises(KeyboardInterrupt):
+                body_adoption.arm(data, worker_exits=EXITED, live_children=[], owner_restart=False,
+                                  owned_stop={"state": "completed", "unconfirmed": []})
+    assert body_adoption.read(data)["phase"] == "authorized" and pointer.exists() == (fails == "armed_record")
+
+    started = run_entry(serving)  # the next cold start: the real hook, then boot settlement
+    assert started.returncode == 0 and json.loads(started.stdout)["a"] == "GEN_OLD", started.stderr
+    assert body_adoption.finalize_on_boot(data, serving, supervisor_ready=True)["outcome"] == "not_applied"
+    assert not pointer.exists() and body_adoption.read(data) == {} and git(serving, "rev-parse", "HEAD") == old
+    assert run_entry(serving).returncode == 0  # nothing left for a later start to refuse on
+    assert body_adoption.authorize(ctx, cand, reason="adopt again")["phase"] == "authorized"
+
+
 def test_kill_workers_publishes_a_pid_census_the_exit_tail_arms_on(tmp_path, monkeypatch):
     from supervisor import workers
 

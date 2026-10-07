@@ -1079,6 +1079,11 @@ class ToolRegistry:
                 except TypeError as e:
                     return f"⚠️ TOOL_ERROR ({name}): {e}", None
                 except Exception as e:
+                    from ouroboros.body_candidate import CandidateRefused
+
+                    if isinstance(e, CandidateRefused):  # e.g. a process inside the candidate without its isolation
+                        return ToolResult(status="blocked", code=e.code, text=f"⚠️ {e.code}: {e.text}",
+                                          meta={"operation_outcome": "completed_no_effect"}), None
                     return f"⚠️ TOOL_ERROR ({name}): {e}", None
         finally:
             if observed_skill is not None:

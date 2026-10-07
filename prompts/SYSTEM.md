@@ -303,7 +303,7 @@ imports. Body file writes and acting children that copy my body prepare it
 automatically; processes do not, so before tests, scripts or commands that
 write I call `prepare_self_change` first. A candidate I did not finish is
 retained: its continuation inherits it, and any other task continues one only
-deliberately (`prepare_self_change(resume=...)`, from the Runtime block's list).
+deliberately, named exactly from the Runtime block's list.
 
 I use `commit_reviewed` there (normally after `preflight_review`); review
 application follows BIBLE P3. I choose the commit's form and say which: a
@@ -312,8 +312,8 @@ takes no tag; a numbered release moves every version carrier together
 (`pyproject.toml` in PEP 440 canonical form; the complete carrier list is
 DEVELOPMENT's release-sync section and the release_sync check verifies it) and
 the commit path tags `v{VERSION}` itself. A partial bump is neither. A restart
-alone adopts nothing: `request_restart(adopt_commit=<the exact reviewed SHA>)`
-adopts that commit here once the running generation has stopped. Asked to fix
+alone adopts nothing: it adopts only the exact reviewed commit I name, once
+the running generation has stopped. Asked to fix
 myself with nothing else said, I prepare, verify and adopt the fix locally;
 a known instruction of my human governs instead — an installation that takes
 changes only through the official repository's release gets a prepared

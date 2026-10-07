@@ -759,18 +759,18 @@ def adopt_evolution_commit_intent(
         return ""
     head = str(head_sha or "").strip() or "HEAD"
     try:
+        from ouroboros.body_candidate import intent_capture  # boot verifies its serving SHA; else the candidate
         from supervisor import git_ops
 
-        rc_tree, actual_tree, _ = git_ops.git_capture(["git", "rev-parse", f"{head}^{{tree}}"])
-        rc_parents, parent_line, _ = git_ops.git_capture(
-            ["git", "rev-list", "--parents", "-n", "1", head]
-        )
+        capture, recover = intent_capture("" if head_sha else str(tx.get("task_id") or ""), git_ops.git_capture)
+        rc_tree, actual_tree, _ = capture(["git", "rev-parse", f"{head}^{{tree}}"])
+        rc_parents, parent_line, _ = capture(["git", "rev-list", "--parents", "-n", "1", head])
     except Exception:
         return ""
     fields = parent_line.strip().split() if rc_parents == 0 else []
     if rc_tree != 0 or not fields or actual_tree.strip() != tree_sha or fields[1:] != parents:
         return ""
-    commit_sha, now = fields[0], utc_now_iso()
+    commit_sha, now = recover(fields[0]), utc_now_iso()
     tx.update({
         "commit_sha": commit_sha,
         "commit_receipt": _build_commit_receipt(

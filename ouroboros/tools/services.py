@@ -456,6 +456,8 @@ def _start_service(
         # Retire the exited host record before a new process can append to its
         # log with a different environment (or switch to an executor backend).
         _stop_service(ctx, name=service_name)
+    from ouroboros import body_candidate
+
     if _executor_can_run_cwd(ctx, workdir):
         try:
             payload = executor_start_service(
@@ -478,6 +480,8 @@ def _start_service(
             return json.dumps(payload, ensure_ascii=False, indent=2)
         except OwnerPauseRefused as exc:
             return _publish_tool_result(ctx, launch_refusal_result(str(exc), completed_no_effect=True))
+        except body_candidate.CandidateRefused:
+            raise
         except Exception as exc:
             text = redact_known_values(f"⚠️ SERVICE_START_ERROR: executor backend failed: {type(exc).__name__}: {exc}", secret_values)
             if getattr(exc, "process_not_started", False) is True:
@@ -514,14 +518,10 @@ def _start_service(
         if _panic_requested:
             raise RuntimeError(f"Emergency Stop during service spawn: {request_process_tree_kill(proc)}")
 
-    try:
-        from ouroboros import body_candidate
-        candidate_base_env = body_candidate.process_environment(ctx, workdir)
-    except Exception as exc:
-        if getattr(exc, "code", "") == "CANDIDATE_ENVIRONMENT_UNAVAILABLE":
-            return _publish_tool_result(ctx, ToolResult(status="blocked", code=exc.code, text=f"⚠️ {exc.code}: {exc.text}", meta={"operation_outcome": "completed_no_effect"}))
-        candidate_base_env = None
-    service_base_env = candidate_base_env if candidate_base_env is not None else _service_env()
+    # Inside the bound candidate a failure to isolate refuses the start on either backend
+    # (the registry types CandidateRefused); it never falls back to the serving environment.
+    candidate_env = body_candidate.process_environment(ctx, workdir)
+    service_base_env = candidate_env if candidate_env is not None else _service_env()
 
     log_fh = log_path.open("ab")
     try:

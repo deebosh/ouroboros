@@ -178,9 +178,7 @@ def authorize_row(data_dir: pathlib.Path, row: Dict[str, Any], commit: str, *, r
             "ADOPTION_CONSTITUTION_NEEDS_RELEASE",
             "a constitutional change takes effect only through an explicit reviewed release (BIBLE preamble): "
             "make it a numbered release, or deliver it as a contribution.")
-    dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all", "--", *paths],
-                           cwd=str(serving), capture_output=True, text=True,
-                           env=dict(os.environ, GIT_LITERAL_PATHSPECS="1")).stdout.strip()
+    dirty = body_switch._dirty(str(serving), paths)  # the helper's own bounded check of the switch set
     if dirty:
         raise AdoptionRefused(
             "ADOPTION_SWITCH_SET_DIRTY",
