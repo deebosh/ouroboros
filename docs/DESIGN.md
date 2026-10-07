@@ -735,15 +735,18 @@ Failed remains that task's result even after a different task succeeds.
 A Markdown or plain-text file Ouroboros delivers in chat can be read inside the
 app. Its card says `Read`; pressing it opens a reading dialog over the
 conversation — on a phone a full sheet — and Close or Escape returns to the same
-place in the chat with focus back on the card. Other files keep the card's
-Open / Download dialog; the reader keeps Open and Download as well.
+place in the chat with focus back on the card. Leaving that chat's screen (another
+page, a Project room over Main, a notification) closes the reader; files staged in
+the composer stay. Other files keep the card's Open / Download dialog; the reader
+keeps Open and Download as well.
 
 - It shows the delivered copy, never what a file path holds now. A copy that is
   missing, failed its integrity check, changed after delivery or cannot be read
   on this device says so in the reader, with Retry only where retrying can
   help; nothing else is shown in its place.
 - Name, type and size are the reader's header, not Ouroboros's words: a
-  document is not a chat message and adds none.
+  document is not a chat message and adds none. Like model text, the name and
+  the document are never translated; the reader's own controls are.
 - Markdown reads as a document: a single line break inside a paragraph is soft
   (an explicit hard break stays), at the reading size and heading ladder of a
   rich answer (§1). Everything else follows "Rendered Markdown keeps its

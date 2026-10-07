@@ -7312,7 +7312,8 @@ textarea.chat-input {
 
 .chat-file-more { color: var(--text-meta); }
 
-/* The file dialog and the document reader (below) are one modal surface. */
+/* The file dialog and the document reader (below) are one modal surface; the
+   buttons of both are `.btn.btn-default`. */
 .chat-file-dialog,
 .document-reader {
     padding: 0;
@@ -7342,7 +7343,6 @@ textarea.chat-input {
     gap: 8px;
 }
 
-.chat-file-dialog-actions button,
 .chat-media-controls button,
 .chat-media-rate-menu {
     min-height: 32px;
@@ -7352,9 +7352,6 @@ textarea.chat-input {
     color: var(--text-primary);
     cursor: pointer;
 }
-
-.chat-file-dialog-actions button { padding: 6px 12px; }
-.chat-file-dialog-actions button:disabled { cursor: default; opacity: 0.45; }
 
 /* Delivered-document reader (document_reader.js, DESIGN "Document reading"):
    a modal reading surface over the conversation, a full sheet on a phone. Its
@@ -7368,6 +7365,8 @@ textarea.chat-input {
 .document-reader {
     width: min(var(--document-reader-size), calc(100vw - 2 * var(--space-5)));
     max-width: none;
+    /* `vh` first for an engine without `dvh`. */
+    height: min(var(--document-reader-size), calc(100vh - 2 * var(--space-5)));
     height: min(var(--document-reader-size), calc(100dvh - 2 * var(--space-5)));
     max-height: none;
     overflow: hidden;
@@ -7508,6 +7507,7 @@ textarea.chat-input {
 @media (max-width: 620px) {
     .document-reader {
         width: 100vw;
+        height: 100vh;
         height: 100dvh;
         margin: 0;
         border: 0;

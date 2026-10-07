@@ -440,6 +440,9 @@ export function mountChatMarkdown(host, text, options = {}) {
 function highlightCodeIn(root) {
     root.querySelectorAll?.('.md-code-block pre > code').forEach((code) => {
         const source = code.textContent || '';
+        // A block past the rich-block bound stays plain text: highlighting it would
+        // hold the main thread; it still reads and copies exactly.
+        if (source.length > MAX_RICH_BLOCK_SOURCE_LENGTH) return;
         const language = codeLanguage(code);
         const api = globalThis.hljs;
         if (!api) return;
@@ -709,13 +712,19 @@ async function copyCode(code) {
     const textarea = document.createElement('textarea');
     textarea.value = text;
     textarea.setAttribute('readonly', '');
+    // Inside a modal dialog (the document reader) the rest of the page is inert:
+    // the selection is made within that dialog, and focus returns after.
+    const dialog = code.closest?.('dialog[open]') || null;
+    const focused = document.activeElement;
     let copied = false;
     try {
-        document.body.appendChild(textarea);
+        (dialog || document.body).appendChild(textarea);
+        if (dialog) textarea.focus({ preventScroll: true });
         textarea.select();
         copied = typeof document.execCommand === 'function' && document.execCommand('copy') === true;
     } finally {
         textarea.remove();
+        if (dialog && focused?.isConnected) focused.focus({ preventScroll: true });
     }
     if (!copied) throw new Error('copy command failed');
 }

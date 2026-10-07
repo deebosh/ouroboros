@@ -46,7 +46,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Clear | `btn btn-default secret-clear` | modules/settings_ui.js | 1 |
 | Clear | `field-clear` | modules/onboarding_wizard.js | 4 |
 | Clear local submission | `btn btn-ghost` | modules/ouroboroshub.js | 1 |
-| Close | `(no class)` | modules/chat_media.js | 1 |
+| Close | `btn btn-default` | modules/chat_media.js | 1 |
 | Close | `btn btn-default btn-sm` | modules/confirm_dialog.js | 1 |
 | Close | `btn btn-default btn-sm` | modules/project_create.js | 1 |
 | Close | `btn btn-default document-reader-close` | modules/document_reader.js | 1 |
@@ -67,7 +67,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | + Dir | `btn btn-default` | modules/files.js | 1 |
 | Disable | `btn btn-default` | modules/marketplace.js | 1 |
 | Dismiss | `btn btn-ghost` | modules/ouroboroshub.js | 1 |
-| Download | `(no class)` | modules/chat_media.js | 1 |
+| Download | `btn btn-default` | modules/chat_media.js | 1 |
 | Download | `btn btn-default` | modules/document_reader.js | 1 |
 | Download | `btn btn-default` | modules/files.js | 1 |
 | Download | `files-context-item` | modules/files.js | 1 |
@@ -90,7 +90,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Nano | `chat-seg` | modules/chat.js | 1 |
 | [icon] New project | `nav-projects-add` | index.html | 1 |
 | Next | `btn btn-default` | modules/marketplace.js | 1 |
-| Open | `(no class)` | modules/chat_media.js | 1 |
+| Open | `btn btn-default` | modules/chat_media.js | 1 |
 | Open | `btn btn-default` | modules/document_reader.js | 1 |
 | Open externally | `btn btn-default` | modules/files.js | 1 |
 | [icon] Open navigation | `mobile-nav-toggle` | modules/page_header.js | 1 |

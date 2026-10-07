@@ -258,6 +258,7 @@ def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_ser
             page.locator(".chat-file-card").filter(has_text="page.html").click()
             page.locator(".chat-file-dialog[open]").wait_for(state="visible")
             assert page.locator("dialog.document-reader").count() == 0, "HTML keeps the file dialog"
+            page.screenshot(path=str(evidence / "chromium-wide-dark-file-dialog.png"))
             page.locator('.chat-file-dialog[open] [data-file-action="close"]').click()
 
             # The stored copy of one delivery is damaged on disk after it was sent.
@@ -568,3 +569,346 @@ def test_project_room_reader_survives_reload_and_closes_with_its_room(direct_ser
             _close_with_escape(page)
         finally:
             webkit.close()
+
+
+# A notification as the owner meets it: the real notifier decides on a socket frame and raises a
+# banner (a recording stand-in for the system's Notification, permission granted); the test then
+# clicks that banner, which runs the app's own activation.
+NOTIFIER = """() => {
+    localStorage.setItem('ouroboros.notifications', JSON.stringify({enabled: true}));
+    window.__notes = [];
+    class TestNotification {
+        constructor(title, options) { this.title = title; this.options = options; window.__notes.push(this); }
+        close() {}
+    }
+    TestNotification.permission = 'granted';
+    TestNotification.requestPermission = () => Promise.resolve('granted');
+    window.Notification = TestNotification;
+}"""
+
+EMIT_NOTICE = """([chatId, ts]) => {
+    const socket = window.__testSockets.find((candidate) => candidate.readyState === WebSocket.OPEN);
+    if (!socket) throw new Error('test socket is not open');
+    socket.dispatchEvent(new MessageEvent('message', {data: JSON.stringify({
+        type: 'chat', role: 'assistant', system_type: 'proactive_message', chat_id: chatId,
+        content: 'Something in this chat needs you.', ts})}));
+}"""
+
+SCREEN = """() => ({
+    readers: document.querySelectorAll('dialog.document-reader').length,
+    open_dialogs: document.querySelectorAll('dialog[open]').length,
+    focus_connected: !document.activeElement || document.activeElement.isConnected,
+})"""
+
+KEPT_ROOM = """id => {
+    const page = document.getElementById(`panel-pchat-${id}`);
+    return page && {hidden: page.hidden, pending: page.dataset.pendingWork || '',
+        staged: [...page.querySelectorAll('.attach-name')].map((node) => node.textContent)};
+}"""
+
+NOTHING_LEFT = {"readers": 0, "open_dialogs": 0, "focus_connected": True}
+
+
+def _click_notification(page, chat_id, step):
+    count = page.evaluate("() => window.__notes.length")
+    page.evaluate(EMIT_NOTICE, [chat_id, f"2026-10-07T12:00:{step:02d}Z"])
+    page.wait_for_function("count => window.__notes.length > count", arg=count)
+    page.evaluate("() => window.__notes.at(-1).onclick()")
+
+
+def _deliver(page, monkeypatch, paths, calls, *, composer, send, feed):
+    from tests import fixtures_mock_llm
+
+    monkeypatch.setattr(fixtures_mock_llm._Handler, "do_POST", _send_files_mock(paths, calls))
+    page.locator(composer).fill("Send me the documents.")
+    page.locator(send).click()
+    for path in paths:
+        page.locator(f"{feed} .chat-file-card").filter(has_text=path.name).wait_for(state="visible", timeout=60_000)
+    # The turn's closing reply: its model call is over, so the next delivery's mock cannot be
+    # consumed by this turn.
+    page.locator(f"{feed} .chat-bubble").filter(has_text="The files are delivered.").first.wait_for(timeout=60_000)
+
+
+def _hold_artifacts(page):
+    held = []
+    page.route("**/artifacts/**", lambda route: held.append(route))
+    return held
+
+
+@pytest.mark.ui_browser
+@pytest.mark.serial
+def test_reader_closes_when_its_chat_leaves_the_screen_and_staged_files_stay(direct_server_with_data, monkeypatch, tmp_path):  # noqa: F811
+    """A document open — or still loading — in Main or in a room closes when that chat leaves the
+    screen without being destroyed: a notification opening a room over Main, a notification back to
+    Main that hides a room kept for its staged file, a switch to another room, a page change. The
+    pending read is aborted, no modal is left over the next view, and the kept room still holds its
+    staged file when it is shown again."""
+    from playwright.sync_api import sync_playwright
+
+    root = direct_server_with_data["data_dir"]
+    url = direct_server_with_data["url"]
+    evidence = Path(os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", str(tmp_path / "evidence")))
+    evidence.mkdir(parents=True, exist_ok=True)
+    main_paths, room_paths = [], []
+    for folder, files, paths in (("main-src", {"nav-brief.md": BRIEF, "nav-notes.txt": NOTES}, main_paths),
+                                 ("kept-src", {"kept-brief.md": BRIEF, "kept-notes.txt": NOTES}, room_paths)):
+        (root / folder).mkdir()
+        for name, text in files.items():
+            (root / folder / name).write_text(text, encoding="utf-8")
+            paths.append(root / folder / name)
+    room = _api(url, "POST", "/api/projects", {"name": "Kept room"})["project"]
+    other = _api(url, "POST", "/api/projects", {"name": "Next room"})["project"]
+    calls, frames = [], {}
+    with sync_playwright() as playwright:
+        for engine, viewport, scheme in (("chromium", WIDE, "dark"), ("webkit", NARROW, "light")):
+            browser = getattr(playwright, engine).launch()
+            try:
+                page = browser.new_page(viewport=viewport, color_scheme=scheme)
+                page.add_init_script(f"({_CAPTURE_TEST_SOCKET})()")
+                page.add_init_script(f"({NOTIFIER})()")
+                failed = []
+                page.on("requestfailed", lambda request: failed.append(request.url))
+
+                def capture(payload):
+                    value = json.loads(payload) if isinstance(payload, str) and '"document"' in payload else {}
+                    if value.get("type") == "document":
+                        frames.setdefault(value["filename"], value)
+
+                page.on("websocket", lambda socket: socket.on("framereceived", capture))
+                page.goto(url, wait_until="domcontentloaded")
+                page.wait_for_function("() => window.__testSockets?.some(socket => socket.readyState === WebSocket.OPEN)")
+                if not calls:
+                    _deliver(page, monkeypatch, main_paths, calls, composer="#chat-input", send="#chat-send", feed="#chat-messages")
+                    feed = _enter_room(page, room)
+                    _deliver(page, monkeypatch, room_paths, calls, composer=f'[id="pchat-{room["id"]}-input"]',
+                             send=f'[id="pchat-{room["id"]}-send"]', feed=feed)
+                    assert sorted(calls) == sorted(path.name for path in main_paths + room_paths)
+                    # From here on every document comes from its immutable artifact route.
+                    page.reload(wait_until="domcontentloaded")
+                    page.wait_for_function("() => window.__testSockets?.some(socket => socket.readyState === WebSocket.OPEN)")
+                artifact = {name: url + frame["download_url"] for name, frame in frames.items()}
+                page.locator("#chat-messages .chat-file-card").filter(has_text="nav-notes.txt").wait_for(timeout=30_000)
+
+                # 1. Main is reading (the read still pending); a notification opens a room over Main.
+                held = _hold_artifacts(page)
+                page.locator("#chat-messages .chat-file-card").filter(has_text="nav-notes.txt").click()
+                page.locator("dialog.document-reader .document-reader-status.is-loading").wait_for(state="attached")
+                _click_notification(page, int(room["chat_id"]), 1)
+                feed = f'#pchat-{room["id"]}-messages'
+                page.locator(feed).wait_for(state="visible", timeout=30_000)
+                assert _await_abort(page, failed, artifact["nav-notes.txt"]), "Main's pending read was aborted"
+                assert page.evaluate(SCREEN) == NOTHING_LEFT
+                _release(page, held)
+
+                # 2. The room holds a staged file and is reading; a notification goes back to Main.
+                page.locator("#project-panel .chat-file-input-hidden").set_input_files(
+                    [{"name": "kept.txt", "mimeType": "text/plain", "buffer": b"kept"}])
+                page.locator("#project-panel .attach-name").filter(has_text="kept.txt").wait_for()
+                page.locator(f"{feed} .chat-file-card").filter(has_text="kept-notes.txt").wait_for(timeout=30_000)
+                held = _hold_artifacts(page)
+                failed.clear()
+                page.locator(f"{feed} .chat-file-card").filter(has_text="kept-notes.txt").click()
+                page.locator("dialog.document-reader .document-reader-status.is-loading").wait_for(state="attached")
+                _click_notification(page, 1, 2)
+                page.wait_for_function("id => document.getElementById(`panel-pchat-${id}`)?.hidden === true", arg=room["id"])
+                assert _await_abort(page, failed, artifact["kept-notes.txt"]), "the kept room's pending read was aborted"
+                assert page.evaluate(SCREEN) == NOTHING_LEFT
+                assert page.evaluate(KEPT_ROOM, room["id"]) == {"hidden": True, "pending": "1", "staged": ["kept.txt"]}
+                _release(page, held)
+                page.locator("#project-panel").wait_for(state="hidden")
+                page.locator("#chat-input").click(timeout=5_000)
+
+                # 3. Shown again it is the same room with its file; reading, it gives way to another room.
+                feed = _enter_room(page, room)
+                assert page.evaluate(KEPT_ROOM, room["id"]) == {"hidden": False, "pending": "", "staged": ["kept.txt"]}
+                state = _open(page, "kept-brief.md", ready=".document-reader-markdown", feed=feed)
+                _check_brief(state, "kept-brief.md")
+                page.evaluate(OPEN_ROOM, other)
+                page.locator(f'#pchat-{other["id"]}-messages').wait_for(state="visible", timeout=30_000)
+                assert page.evaluate(SCREEN) == NOTHING_LEFT
+                assert page.evaluate(KEPT_ROOM, room["id"]) == {"hidden": True, "pending": "1", "staged": ["kept.txt"]}
+                page.locator(f'[id="pchat-{other["id"]}-input"]').click(timeout=5_000)
+
+                # 4. Back in Main, reading; a page change made while the reader is open (the
+                # navigation itself is inert under the modal, so the change is made by code).
+                _click_notification(page, 1, 3)
+                page.locator("#project-panel").wait_for(state="hidden")
+                state = _open(page, "nav-brief.md", ready=".document-reader-markdown")
+                _check_brief(state, "nav-brief.md")
+                page.evaluate("() => document.querySelector('[data-nav-page=\"settings\"]').click()")
+                page.locator("#page-settings.active").wait_for(state="attached")
+                assert page.evaluate(SCREEN) == NOTHING_LEFT
+                page.screenshot(path=str(evidence / f"{engine}-{scheme}-page-change-no-reader.png"))
+                if viewport == NARROW:
+                    page.locator("#page-settings [data-mobile-nav-toggle]").click()
+                page.locator('[data-nav-page="chat"]').click()
+                state = _open(page, "nav-notes.txt", ready=".document-reader-source")
+                assert state["source"] == NOTES
+                _close_with_escape(page)
+
+                # The kept room still holds its staged file.
+                feed = _enter_room(page, room)
+                assert page.evaluate(KEPT_ROOM, room["id"])["staged"] == ["kept.txt"]
+                page.locator("#project-panel .attach-name").filter(has_text="kept.txt").wait_for(state="visible")
+                page.wait_for_timeout(400)  # the drawer and panel transitions, for the screenshot only
+                page.screenshot(path=str(evidence / f"{engine}-{scheme}-kept-room-staged.png"))
+            finally:
+                browser.close()
+
+
+GUIDE = (
+    "# Settings\n\n"
+    '[Project site](https://example.com/ "Download") and ![chart](https://example.invalid/c.png "Quarterly chart")\n\n'
+    "```python\nprint('copy me')\n```\n"
+)
+# Past the 32 KiB rich-block bound: it stays plain text and still copies whole.
+HUGE_CODE = "```text\n" + "a line of plain code\n" * 1800 + "```\n"
+TRANSLATED = {"language": "ru", "english": False, "revision": 1, "entries": {
+    "guide.md": {"text": "руководство.md", "provenance": "imported"},
+    "Settings": {"text": "Настройки", "provenance": "imported"},
+    "Download": {"text": "Скачать", "provenance": "imported"},
+    "Close": {"text": "Закрыть", "provenance": "imported"},
+    "Close document": {"text": "Закрыть документ", "provenance": "imported"},
+    "Formatted": {"text": "Оформленный", "provenance": "imported"},
+    "Source": {"text": "Исходный", "provenance": "imported"},
+    "Document text": {"text": "Текст документа", "provenance": "imported"},
+    "code:media.read": {"text": "Читать", "provenance": "imported"},
+    "code:code.copy": {"text": "Копировать", "provenance": "imported"},
+    "code:code.copied": {"text": "Скопировано", "provenance": "imported"},
+    "code:code.copy_code": {"text": "Копировать код", "provenance": "imported"},
+}}
+
+NO_ASYNC_CLIPBOARD = """() => {
+    Object.defineProperty(Navigator.prototype, 'clipboard', {configurable: true, get: () => undefined});
+    window.__copied = [];
+    document.addEventListener('copy', () => {
+        const node = document.activeElement;
+        window.__copied.push({
+            text: node && 'value' in node ? node.value.slice(node.selectionStart, node.selectionEnd) : String(getSelection()),
+            tag: node?.tagName || '', in_dialog: Boolean(node?.closest?.('dialog[open]')),
+        });
+    }, true);
+}"""
+
+TRANSLATED_STATE = """() => {
+    const dialog = document.querySelector('dialog.document-reader[open]');
+    const md = dialog.querySelector('.document-reader-markdown');
+    const button = (selector) => dialog.querySelector(selector);
+    return {
+        title: dialog.querySelector('.document-reader-title').textContent,
+        meta: dialog.querySelector('.document-reader-meta').textContent,
+        heading: md.querySelector('h1, .md-h1')?.textContent || '',
+        link_title: md.querySelector('a[href="https://example.com/"]')?.getAttribute('title'),
+        image_title: md.querySelector('.md-image-ref')?.getAttribute('title'),
+        close: [button('[data-reader-action="close"]').textContent, button('[data-reader-action="close"]').getAttribute('aria-label')],
+        download: button('[data-reader-action="download"]').textContent,
+        views: [...dialog.querySelectorAll('[data-reader-view]')].map((node) => node.textContent),
+        region: dialog.querySelector('.document-reader-body').getAttribute('aria-label'),
+        copy: md.querySelector('.md-code-copy')?.textContent,
+    };
+}"""
+
+COPY_STATE = """() => {
+    const dialog = document.querySelector('dialog.document-reader[open]');
+    const code = dialog.querySelector('.md-code-block pre > code');
+    return {
+        button: dialog.querySelector('.md-code-copy').textContent,
+        // Where focus is: the Copy button, the reading region, or the tag of anything else.
+        active: document.activeElement === dialog.querySelector('.md-code-copy') ? 'copy'
+            : document.activeElement === dialog.querySelector('.document-reader-body') ? 'region'
+            : document.activeElement?.tagName || '',
+        scroll: dialog.querySelector('.document-reader-body').scrollTop,
+        textareas: dialog.querySelectorAll('textarea').length,
+        highlighted: code.classList.contains('hljs'),
+        code_text: code.textContent,
+        copied: window.__copied.at(-1) || null,
+    };
+}"""
+
+
+@pytest.mark.ui_browser
+@pytest.mark.serial
+def test_reader_in_a_translated_ui_and_copy_without_async_clipboard(direct_server_with_data, monkeypatch, tmp_path):  # noqa: F811
+    """With a non-English dictionary (the house idiom: the gateway's /api/ui/i18n answer, stubbed),
+    the reader's controls are translated while the document — its name, even one the dictionary
+    knows, its size line, its text and its authors' link and image titles — stays as written and
+    is never reported as a missing translation. Without the async clipboard, Copy inside the modal
+    reader copies through a selection made inside the dialog. A code block past the 32 KiB
+    rich-block bound stays plain and copies whole."""
+    from playwright.sync_api import sync_playwright
+
+    root = direct_server_with_data["data_dir"]
+    url = direct_server_with_data["url"]
+    evidence = Path(os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", str(tmp_path / "evidence")))
+    evidence.mkdir(parents=True, exist_ok=True)
+    (root / "guide-src").mkdir()
+    paths = []
+    for name, text in (("guide.md", GUIDE), ("huge-code.md", HUGE_CODE)):
+        (root / "guide-src" / name).write_text(text, encoding="utf-8")
+        paths.append(root / "guide-src" / name)
+    assert len(HUGE_CODE) > 32768
+    calls = []
+    with sync_playwright() as playwright:
+        for engine, viewport, scheme in (("chromium", WIDE, "dark"), ("webkit", NARROW, "light")):
+            browser = getattr(playwright, engine).launch()
+            try:
+                page = browser.new_page(viewport=viewport, color_scheme=scheme)
+                page.add_init_script(f"({_CAPTURE_TEST_SOCKET})()")
+                page.add_init_script(f"({NO_ASYNC_CLIPBOARD})()")
+                misses = []
+                page.route("**/api/ui/i18n", lambda route: route.fulfill(json=TRANSLATED))
+                page.route("**/api/ui/i18n/missing", lambda route: (
+                    misses.extend(item.get("key", "") for item in (route.request.post_data_json or {}).get("items", [])),
+                    route.fulfill(json={"ok": True})))
+                page.goto(url, wait_until="domcontentloaded")
+                page.wait_for_function("() => window.__testSockets?.some(socket => socket.readyState === WebSocket.OPEN)")
+                assert page.evaluate("() => navigator.clipboard === undefined")
+                if not calls:
+                    _deliver(page, monkeypatch, paths, calls, composer="#chat-input", send="#chat-send", feed="#chat-messages")
+                else:
+                    page.locator(".chat-file-card").filter(has_text="guide.md").wait_for(timeout=30_000)
+                page.wait_for_function("() => document.documentElement.lang === 'ru'")
+                card = page.locator(".chat-file-card").filter(has_text="guide.md")
+                assert card.locator(".chat-file-more").inner_text() == "Читать"
+
+                _open(page, "guide.md", ready=".document-reader-markdown")
+                page.wait_for_function("() => document.querySelector('dialog.document-reader [data-reader-action=\"close\"]').textContent === 'Закрыть'")
+                state = page.evaluate(TRANSLATED_STATE)
+                # The document stays as written, a name the dictionary knows included.
+                assert state["title"] == "guide.md" and state["meta"].startswith("MD · "), state
+                assert (state["heading"], state["link_title"], state["image_title"]) == ("Settings", "Download", "Quarterly chart"), state
+                # Its chrome is translated.
+                assert state["close"] == ["Закрыть", "Закрыть документ"] and state["download"] == "Скачать", state
+                assert state["views"] == ["Оформленный", "Исходный"] and state["region"] == "Текст документа", state
+                assert state["copy"] == "Копировать", state
+                page.screenshot(path=str(evidence / f"{engine}-{viewport['width']}-{scheme}-translated-reader.png"))
+
+                before = page.evaluate(COPY_STATE)
+                assert before["highlighted"], "a code block within the bound is highlighted"
+                page.locator("dialog.document-reader .md-code-copy").click()
+                page.wait_for_function("() => document.querySelector('dialog.document-reader .md-code-copy').textContent === 'Скопировано'")
+                after = page.evaluate(COPY_STATE)
+                # Exactly what the block holds, selected inside the dialog.
+                assert after["code_text"].strip() == "print('copy me')", after
+                assert after["copied"] == {"text": after["code_text"], "tag": "TEXTAREA", "in_dialog": True}, after
+                # Focus is back where the click left it: Chromium focuses a clicked button, WebKit does not.
+                assert after["active"] == ("copy" if engine == "chromium" else "region"), after
+                assert after["textareas"] == 0 and after["scroll"] == before["scroll"], after
+                _close_with_escape(page)
+
+                state = _open(page, "huge-code.md", ready=".document-reader-markdown")
+                big = page.evaluate(COPY_STATE)
+                assert not big["highlighted"] and len(big["code_text"]) > 32768, len(big["code_text"])
+                page.locator("dialog.document-reader .md-code-copy").click()
+                page.wait_for_function("() => document.querySelector('dialog.document-reader .md-code-copy').textContent === 'Скопировано'")
+                copied = page.evaluate(COPY_STATE)["copied"]
+                assert copied["in_dialog"] and copied["text"] == big["code_text"], len(copied["text"])
+                assert copied["text"].strip() == HUGE_CODE[len("```text\n"):-len("```\n")].strip()
+                _close_with_escape(page)
+
+                page.evaluate("() => import('/static/modules/i18n.js').then((module) => module.flushMisses())")
+                page.wait_for_timeout(500)
+                authored = ("guide.md", "huge-code.md", "MD · ", "Project site", "Quarterly chart", "Image: chart", "copy me", "plain code")
+                assert not [key for key in misses if any(part in key for part in authored)], misses
+            finally:
+                browser.close()

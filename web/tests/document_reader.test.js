@@ -268,6 +268,8 @@ class FakeElement {
     get isConnected() { let node = this; while (node.parentNode) node = node.parentNode; return node === this.ownerDocument.root; }
     get textContent() { return this.childNodes.map((node) => (node instanceof FakeElement ? node.textContent : node.text)).join(''); }
     set textContent(value) { this.replaceChildren({ text: String(value) }); }
+    // Read back only from a text-only element, as `escapeHtmlText` does.
+    get innerHTML() { return this.textContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
     set innerHTML(html) {
         this.replaceChildren();
         const stack = [this];
@@ -473,8 +475,12 @@ test('a refused copy says why, and Retry reads the same address again', async ()
         await settle();
         // The status line, then its Retry button.
         assert.equal(fx.view().status, 'This device cannot read the delivered copy right now.Retry');
-        fx.dialog().querySelector('[data-reader-action="retry"]').click();
+        const retry = fx.dialog().querySelector('[data-reader-action="retry"]');
+        retry.focus();
+        retry.click();
         assert.equal(fx.held.pending[1].url, a.file.reader.url, 'Retry asks the delivered copy, nothing else');
+        assert.equal(fx.doc.activeElement, fx.dialog().querySelector('.document-reader-body'),
+            'the replaced Retry hands focus to the reading region, not to a detached button');
         fx.held.pending[1].answer('hello', { headers: { 'content-length': '5' } });
         await settle();
         assert.equal(fx.view().source, 'hello');
@@ -489,7 +495,8 @@ test('a refused copy says why, and Retry reads the same address again', async ()
     }
 });
 
-test('a grouped file evicted with the earlier bubble that holds it closes its reader', async () => {
+// The real chat media controller over the small DOM, with fetch held by hand.
+function mediaFixture() {
     const doc = fakeDocument();
     const held = heldFetch();
     const prior = { document: globalThis.document, window: globalThis.window, fetch: globalThis.fetch };
@@ -500,11 +507,17 @@ test('a grouped file evicted with the earlier bubble that holds it closes its re
         chatSessionId: 'session', durableChatMediaUrl: (value) => String(value || ''), formatMsgTime: () => null,
         insertMessageNode: (node) => feed.append(node), senderLabel: () => 'Ouroboros', stampNodeTimestamp,
     });
+    const delivered = (filename, second, taskId = 'task-g') => ({
+        type: 'document', role: 'assistant', task_id: taskId, filename, mime: 'text/plain', size_bytes: 5,
+        download_url: `/api/tasks/${taskId}/artifacts/${encodeURIComponent(filename)}`, ts: `2026-10-07T00:00:0${second}Z`,
+    });
+    const restore = () => { media.destroy(); Object.assign(globalThis, prior); };
+    return { doc, held, feed, media, delivered, reader: () => doc.body.querySelector('.document-reader'), restore };
+}
+
+test('a grouped file evicted with the earlier bubble that holds it closes its reader', async () => {
+    const { doc, held, feed, media, delivered, restore } = mediaFixture();
     try {
-        const delivered = (filename, second) => ({
-            type: 'document', role: 'assistant', task_id: 'task-g', filename, mime: 'text/plain', size_bytes: 5,
-            download_url: `/api/tasks/task-g/artifacts/${filename}`, ts: `2026-10-07T00:00:0${second}Z`,
-        });
         const bubbles = [delivered('a.txt', 1), delivered('b.txt', 2)].map((msg) => {
             const bubble = media.buildDocumentBubble(msg);
             assert.equal(media.buildGallery('files', msg, bubble), true);
@@ -522,7 +535,82 @@ test('a grouped file evicted with the earlier bubble that holds it closes its re
         assert.equal(reader(), null, 'evicting the wrapper that holds the file closes its reader');
         assert.equal(held.pending[0].signal.aborted, true);
     } finally {
-        media.destroy();
-        Object.assign(globalThis, prior);
+        restore();
+    }
+});
+
+test('closeTransient closes the reader and the file dialog and keeps the chat as it was', async () => {
+    const fx = mediaFixture();
+    try {
+        const notes = fx.media.buildDocumentBubble(fx.delivered('notes.txt', 1, 'task-n'));
+        const archive = fx.media.buildDocumentBubble({ ...fx.delivered('data.bin', 2, 'task-b'), mime: 'application/octet-stream' });
+        fx.feed.append(notes, archive);
+        notes.querySelector('.chat-file-card').click();
+        assert.ok(fx.reader(), 'the reader is open with its read pending');
+        fx.media.closeTransient();
+        assert.equal(fx.reader(), null, 'the reader is gone');
+        assert.equal(fx.held.pending[0].signal.aborted, true, 'and its read stopped');
+        archive.querySelector('.chat-file-card').click();
+        const dialog = fx.doc.body.querySelector('.chat-file-dialog');
+        assert.equal(dialog.open, true);
+        fx.media.closeTransient();
+        assert.equal(dialog.open, false, 'the file dialog closes too');
+        // Nothing was released: the same cards open again.
+        assert.deepEqual([notes.isConnected, archive.isConnected], [true, true]);
+        notes.querySelector('.chat-file-card').click();
+        assert.equal(fx.reader().querySelector('.document-reader-title').textContent, 'notes.txt');
+        fx.held.pending[1].answer('hello', { headers: { 'content-length': '5' } });
+        await settle();
+        assert.equal(fx.reader().querySelector('.document-reader-source').textContent, 'hello');
+    } finally {
+        fx.restore();
+    }
+});
+
+test('the whole delivered name decides readability; only its display is cut to 200 characters', () => {
+    const fx = mediaFixture();
+    try {
+        const long = `${'a'.repeat(202)}.md`;
+        const disguised = `${'b'.repeat(197)}.md.html`;
+        assert.deepEqual([long.length, disguised.length], [205, 205]);
+        const [markdown, html] = [[long, 1], [disguised, 2]].map(([name, second]) => {
+            const bubble = fx.media.buildDocumentBubble(fx.delivered(name, second, `task-${second}`));
+            fx.feed.append(bubble);
+            return bubble;
+        });
+        const card = (bubble) => ({
+            name: bubble.querySelector('.chat-file-name').textContent,
+            meta: bubble.querySelector('.chat-file-meta').textContent,
+            read: Boolean(bubble.querySelector('.chat-file-more.is-read')),
+        });
+        assert.deepEqual(card(markdown), { name: long.slice(0, 200), meta: 'MD · 5 B', read: true });
+        // Cut to 200, this name would end in `.md`; it is HTML and is not read.
+        assert.equal(disguised.slice(0, 200).endsWith('.md'), true);
+        assert.deepEqual(card(html), { name: disguised.slice(0, 200), meta: 'HTML · 5 B', read: false });
+        html.querySelector('.chat-file-card').click();
+        assert.equal(fx.reader(), null, 'the disguised HTML keeps the file dialog');
+        assert.equal(fx.doc.body.querySelector('.chat-file-dialog').open, true);
+        fx.media.closeTransient();
+        markdown.querySelector('.chat-file-card').click();
+        assert.equal(fx.reader().querySelector('.document-reader-title').textContent, long.slice(0, 200));
+    } finally {
+        fx.restore();
+    }
+});
+
+test('the document name, size line and text are marked authored; the reader chrome is not', async () => {
+    const fx = readerFixture();
+    try {
+        const a = fx.item('a.txt');
+        fx.reader.open(a.file, { owner: a.node, returnFocus: a.card });
+        fx.held.pending[0].answer('hello', { headers: { 'content-length': '5' } });
+        await settle();
+        const authored = (selector) => fx.dialog().querySelector(selector).closest('[data-i18n-authored]') !== null;
+        assert.deepEqual(['.document-reader-title', '.document-reader-meta', '.document-reader-source'].map(authored),
+            [true, true, true]);
+        assert.deepEqual(['.document-reader-body', '[data-reader-action="close"]', '[data-reader-view="source"]'].map(authored),
+            [false, false, false]);
+    } finally {
+        fx.restore();
     }
 });

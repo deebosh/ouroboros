@@ -368,28 +368,29 @@ export function createChatMedia({
         fileDialog.className = 'chat-file-dialog';
         fileDialog.innerHTML = `
             <form method="dialog" class="chat-file-dialog-panel">
-                <div class="chat-file-dialog-title"></div>
+                <div class="chat-file-dialog-title" data-i18n-authored></div>
                 <div class="chat-file-dialog-actions">
-                    <button type="button" data-file-action="open">Open</button>
-                    <button type="button" data-file-action="download">Download</button>
-                    <button type="button" data-file-action="close">Close</button>
+                    <button type="button" class="btn btn-default" data-file-action="open">Open</button>
+                    <button type="button" class="btn btn-default" data-file-action="download">Download</button>
+                    <button type="button" class="btn btn-default" data-file-action="close">Close</button>
                 </div>
             </form>`;
         document.body.appendChild(fileDialog);
-        const close = () => {
-            dialogFile = null;
-            if (typeof fileDialog.close === 'function') fileDialog.close();
-            else fileDialog.removeAttribute('open');
-        };
-        listen(fileDialog.querySelector('[data-file-action="close"]'), 'click', close);
-        listen(fileDialog, 'cancel', close);
+        listen(fileDialog.querySelector('[data-file-action="close"]'), 'click', closeFileDialog);
+        listen(fileDialog, 'cancel', closeFileDialog);
         listen(fileDialog.querySelector('[data-file-action="open"]'), 'click', async () => {
-            if (dialogFile?.source.durable && await fileActions.open(dialogFile)) close();
+            if (dialogFile?.source.durable && await fileActions.open(dialogFile)) closeFileDialog();
         });
         listen(fileDialog.querySelector('[data-file-action="download"]'), 'click', async () => {
-            if (dialogFile && await fileActions.download(dialogFile)) close();
+            if (dialogFile && await fileActions.download(dialogFile)) closeFileDialog();
         });
         return fileDialog;
+    }
+
+    function closeFileDialog() {
+        dialogFile = null;
+        if (typeof fileDialog?.close === 'function') fileDialog.close();
+        else fileDialog?.removeAttribute('open');
     }
 
     function openFileDialog(file) {
@@ -627,14 +628,16 @@ export function createChatMedia({
         if (destroyed) return null;
         const mime = cleanMime(msg.mime, 'application/octet-stream');
         const source = fileSource(msg, mime);
-        const filename = String(msg.filename || 'file').replace(/[\r\n]+/g, ' ').slice(0, 200);
+        // The type is read from the whole name; only its display is cut.
+        const fullName = String(msg.filename || 'file').replace(/[\r\n]+/g, ' ');
+        const filename = fullName.slice(0, 200);
         const caption = String(msg.caption || '');
         const explicitSize = msg.size_bytes !== null && msg.size_bytes !== undefined
             && msg.size_bytes !== '' && Number.isFinite(Number(msg.size_bytes));
         const size = explicitSize ? Number(msg.size_bytes)
             : source.base64 ? base64Bytes(source.base64) : null;
-        const meta = [fileExtension(filename), humanSize(size)].filter(Boolean).join(' · ');
-        const readable = source.reader ? documentReaderKind(filename, mime) : '';
+        const meta = [fileExtension(fullName), humanSize(size)].filter(Boolean).join(' · ');
+        const readable = source.reader ? documentReaderKind(fullName, mime) : '';
         const more = readable
             ? `<span class="chat-file-more is-read">${escapeHtml(tr('media.read', 'Read'))}</span>`
             : '<span class="chat-file-more" aria-hidden="true">•••</span>';
@@ -843,12 +846,17 @@ export function createChatMedia({
         groupingWrappers.clear();
         photoGroups.clear();
         fileGroups.clear();
-        dialogFile = null;
+        closeTransient();
         if (fileDialog) {
             try { fileDialog.remove(); } catch {}
             fileDialog = null;
         }
+    }
+
+    // The chat left the screen: the reader or file dialog a card opened closes, nothing else.
+    function closeTransient() {
         reader.close({ restoreFocus: false });
+        closeFileDialog();
     }
 
     // Release only the evicted page's subtree; other media and copy controls
@@ -986,6 +994,7 @@ export function createChatMedia({
         wireDeliveries,
         reset,
         release,
+        closeTransient,
         destroy,
     };
 }

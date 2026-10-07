@@ -229,9 +229,9 @@ let readerCount = 0;
 const DIALOG_HTML = `
     <div class="document-reader-panel">
         <header class="document-reader-head">
-            <div class="document-reader-identity">
-                <h2 class="document-reader-title" data-i18n-skip></h2>
-                <div class="document-reader-meta" data-i18n-skip></div>
+            <div class="document-reader-identity" data-i18n-authored>
+                <h2 class="document-reader-title"></h2>
+                <div class="document-reader-meta"></div>
             </div>
             <div class="document-reader-actions">
                 <div class="document-reader-views" role="group" aria-label="View" hidden>
@@ -309,6 +309,8 @@ export function createDocumentReader({ actions = {}, formatSize = (bytes) => `${
             content.className = 'document-reader-source';
             content.textContent = current.text;
         }
+        // The document's own words, attributes included, are never interface text.
+        content.setAttribute('data-i18n-authored', '');
         body.replaceChildren(content);
         body.setAttribute('aria-busy', 'false');
         body.scrollTop = 0;
@@ -399,7 +401,11 @@ export function createDocumentReader({ actions = {}, formatSize = (bytes) => `${
             const action = event.target.closest?.('[data-reader-action]')?.dataset.readerAction;
             const view = event.target.closest?.('[data-reader-view]')?.dataset.readerView;
             if (action === 'close') close();
-            else if (action === 'retry') void load(current);
+            else if (action === 'retry') {
+                // The status that held Retry is replaced: the reading region keeps the focus.
+                void load(current);
+                current.body.focus();
+            }
             else if (action === 'open' || action === 'download') void actions[action]?.(file);
             else if (view && view !== current.view && current.loaded) {
                 current.view = view;
