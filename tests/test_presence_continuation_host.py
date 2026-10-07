@@ -22,6 +22,7 @@ from tests.test_presence_continuation import ANSWER, NEW_WORDS, finish, harness,
 
 _TOKEN = "presence-token"
 _HEADERS = {"X-Skill-Token": _TOKEN}
+pytestmark = pytest.mark.serial
 
 
 class _Quick:

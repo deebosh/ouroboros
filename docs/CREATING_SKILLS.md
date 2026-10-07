@@ -774,11 +774,16 @@ both independently. `status: "completed"` (with `continuation_ref: ""`) means th
 within the request. A retry of the same event returns the identical stored envelope, never a rerun;
 `continuing` releases text to you and is not proof of provider delivery.
 
-Poll `GET /presence/work/{continuation_ref}?binding_id=...` like other late work. While the author
-lives it answers HTTP 202 `pending` with `outputs`: the ordered `{output_ref, outcome, text}` the
-author released so far. Its terminal answers 200 with `outcome`/`text`/`output_ref` holding only a new
-terminal output (a re-finalized released selection yields `silent` and empty text), `child_work_ref`,
-and the same `outputs`. A lost author answers 200 `status: "interrupted"` when its retained
+Poll `GET /presence/work/{continuation_ref}?binding_id=...` like other late work. Every continuation
+poll carries `work_ref` and `continuation_ref` naming the author, and `child_work_ref` naming its
+current promoted independent work (empty if none). Discover and retain that child before handling
+the author's status, and poll it independently. A child promoted after the first yield is retained
+at the next park even though the original event's immutable envelope still has an empty `work_ref`.
+While the author lives it answers HTTP 202 `pending` with `outputs`: the ordered
+`{output_ref, outcome, text}` the author released so far. Its terminal answers 200 with
+`outcome`/`text`/`output_ref` holding only a new terminal output (a re-finalized released selection
+yields `silent` and empty text), the child reference, and the same `outputs`.
+A lost author answers 200 `status: "interrupted"` with the retained child reference when its retained
 process identity proves it dead; a missing or unobservable identity alone does not prove a crash.
 It is never restarted automatically and its original event is not regenerated. An explicit new
 event can request manual continuation after checking prior effects; it creates a new turn and

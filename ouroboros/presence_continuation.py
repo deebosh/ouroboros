@@ -302,7 +302,7 @@ def _yield_conversation(binding: ReviewWaitBinding, ctx: Any, checkpoint: dict) 
 
 
 def _persist(binding: ReviewWaitBinding, output: dict, work_ref: str, review_binding: str, now: str) -> dict:
-    """Write-once initial envelope plus appended outputs, read back before anything is lent."""
+    """Initial envelope, current child and appended outputs, read back before anything is lent."""
     from ouroboros.task_results import (
         STATUS_RUNNING, load_task_result, require_writable_task_result_schema,
         stamp_task_result_schema, task_result_path,
@@ -334,15 +334,20 @@ def _persist(binding: ReviewWaitBinding, output: dict, work_ref: str, review_bin
             "conversation_key": event.conversation_key,
             "continuation_version": int(old.get("continuation_version", event.continuation_version) or 0),
             "initial": initial, "outputs": outputs, "review_binding": review_binding,
+            # A resumed author may promote work after its immutable initial reply.
+            # Retain the latest admitted child even if a later park has no new handoff.
+            "child_work_ref": str(work_ref or old.get("child_work_ref") or initial.get("work_ref") or ""),
             "author_controller": controller_identity(),
             "first_lent_at": old.get("first_lent_at") or old.get("lent_at") or now, "lent_at": now,
         }
         return stamp_task_result_schema({**current, "presence_continuation": record})
 
-    update_json_locked(task_result_path(binding.drive_root, binding.task_id), update, strict_existing_dict=True)
+    committed = update_json_locked(task_result_path(binding.drive_root, binding.task_id), update,
+                                   strict_existing_dict=True)["presence_continuation"]
     stored = (load_task_result(binding.drive_root, binding.task_id, strict=True) or {}).get("presence_continuation")
     if (not isinstance(stored, dict) or stored.get("lent_at") != now or stored.get("event_identity") != binding.identity
             or not isinstance(stored.get("initial"), dict)
+            or stored.get("child_work_ref") != committed["child_work_ref"]
             or (public and public not in (stored.get("outputs") or []))):
         raise ValueError("presence continuation did not read back")
     return stored
@@ -403,8 +408,8 @@ def _conversation_rows_since(drive_root: Path, cursor: Mapping[str, Any], key: s
         after = str(cursor.get("after_archive") or "")
         plan = [(path, 0) for path in paths[:-1] if path.name > after] + [(paths[-1], 0)]
     else:
-        names = [str(jsonl_generation_signature(path).get("first_line_sha256") or "") for path in paths]
-        index = next((i for i in range(len(paths) - 1, -1, -1) if names[i] == gen), None)
+        index = next((i for i in range(len(paths) - 1, -1, -1)
+                      if str(jsonl_generation_signature(paths[i]).get("first_line_sha256") or "") == gen), None)
         if index is None:
             return [], [{"kind": "cursor_generation_missing"}]
         plan = [(paths[index], offset), *((path, 0) for path in paths[index + 1:])]
@@ -502,14 +507,15 @@ def _row_fact(binding: ReviewWaitBinding, row: Mapping[str, Any]) -> str:
     return f"- {row.get('type') or row.get('direction') or 'row'} recorded by {turn}: {text}"
 
 
-def _history_reader(ctx: Any, event: Any, since: str) -> str:
+def _history_reader(ctx: Any, event: Any, since: str, *, retained_source: bool = False) -> str:
     """The reader of the canonical rows this note could not carry, only if this turn holds one."""
     from ouroboros.presence_authority import presence_ceiling_allows_tool, presence_ceiling_from_context
 
     ceiling = presence_ceiling_from_context(ctx)
     if ceiling is not None and not presence_ceiling_allows_tool(ceiling, "chat_history"):
-        return ("No history reader is among this turn's tools; those rows stay in the canonical chat log at "
-                "the positions named above.")
+        location = ("the retained reentry source lists every observed gap" if retained_source
+                    else "all observed gap descriptions are listed above")
+        return "No history reader is among this turn's tools; " + location + "."
     arguments = {"provider": event.provider, "account_id": event.account_id,
                  "conversation_id": event.conversation_id, "thread_id": event.thread_id, "date_from": since}
     return f"chat_history({json.dumps(arguments, ensure_ascii=False)}) reads them."
@@ -560,7 +566,7 @@ def reentry_note(binding: ReviewWaitBinding, ctx: Any) -> str:
         lines.append(f"- your promoted work {work_ref} is {status}")
     body = "\n".join(lines) or ("- no complete rows fit in this note; read the source below" if omitted
                                else "- nothing new was recorded in this conversation")
-    shown = gaps[:_REENTRY_GAPS_SHOWN]
+    shown = gaps[:_REENTRY_GAPS_SHOWN] if source else gaps
     coverage = ("\nCoverage: every row of this conversation's canonical log since you yielded is listed."
                 if not gaps and not omitted else "")
     if gaps:
@@ -570,7 +576,8 @@ def reentry_note(binding: ReviewWaitBinding, ctx: Any) -> str:
     if source:
         coverage += "\nFull observed facts (including complete text omitted above): " + source
     if gaps:
-        coverage += "\n" + _history_reader(ctx, binding.event, str(binding.cursor.get("at") or ""))
+        coverage += "\n" + _history_reader(ctx, binding.event, str(binding.cursor.get("at") or ""),
+                                          retained_source=bool(source))
     queued = _queue_note(queue, bounded=bool(source))
     return ("[PRESENCE CONVERSATION RESUMED]\nWhile your result waited for review you did not hold this "
             "conversation and other turns could run. Host-authored facts from its canonical log since you "
@@ -848,6 +855,7 @@ def work_view(stored: Mapping[str, Any], ref: str) -> tuple[int, dict] | None:
         return None
     presence = (stored.get("metadata") or {}).get("presence") or {}
     common = {"ok": True, "work_ref": ref, "continuation_ref": ref, "continuation_version": CONTINUATION_VERSION,
+              "child_work_ref": str(record.get("child_work_ref") or record["initial"].get("work_ref") or ""),
               "outputs": [dict(row) for row in record.get("outputs") or [] if isinstance(row, dict)],
               "delivery_reporting_version": int(presence.get("delivery_reporting_version") == 1)}
     status = continuation_status(stored)
@@ -858,7 +866,7 @@ def work_view(stored: Mapping[str, Any], ref: str) -> tuple[int, dict] | None:
         return 202, {**common, "status": "pending"}
     result = presence_result_from_stored(stored, ref)
     return 200, {**common, "status": status, "outcome": result.outcome, "text": result.text,
-                 "output_ref": result.output_ref, "child_work_ref": result.work_ref}
+                 "output_ref": result.output_ref, "child_work_ref": result.work_ref or common["child_work_ref"]}
 
 
 def start_proactive_turn(*, admission: Any, event: Any, repo_dir: Path, drive_root: Path,

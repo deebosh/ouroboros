@@ -787,8 +787,9 @@ async def _api_presence_turn(request: Request) -> JSONResponse:
 
     Authentication, admission and file confinement run off the event loop. The turn is
     host work this request only waits on (``presence_runner.PresenceTurnExecutions``): it
-    queues on the gate as a coroutine, runs on its own thread, keeps its in-flight slot
-    until it settles, and a retry of the same event joins it instead of running it twice.
+    queues on the gate as a coroutine and runs on its own thread. Version 1 releases its
+    in-flight slot once the initial envelope is ready; version 0 retains it until the
+    terminal result. A retry of the same event joins the retained execution.
     """
 
     ctx: HostServiceContext = request.app.state.host_service_context

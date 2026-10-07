@@ -115,3 +115,47 @@ def test_unavailable_source_keeps_whole_observed_text_inline(tmp_path, monkeypat
     note = pc.reentry_note(_binding(tmp_path, cursor), ctx)
     assert json.dumps(text) in note and "get_task_result(" not in note
     assert "Coverage: every row" in note
+
+
+def _append_gap_locations(root, count=12):
+    _append(root, _row(KEY, "before the gap interval"))
+    cursor = pc._chat_cursor(root)
+    offset, offsets, raw = cursor["offset"], [], b""
+    for index in range(count):
+        line = f"malformed gap {index}\n".encode()
+        offsets.append(offset)
+        raw += line
+        offset += len(line)
+    _append(root, raw=raw)
+    return cursor, offsets
+
+
+@pytest.mark.parametrize("failure", ["reader_absent", "write_failed"])
+def test_unavailable_source_keeps_every_gap_location_inline(tmp_path, monkeypatch, failure):
+    from ouroboros.presence_authority import presence_ceiling_payload
+
+    _, ctx = _actor(tmp_path)
+    if failure == "reader_absent":
+        ctx.task_contract = {"capability_ceiling": presence_ceiling_payload(
+            replace(_ceiling(), tool_grants=()))}
+    else:
+        def fail(*args, **kwargs):
+            raise OSError("source unavailable")
+        monkeypatch.setattr("ouroboros.artifacts.store_actor_source_bytes", fail)
+    cursor, offsets = _append_gap_locations(tmp_path)
+    note = pc.reentry_note(_binding(tmp_path, cursor), ctx)
+    assert "get_task_result(" not in note and "chat_history(" not in note
+    assert all(f"a malformed line at logs/chat.jsonl byte {offset}" in note for offset in offsets)
+    assert "- and 4 more" not in note
+
+
+def test_retained_source_keeps_all_gap_locations_when_note_is_bounded(tmp_path):
+    registry, ctx = _actor(tmp_path)
+    cursor, offsets = _append_gap_locations(tmp_path)
+    note = pc.reentry_note(_binding(tmp_path, cursor), ctx)
+    assert "- and 4 more" in note and "chat_history(" not in note
+    assert "positions named above" not in note
+    assert "the retained reentry source lists every observed gap" in note
+    source = _read_all(registry, _reader(note))
+    assert [gap["offset"] for gap in source["gaps"]] == offsets
+    assert all(gap["path"] == "logs/chat.jsonl" for gap in source["gaps"])

@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 TOKEN = "lifecycle-fixture-token"
 HEADERS = {"X-Skill-Token": TOKEN}
 ANSWER = "The checked status report is ready."
+REVISED_ANSWER = "The checked status report is ready; the independent report remains scheduled."
+LATE_CHILD = "work-promoted-after-first-yield"
 MANUAL = "I checked the prior delivery. Continue the interrupted report as a new turn."
 pytestmark = [pytest.mark.serial, pytest.mark.skipif(
     os.name != "posix", reason="This fixture qualifies POSIX SIGKILL/process-group custody only")]
@@ -124,6 +126,48 @@ class Host:
         (self.root / f"exit-{self.generation}.json").write_text(json.dumps({
             "pid": self.proc.pid, "returncode": self.proc.returncode, "process_group_gone": group_gone}))
         assert group_gone, "child exited with a live descendant in its private group"
+
+
+def test_host_close_rejects_a_live_descendant_after_the_parent_exits(tmp_path):
+    """Support-process cleanup must not turn an actual orphan into a pass."""
+    host = Host.__new__(Host)
+    host.root, host.generation, host.client = tmp_path, 1, None
+    host.log = (tmp_path / "host-1.log").open("w")
+    host.proc = subprocess.Popen([
+        sys.executable, "-c",
+        "import os, subprocess, sys; "
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
+        "os._exit(0)",
+    ], cwd=ROOT, env=isolated_environment(tmp_path, ROOT), stdout=host.log,
+        stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        assert host.proc.wait(timeout=10) == 0
+        with pytest.raises(AssertionError, match="live descendant"):
+            host.close()
+        assert json.loads((tmp_path / "exit-1.json").read_text()) == {
+            "pid": host.proc.pid, "returncode": 0, "process_group_gone": False}
+    finally:
+        # Only the private group created above is ours. Reap even if the
+        # negative control fails before Host.close reaches its own cleanup.
+        try:
+            os.killpg(host.proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        host.proc.wait(timeout=10)
+        host.log.close()
+
+        def gone():
+            try:
+                os.killpg(host.proc.pid, 0)
+            except ProcessLookupError:
+                return True
+            except PermissionError:
+                # macOS can briefly retain an unsignalable exiting group.
+                # It still must disappear; EPERM is not evidence of cleanup.
+                return False
+            return False
+
+        eventually(gone, seconds=10)
 
 
 @pytest.mark.parametrize("mode", ["blocking", "advisory"])
@@ -272,6 +316,125 @@ def test_stop_ends_parked_full_agent_without_another_model_call(tmp_path):
         (tmp_path / "consumer-facts.json").write_text(json.dumps({"stop": final.json(), "model_calls": 2}))
     finally:
         host.close()
+
+
+def second_park_with_late_child(host):
+    """Drive two actual reviewer waits, with promotion only after the first yield."""
+    response = host.turn()
+    assert response.status_code == 200, response.text
+    initial = response.json()
+    assert initial["status"] == "continuing" and initial["work_ref"] == ""
+    ref = initial["continuation_ref"]
+    record_path = host.root / "data" / "task_results" / f"{ref}.json"
+
+    def parked():
+        record = json.loads(record_path.read_text())
+        return record if record.get("owner_wait", {}).get("state") == "waiting" else None
+
+    before = eventually(parked)
+    first_continuation = before["presence_continuation"]
+    assert first_continuation["initial"]["work_ref"] == ""
+    assert not (host.root / "data" / "task_results" / f"{LATE_CHILD}.json").exists()
+    assert host.work(ref).status_code == 202 and len(host.inputs()) == 2
+    assert host.client.post("/fixture/release-review").status_code == 200
+
+    def second_park():
+        record = parked()
+        if not record:
+            return None
+        continuation = record["presence_continuation"]
+        state = host.client.get("/fixture/review-state").json()
+        return record if (continuation["review_binding"] != first_continuation["review_binding"]
+                          and state == {"reviews": 2, "model_calls": 4, "held": True}) else None
+
+    after = eventually(second_park)
+    assert after["presence_continuation"]["initial"] == first_continuation["initial"]
+    assert after["presence_continuation"]["author_controller"] == first_continuation["author_controller"]
+    assert host.client.get("/fixture/live").json() == [ref]
+    assert host.turn().json() == initial and len(host.inputs()) == 4
+    return initial, after, record_path
+
+
+@pytest.mark.parametrize("mode", ["blocking", "advisory"])
+@pytest.mark.parametrize("ending", ["complete", "stop"])
+def test_second_park_exposes_late_child_without_changing_initial_replay(tmp_path, mode, ending):
+    host = Host(tmp_path, 1, mode, "late_child")
+    try:
+        initial, record, record_path = second_park_with_late_child(host)
+        ref = initial["continuation_ref"]
+        pending = host.work(ref)
+        assert pending.status_code == 202, pending.text
+        child_ref = pending.json().get("child_work_ref")
+        assert child_ref == LATE_CHILD, pending.text
+        assert record["presence_continuation"]["child_work_ref"] == child_ref
+        child = host.work(child_ref)
+        assert child.status_code == 202 and child.json()["status"] == "pending"
+        assert child.json()["work_ref"] == child_ref and "continuation_ref" not in child.json()
+        if ending == "stop":
+            assert host.client.post("/fixture/stop", json={"task_id": ref}).status_code == 200
+        else:
+            assert host.client.post("/fixture/release-review").status_code == 200
+        final = eventually(lambda: (reply if (reply := host.work(ref)).status_code == 200 else None))
+        assert final.json()["child_work_ref"] == child_ref, final.text
+        assert final.json()["status"] in {"completed", "cancelled"}
+        assert len(host.inputs()) == (4 if ending == "stop" else 5)
+        assert host.client.get("/fixture/live").json() == []
+        assert host.turn().json() == initial
+        assert json.loads(record_path.read_text())["presence_continuation"]["initial"] == record["presence_continuation"]["initial"]
+        assert host.work(child_ref).json() == child.json()  # independent work survives the author's end
+        (tmp_path / "late-child-facts.json").write_text(json.dumps({
+            "mode": mode, "ending": ending, "initial": initial, "second_park": pending.json(),
+            "final": final.json(), "child": child.json(), "model_calls": len(host.inputs()),
+            "promotion_dispatch_scripted": True, "original_replay_unchanged": True}, indent=2))
+    finally:
+        host.close()
+    cleanup = json.loads((tmp_path / "process-cleanup-1.json").read_text())
+    assert cleanup["remaining_children"] == [] and cleanup["resource_tracker_joined"]
+    if ending == "stop":
+        # Releasing the pending reviewer after Stop emits a late notice through
+        # the real manager-backed event bus. Both support processes must be
+        # joined by the fixture, before the parent's group assertion runs.
+        assert cleanup["event_bus_children"] and cleanup["resource_tracker_pid"]
+
+
+@pytest.mark.parametrize("mode", ["blocking", "advisory"])
+def test_killed_second_park_author_preserves_late_child_for_tcp_consumer(tmp_path, mode):
+    first_host = Host(tmp_path, 1, mode, "late_child")
+    try:
+        initial, record, record_path = second_park_with_late_child(first_host)
+        ref = initial["continuation_ref"]
+        # Physical process death drops the author stack and all in-memory refs.
+        first_host.proc.kill()
+        assert first_host.proc.wait(timeout=10) == -signal.SIGKILL
+    finally:
+        first_host.close()
+
+    second_host = Host(tmp_path, 2, mode, "late_child")
+    try:
+        interrupted = second_host.work(ref)
+        assert interrupted.status_code == 200 and interrupted.json()["status"] == "interrupted"
+        child_ref = interrupted.json().get("child_work_ref")
+        assert child_ref == LATE_CHILD, interrupted.text
+        assert interrupted.json()["text"] == "" and interrupted.json()["output_ref"] == ""
+        assert interrupted.json()["outputs"] == record["presence_continuation"]["outputs"]
+        assert record["presence_continuation"]["child_work_ref"] == child_ref
+        child = second_host.work(child_ref)
+        assert child.status_code == 202 and child.json()["status"] == "pending"
+        assert child.json()["work_ref"] == child_ref and "continuation_ref" not in child.json()
+        for _ in range(2):
+            assert second_host.turn().json() == initial
+            assert second_host.work(ref).json() == interrupted.json()
+            assert second_host.work(child_ref).json() == child.json()
+        assert len(second_host.inputs()) == 4  # no original author restart or event regeneration
+        assert second_host.client.get("/fixture/live").json() == []
+        assert json.loads(record_path.read_text())["presence_continuation"] == record["presence_continuation"]
+        (tmp_path / "late-child-facts.json").write_text(json.dumps({
+            "mode": mode, "death": "SIGKILL", "initial": initial,
+            "interrupted": interrupted.json(), "independent_child": child.json(),
+            "original_model_calls": 4, "recycled_model_calls": 0,
+            "promotion_dispatch_scripted": True, "original_replay_unchanged": True}, indent=2))
+    finally:
+        second_host.close()
 
 
 @pytest.mark.parametrize("mode", ["blocking", "advisory"])

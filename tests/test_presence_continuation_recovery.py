@@ -55,6 +55,25 @@ def test_terminal_record_is_not_reclassified_by_an_author_witness(status):
     assert pc.continuation_status(row) == status
 
 
+@pytest.mark.parametrize("status", ["running", "interrupted", "completed", "failed", "cancelled"])
+@pytest.mark.parametrize("record", [
+    {"initial": {"work_ref": ""}, "child_work_ref": "work-late"},
+    {"initial": {"work_ref": "work-late"}},  # already retained by older hosts at the first park
+])
+def test_every_continuation_work_state_preserves_independent_child_discovery(status, record):
+    row = {"status": status, "presence_continuation": record}
+    code, body = pc.work_view(row, "author")
+    assert code == (202 if status == "running" else 200)
+    assert body["work_ref"] == body["continuation_ref"] == "author"
+    assert body["child_work_ref"] == "work-late"
+
+
+def test_terminal_promotion_after_last_park_takes_precedence_over_parked_child():
+    row = {"status": "completed", "metadata": {"presence_work_ref": "work-terminal"},
+           "presence_continuation": {"initial": {"work_ref": ""}, "child_work_ref": "work-parked"}}
+    assert pc.work_view(row, "author")[1]["child_work_ref"] == "work-terminal"
+
+
 def test_transport_queue_note_does_not_claim_leased_events_were_never_submitted():
     note = pc._queue_note({"status": "available", "snapshot": {
         "source": "slack-bridge", "pending_count": 1,

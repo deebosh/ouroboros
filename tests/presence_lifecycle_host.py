@@ -10,6 +10,30 @@ import sys
 import threading
 
 
+def shutdown_fixture_processes(root, generation):
+    """Join this private interpreter's event bus and multiprocessing support."""
+    from multiprocessing import active_children, resource_tracker
+    from supervisor.workers import shutdown_event_q
+
+    children = [child.pid for child in active_children()]
+    tracker = resource_tracker._resource_tracker
+    tracker_pid = tracker._pid
+    # A stopped author can settle review during shutdown and enqueue a late
+    # notice, lazily starting the real supervisor event-bus manager. This small
+    # Host fixture has no server lifespan to close that bus for it.
+    shutdown_event_q()
+    remaining = [child.pid for child in active_children()]
+    assert not remaining, f"fixture multiprocessing children remain: {remaining}"
+    # CPython normally lets the tracker exit on interpreter pipe EOF, AFTER the
+    # parent is reaped. Join it here (as CPython's own test cleanup does), while
+    # this fixture still owns it. Never kill/ignore arbitrary group members.
+    tracker._stop()
+    (root / f"process-cleanup-{generation}.json").write_text(json.dumps({
+        "event_bus_children": children, "remaining_children": remaining,
+        "resource_tracker_pid": tracker_pid, "resource_tracker_joined": tracker._pid is None,
+    }))
+
+
 def seed(data):
     from ouroboros.presence_bindings import PresenceBinding, PresenceEndpoint, save_presence_binding
     from ouroboros.presence_capabilities import (
@@ -60,7 +84,7 @@ def main(root, generation, mode, scenario="incoming"):
     from ouroboros.task_status import reconcile_orphaned_running_tasks
     from supervisor import queue as _task_queue  # noqa: F401 -- normal supervisor import order for Panic
     from tests.test_presence_continuation_bootstrap import install_bootstrap_harness, finish, nominate
-    from tests.test_presence_continuation_process import ROOT, ANSWER, MANUAL
+    from tests.test_presence_continuation_process import ROOT, ANSWER, MANUAL, LATE_CHILD, REVISED_ANSWER
 
     assert Path(os.environ["OUROBOROS_DATA_DIR"]).resolve() == (root / "data").resolve()
     assert Path(os.environ["HOME"]).resolve() == (root / "home").resolve()
@@ -88,6 +112,25 @@ def main(root, generation, mode, scenario="incoming"):
         if generation > 1:
             assert MANUAL in str(messages), "restart attempted inference without a fresh manual event"
             return finish("manual", message="Continued after the explicit request.")
+        if scenario == "late_child" and h.calls == 3:
+            from ouroboros.task_results import write_task_result
+
+            # The original reviewer has settled before the same author resumes.
+            # Hold a new, distinct review; never rely on a timing window between
+            # releasing the first reviewer and parking for the second.
+            assert h.settled.wait(15)
+            h.release.clear()
+            h.entered.clear()
+            h.settled.clear()
+            ctx = h.agents[0].tools._ctx
+            # Promotion admission/dispatch is outside this transport fixture.
+            # Retain its canonical scheduled child and source binding, exactly
+            # as a successful independent-work handoff leaves them for polling.
+            write_task_result(h.data, LATE_CHILD, "scheduled", delegation_role="root",
+                              root_task_id=LATE_CHILD, description="Compile the independent report",
+                              metadata={"presence": dict(ctx.task_metadata["presence"])})
+            ctx._swarm_handoff_attempt = {"status": "scheduled", "task_id": LATE_CHILD}
+            return nominate(REVISED_ANSWER)
         if h.calls > 1:
             candidate = h.agents[0].tools._ctx._delivery_candidate
             return finish("select", outcome="tool_delivered" if scenario == "tool_delivered" else "message",
@@ -173,6 +216,10 @@ def main(root, generation, mode, scenario="incoming"):
         h.release.set()
         return JSONResponse({"released": True})
 
+    async def review_state(_request):
+        return JSONResponse({"reviews": len(h.reviews), "model_calls": h.calls,
+                             "held": h.entered.is_set() and not h.release.is_set()})
+
     def initiate():
         from ouroboros.tools.presence import _initiate_presence
         from ouroboros.tools.registry import ToolContext
@@ -189,6 +236,7 @@ def main(root, generation, mode, scenario="incoming"):
                        Route("/fixture/panic", panic, methods=["POST"]),
                        Route("/fixture/release-inference", release_inference, methods=["POST"]),
                        Route("/fixture/release-review", release_review, methods=["POST"]),
+                       Route("/fixture/review-state", review_state),
                        Route("/fixture/proactive", proactive, methods=["POST"]),
                        Route("/fixture/restart", restart, methods=["POST"]),
                        Route("/fixture/live", live), Route("/fixture/shutdown", shutdown, methods=["POST"])])
@@ -203,6 +251,7 @@ def main(root, generation, mode, scenario="incoming"):
         h.release.set()
         if h.entered.is_set():
             assert h.settled.wait(15)
+        shutdown_fixture_processes(root, generation)
         sock.close()
         print(json.dumps({"threads": [thread.name for thread in threading.enumerate()],
                           "model_calls": h.calls, "review_calls": len(h.reviews)}), flush=True)

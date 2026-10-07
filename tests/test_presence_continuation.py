@@ -2,7 +2,8 @@
 
 The real gate (cap 1, cross-process files), Host execution registry, ``run_presence_turn``,
 loop, acceptance coordinator, direct wait, mailbox settlement and pipeline terminal run
-here; only the model and the reviewer transport are scripted. Nothing leaves the process.
+here; only the model and the reviewer transport are scripted. Git subprocesses create
+the disposable repository fixture.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from tests.test_presence_runner import _admission
 ANSWER = "The status report is complete: all three checks passed."
 NEW_WORDS = "Please also mention the backup window."
 KEY = "telegram:bot-1:room-1:topic-1"
+pytestmark = pytest.mark.serial
 
 
 def call(name, arguments, identifier):

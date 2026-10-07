@@ -36,6 +36,28 @@ def _pages(registry, arguments):
     return pages
 
 
+def test_matching_live_cursor_reads_new_rows_without_hashing_archive_headers(tmp_path, monkeypatch):
+    from ouroboros import utils
+    from supervisor.state import rotate_chat_log_if_needed
+
+    _append(tmp_path, _row(KEY, "old archived row"))
+    rotate_chat_log_if_needed(tmp_path, max_bytes=1)
+    assert list((tmp_path / "archive").glob("chat_*.jsonl"))
+    live = _append(tmp_path, _row(KEY, "before this park"))
+    cursor = pc._chat_cursor(tmp_path)
+    _append(tmp_path, _row(OTHER, "another conversation"), _row(KEY, "after this park"))
+    hashed, signature = [], utils.jsonl_generation_signature
+
+    def observed(path):
+        hashed.append(path)
+        return signature(path)
+
+    monkeypatch.setattr(utils, "jsonl_generation_signature", observed)
+    rows, gaps = pc._conversation_rows_since(tmp_path, cursor, KEY)
+    assert [row["text"] for row in rows] == ["after this park"] and gaps == []
+    assert hashed == [live]
+
+
 def test_frozen_actor_can_read_past_scan_budget_without_chat_history(tmp_path, monkeypatch):
     from ouroboros.jsonl_tail import JsonlChainSnapshot
 

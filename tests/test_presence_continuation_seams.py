@@ -216,6 +216,44 @@ def test_the_note_never_names_a_reader_the_turn_does_not_hold(tmp_path):
 
 # --- finding 1: the projection a successor reads is durable, and a lost pointer is rebuilt ---------
 
+def test_later_park_retains_child_without_rewriting_initial_or_crossing_source_identity(tmp_path):
+    from dataclasses import replace
+    from ouroboros.task_results import load_task_result
+    from tests.test_presence_continuation import event as turn_event
+
+    binding = pc.ReviewWaitBinding(None, tmp_path, "author", "source-identity", turn_event())
+    write_task_result(tmp_path, "author", "running", metadata={"presence_event_identity": binding.identity})
+    first = pc._persist(binding, {}, "", "panel-1", "first-park")
+    second = pc._persist(binding, {}, "work-late", "panel-2", "second-park")
+    assert second["initial"] == first["initial"] and first["initial"]["work_ref"] == ""
+    assert second["child_work_ref"] == "work-late"
+    # A later empty observation or host terminal must not withdraw admitted independent work.
+    third = pc._persist(binding, {}, "", "panel-3", "third-park")
+    assert third["child_work_ref"] == "work-late" and third["initial"] == first["initial"]
+    with pytest.raises(ValueError, match="this event's RUNNING row"):
+        pc._persist(replace(binding, identity="another-source"), {}, "unrelated-work", "panel-x", "bad-park")
+    assert load_task_result(tmp_path, "author")["presence_continuation"] == third
+
+
+def test_later_child_must_read_back_before_the_park_can_publish(tmp_path, monkeypatch):
+    from ouroboros import task_results
+    from tests.test_presence_continuation import event as turn_event
+
+    binding = pc.ReviewWaitBinding(None, tmp_path, "author", "source-identity", turn_event())
+    write_task_result(tmp_path, "author", "running", metadata={"presence_event_identity": binding.identity})
+    pc._persist(binding, {}, "", "panel-1", "first-park")
+    load = task_results.load_task_result
+
+    def missing_child(*args, **kwargs):
+        stored = load(*args, **kwargs)
+        stored["presence_continuation"].pop("child_work_ref", None)
+        return stored
+
+    monkeypatch.setattr(task_results, "load_task_result", missing_child)
+    with pytest.raises(ValueError, match="did not read back"):
+        pc._persist(binding, {}, "work-late", "panel-2", "second-park")
+
+
 @pytest.mark.parametrize("failure", ["raises", "lost"])
 def test_a_yielding_authors_projection_write_is_strict(tmp_path, monkeypatch, failure):
     def broken(path, value):
