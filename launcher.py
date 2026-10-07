@@ -47,10 +47,9 @@ from ouroboros.config import (
 from ouroboros.launcher_bootstrap import (
     BootstrapContext,
     bootstrap_repo as _bootstrap_repo,
-    check_git as _check_git,
+    check_git as _check_git, launcher_sources_changed, remember_loaded_checkout,
     install_deps as _install_deps_impl,
-    embedded_python_env,
-    update_external_host,
+    embedded_python_env, update_external_host,
     parse_launch_options,
     automatic_launch_allowed,
     sync_existing_repo_from_bundle as _sync_existing_repo_from_bundle_impl,
@@ -746,6 +745,7 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
         _external_host_result = update_external_host(_external_host_update, EMBEDDED_PYTHON, log, _shutdown_event)
         if _shutdown_event.is_set():
             break  # Native preparation has reaped its owned processes before returning.
+        remember_loaded_checkout(REPO_DIR)  # the commit this launcher's own modules came from
         proc = start_agent(port)
         if _shutdown_event.is_set():
             stop_agent()
@@ -826,7 +826,7 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
                         "import them — see the pip output above for the cause.",
                         MAX_CRASH_RESTARTS, CRASH_WINDOW_SEC,
                     )
-            if _external_seed_bundle is not None:
+            if _external_seed_bundle is not None or launcher_sources_changed(REPO_DIR):
                 release_pid_lock()
                 os.execv(EMBEDDED_PYTHON, [EMBEDDED_PYTHON, str(REPO_DIR / "launcher.py"), *_launch_argv])
             # No port sweep here: _pre_generation_cleanup owns it next iteration.

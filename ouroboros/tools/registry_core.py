@@ -1177,10 +1177,17 @@ class ToolRegistry:
             public_arg_error = tool_resolution._prepare_public_builtin_args(entry, args)
             if public_arg_error:
                 return public_arg_error
+            # Normalize the public target first. Candidate binding must observe the
+            # same canonical path/root that the guard and handler will consume.
             path_normalization = tool_resolution._normalize_dispatch_path_args_result(self._ctx, name, args)
             _route_note = path_normalization.text
             if path_normalization.required_root == "active_workspace":
                 return ToolResult(status="blocked", code="ROOT_REQUIRED_ACTIVE_WORKSPACE", text=_route_note, meta={"required_root": "active_workspace"})
+            from ouroboros import body_candidate
+
+            if (candidate_refusal := body_candidate.authoring_seam(self._ctx, name, args)) is not None:
+                return ToolResult(status="blocked", code=candidate_refusal.code,
+                                  text=f"⚠️ {candidate_refusal.code}: {candidate_refusal.text}")
         selected_skill = bool(task_constraint and task_constraint.has_selected_skill)
         workspace_mode = bool(getattr(self._ctx, "is_workspace_mode", lambda: False)())
         effective_constraint = task_constraint

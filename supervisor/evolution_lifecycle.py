@@ -986,6 +986,10 @@ def _cleanup_worktree_after_cycle(tx: Dict[str, Any], task_id: str) -> None:
     if not base_head:
         tx["cleanup_status"] = "skipped_no_base"
         return
+    from ouroboros import body_adoption, body_candidate
+    if body_candidate.find(str(task_id)) is not None:  # its work is in the retained candidate;
+        tx["cleanup_status"] = "candidate_retained"    # serving dirt belongs to someone else
+        return body_adoption.abandon(_evolution_campaign_path().parents[1], "evolution_cycle_ended")
     update_lock_fh = None
     release_update_lock = None
     try:
@@ -1010,9 +1014,7 @@ def _cleanup_worktree_after_cycle(tx: Dict[str, Any], task_id: str) -> None:
         if os.environ.get("OUROBOROS_ALLOW_LIVE_REPO_TESTS") != "1":
             import sys as _sys
             try:
-                live_repo = git_ops.REPO_DIR.resolve(strict=False) == (
-                    pathlib.Path.home() / "Ouroboros" / "repo"
-                ).resolve(strict=False)
+                live_repo = git_ops.REPO_DIR.resolve(strict=False) == (pathlib.Path.home() / "Ouroboros" / "repo").resolve(strict=False)
             except OSError:
                 live_repo = False
             if live_repo and ("PYTEST_CURRENT_TEST" in os.environ or "pytest" in _sys.modules):
@@ -1579,8 +1581,10 @@ def request_evolution_restart(drive_root: pathlib.Path, tx: Dict[str, Any], log:
             drive_root, expected_sha=commit_sha, expected_branch=str(tx.get("base_branch") or ""),
             reason=restart_reason, evolution_claim=claim,
         )
-        auto_restart = str(os.environ.get("OUROBOROS_EVOLUTION_AUTO_RESTART", "true") or "true").lower()
-        if auto_restart in {"0", "false", "no", "off"}:
+        from ouroboros import body_adoption
+        if not body_adoption.authorize_for_task(drive_root, claim["task_id"], commit_sha, restart_reason):
+            return  # a candidate commit with no authorized adoption cannot be restarted into
+        if str(os.environ.get("OUROBOROS_EVOLUTION_AUTO_RESTART", "true") or "true").lower() in {"0", "false", "no", "off"}:
             if log is not None:
                 log.info("Automatic evolution restart is off; the restart-verify marker for %s awaits "
                          "a manual restart", commit_sha[:12])

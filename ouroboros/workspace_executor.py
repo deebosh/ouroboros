@@ -983,6 +983,7 @@ def start_service(
         log_path = pathlib.Path(getattr(ctx, "drive_root")) / "services" / record.task_id / f"{name}.executor.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_fh = log_path.open("ab")
+        from ouroboros import body_candidate
         from ouroboros.process_custody import spawn_supervised
 
         def publish_process(proc):
@@ -1000,7 +1001,8 @@ def start_service(
                 owner_task_id=record.task_id, on_spawn=publish_process, cwd=str(host_cwd),
                 stdout=log_fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                 # Host interpreter overlay applies only to the local executor.
-                env=overlay_env(overlay_env(_executor_service_env(), env_overlay), env),
+                env=overlay_env(overlay_env(  # a service inside the bound body candidate runs isolated
+                    body_candidate.process_environment(ctx, host_cwd) or _executor_service_env(), env_overlay), env),
             )
         finally:
             log_fh.close()
@@ -1070,6 +1072,26 @@ def service_status(ctx: Any, name: str) -> dict[str, Any] | None:
     if record is None:
         return None
     return _service_payload(record)
+
+
+def service_execution_facts(service_id: str) -> dict[str, Any] | None:
+    """One executor service's start identity and execution state, without readiness work.
+
+    The local backend's Popen gives the real return code. Docker gives state only:
+    its ``kill -0`` probe's own exit status is not the service's, so ``returncode``
+    stays ``None`` and an inconclusive probe reads ``unknown``. ``None`` = no record.
+    """
+    with _STATE_LOCK:
+        record = _SERVICES.get(service_id)
+    if record is None:
+        return None
+    if record.executor.kind == "local" and record.local_proc is not None:
+        rc = record.local_proc.poll()
+        state = "running" if rc is None else "exited"
+    else:
+        rc, state = None, _safe_service_state(record)
+    return {"service_id": service_id, "started_at": record.started_at, "backend_pid": record.backend_pid,
+            "state": state, "returncode": rc}
 
 
 def service_logs(ctx: Any, name: str, tail: int) -> dict[str, Any] | None:

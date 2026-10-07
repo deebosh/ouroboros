@@ -654,6 +654,11 @@ def _child_workspace(ctx, metadata, params):
     """Bind the parent's observed source before selecting the child's start."""
     workspace_root = str(getattr(ctx, "workspace_root", "") or metadata.get("workspace_root") or "").strip()
     workspace_mode = str(getattr(ctx, "workspace_mode", "") or metadata.get("workspace_mode") or "").strip()
+    from ouroboros import body_candidate
+    if not workspace_root and body_candidate.is_bound(ctx):
+        # The parent authors a body candidate: its child reads and copies THAT, and an
+        # acting child's patch therefore returns into it, never into the serving tree.
+        workspace_root, workspace_mode = str(body_candidate.descriptor(ctx)["path"]), "self_worktree"
     from ouroboros.tool_access_reads import admit_child_start_folder, capture_parent_workspace
     parent_workspace = capture_parent_workspace(ctx)
     workspace_root, workspace_mode = _inherited_workspace_from_active_repo(ctx, workspace_root, workspace_mode)

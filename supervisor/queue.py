@@ -459,6 +459,7 @@ def ensure_control_task_result(task_id: str) -> Dict[str, Any]:
             "origin_message_text", "origin_message_ref", "objective", "title", "suggested_name",
             "original_task_id", "timeout_retry_from", "deadline_at", "root_cost_ceiling_usd",
             "billing_group", "task_constraint", "objective_author", "owner_corpus", "task_group_id", "task_group",
+            "reasoning_effort",
         ) if key in task}
         fields["root_task_id"] = resolve_task_lineage(task_id, **{
             key: task.get(key) for key in ("metadata", "root_task_id", "parent_task_id", "delegation_role",

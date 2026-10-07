@@ -521,10 +521,10 @@ def _user_files_binding_reaches_repo(ctx: Any, binding: Any) -> bool:
     """
     from ouroboros.tool_access import path_is_relative_to
 
-    repo = system_repo_dir_for(ctx)
+    repos = {system_repo_dir_for(ctx), pathlib.Path(getattr(ctx, "serving_repo_dir", None) or system_repo_dir_for(ctx))}
     return any(
         item.root == "user_files" and item.target_path is not None
-        and path_is_relative_to(pathlib.Path(item.target_path), repo)
+        and any(path_is_relative_to(pathlib.Path(item.target_path), repo) for repo in repos)
         for item in _binding_items(binding)
     )
 

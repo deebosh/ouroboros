@@ -95,31 +95,38 @@ def owned_processes_path(root: Any) -> pathlib.Path:
     return pathlib.Path(root) / "state" / OWNED_PROCESSES_FILENAME
 
 
-def _pending_files(root: Any) -> Dict[pathlib.Path, Dict[str, Any]]:
+def _pending_files(root: Any, *, strict: bool = False) -> Dict[pathlib.Path, Dict[str, Any]]:
     """The contended registrations not folded yet (normally none): file -> entry."""
     found: Dict[pathlib.Path, Dict[str, Any]] = {}
     try:
         paths = sorted((pathlib.Path(root) / "state" / PENDING_DIRNAME).glob("*.json"))
     except OSError:
+        if strict:
+            raise
         return found
     for path in paths:
         try:
             entry = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
+            if strict:
+                raise
             continue  # a torn write never names a process; its registrant reported the failure
         if isinstance(entry, dict) and entry.get("record_id"):
             found[path] = entry
+        elif strict:
+            raise ValueError(f"invalid pending owned-process record: {path}")
     return found
 
 
-def _read_document(root: Any, *, pending: Optional[Dict[pathlib.Path, Dict[str, Any]]] = None) -> Dict[str, Any]:
+def _read_document(root: Any, *, pending: Optional[Dict[pathlib.Path, Dict[str, Any]]] = None,
+                   strict: bool = False) -> Dict[str, Any]:
     """The stored set plus the contended registrations not folded yet. Absent or unreadable
     reads as an empty set without the import mark, so the next start indexes the records on
     disk again (an unreadable file is logged)."""
     from ouroboros.utils import read_text_across_replace
 
     if pending is None:  # before the document: a concurrent fold-and-delete cannot hide an entry
-        pending = _pending_files(root)
+        pending = _pending_files(root, strict=strict)
     path = owned_processes_path(root)
     try:
         document = json.loads(read_text_across_replace(path))
@@ -127,17 +134,21 @@ def _read_document(root: Any, *, pending: Optional[Dict[pathlib.Path, Dict[str, 
         document = None
     except (OSError, ValueError):
         log.critical("Owned-process set %s is unreadable; it names nothing until rewritten", path, exc_info=True)
+        if strict:
+            raise
         document = None
     if not isinstance(document, dict) or not isinstance(document.get("records"), dict):
+        if strict and document is not None:
+            raise ValueError(f"invalid owned-process set: {path}")
         document = {"schema_version": _SCHEMA_VERSION, "records": {}}
     for entry in pending.values():
         _put(document, entry)
     return document
 
 
-def owned_records(drive_root: Any) -> List[Dict[str, Any]]:
-    """Every record the set names for ``drive_root``'s installation (a read, no lock)."""
-    return [dict(entry) for entry in _read_document(installation_root(drive_root))["records"].values()]
+def owned_records(drive_root: Any, *, strict: bool = False) -> List[Dict[str, Any]]:
+    """Every record the set names; strict consumers distinguish unreadable from empty."""
+    return [dict(entry) for entry in _read_document(installation_root(drive_root), strict=strict)["records"].values()]
 
 
 def executor_record_paths(drive_root: Any, kind: str) -> List[pathlib.Path]:
@@ -216,6 +227,7 @@ def _executor_entry(path: Any, record: Dict[str, Any]) -> Dict[str, Any]:
         "host_pid": _int(record.get("host_pid")),
         "birth": str(record.get("created_at") or ""),
         "task_id": str(record.get("task_id") or ""),
+        "root_task_id": str(record.get("root_task_id") or ""),
         "drive_root": str(path.parents[2]),
         "record_path": str(path),
         "stop_requested_at": None,

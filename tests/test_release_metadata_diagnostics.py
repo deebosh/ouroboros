@@ -268,17 +268,56 @@ def test_git_discovery_failure_is_never_clean(candidate, monkeypatch, source):
 
 def test_scope_preserves_contributor_doc_only_and_empty_paths(candidate):
     repo = candidate.repo_dir
-    assert _diagnose(candidate, "index")["status"] == "not_applicable"
+    empty = _diagnose(candidate, "index")
+    assert empty["status"] == "not_applicable" and empty["form"] == "none"
     _write(repo, {"change.py": "value = 2\n", "docs/notes.md": "notes\n"})
     _git(repo, "add", ".")
-    # Staged contribution code without VERSION still passes; standalone code
-    # still requests VERSION. A docs-only selection keeps the existing carve.
-    assert _diagnose(candidate, "index")["status"] == "not_applicable"
+    # Code with VERSION untouched is the version-neutral form. P9 admits it for a contribution
+    # (the prepared index lane) and for a body candidate commit; a serving-checkout commit still
+    # needs the numbered release. A docs-only selection keeps the existing carve.
+    staged = _diagnose(candidate, "index")
+    assert staged["status"] == "not_applicable" and staged["form"] == "neutral"
     report = _diagnose(candidate, "worktree", paths=["change.py"])
+    assert report["status"] == "blocked" and report["form"] == "neutral"
     assert len(report["findings"]) == 1 and "VERSION is not in scope" in report["findings"][0]
     assert "no table row" not in str(report)
-    assert _diagnose(candidate, "worktree", paths=["docs/notes.md"])["status"] == "not_applicable"
+    bound = admission.release_metadata_diagnostics(repo, ["change.py"], source="worktree", neutral_allowed=True)
+    assert bound["status"] == "not_applicable" and bound["form"] == "neutral" and bound["findings"] == []
+    docs = _diagnose(candidate, "worktree", paths=["docs/notes.md"])
+    assert docs["status"] == "not_applicable" and docs["form"] == "doc_only"
     assert _diagnose(candidate, "index", paths=["VERSION"])["status"] == "not_applicable"
+
+
+@pytest.mark.parametrize("source", ["worktree", "index"])
+def test_neutral_form_keeps_every_carrier_span_byte_identical_to_head(candidate, source):
+    """A partial carrier move without VERSION is neither form; a numbered release syncs all."""
+    repo = candidate.repo_dir
+
+    def _diagnose_candidate_commit():
+        return admission.release_metadata_diagnostics(repo, source=source, neutral_allowed=True)
+
+    _write(repo, {"change.py": "value = 2\n",
+                  "pyproject.toml": '[project]\nversion = "1.2.4"\n'})  # one carrier moved, VERSION untouched
+    _git(repo, "add", ".")
+    report = _diagnose_candidate_commit()
+    assert report["form"] == "neutral" and report["status"] == "blocked"
+    assert len(report["findings"]) == 1 and "pyproject.toml" in report["findings"][0]
+    assert "byte-identical to HEAD" in report["findings"][0]
+    # The same carrier file touched WITHOUT moving its span (another key) stays neutral and clean.
+    _write(repo, {"pyproject.toml": '[project]\nversion = "1.2.3"\nname = "ouroboros"\n'})
+    _git(repo, "add", ".")
+    report = _diagnose_candidate_commit()
+    assert report["form"] == "neutral" and report["status"] == "not_applicable" and report["findings"] == []
+    # Touching VERSION selects the numbered form: every carrier must follow in the same diff.
+    _write(repo, {"VERSION": "1.2.4\n"})
+    _git(repo, "add", ".")
+    report = _diagnose_candidate_commit()
+    assert report["form"] == "numbered" and report["status"] == "blocked"
+    assert any("pyproject" in finding or "1.2.4" in finding for finding in report["findings"])
+    _write(repo, _release("1.2.4"))
+    _git(repo, "add", ".")
+    report = _diagnose_candidate_commit()
+    assert report["form"] == "numbered" and report["status"] == "clean" and report["findings"] == []
 
 
 @pytest.mark.parametrize("source", ["", "other"])

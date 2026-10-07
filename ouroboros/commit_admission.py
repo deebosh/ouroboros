@@ -114,12 +114,23 @@ def read_release_file(repo_dir, path: str, *, source: str) -> str | None:
 
 def release_metadata_diagnostics(
     repo_dir, paths: list[str] | None = None, *, source: str = "worktree", read_text=None,
+    neutral_allowed: Optional[bool] = None,
 ) -> dict:
     """Read-only release report; an index reader may supply already-classified active paths.
 
     Source acquisition failures are unavailable evidence, independent of candidate
     findings. Optional carriers absent from older trees remain optional; VERSION
     and README are required when release checks apply. No review state is read.
+
+    Two explicit forms, told apart by the diff itself (``report["form"]``): a
+    ``numbered`` release touches VERSION and must sync every carrier in the same
+    diff; a ``neutral`` contribution (code with VERSION untouched) must leave every
+    version carrier span byte-identical to HEAD, and takes no tag. P9 admits the
+    neutral form for a contribution to the official line (the prepared index lane)
+    and for a commit prepared in a body candidate (``neutral_allowed``, passed by
+    the caller that knows the bound candidate); a serving-checkout commit remains a
+    numbered release. A partial carrier change is neither form and is reported as
+    such. Doc-only changes need no release metadata (``doc_only``).
     """
     from ouroboros.tools.release_sync import CARRIER_SPAN_PATHS, release_metadata_findings
 
@@ -143,18 +154,9 @@ def release_metadata_diagnostics(
         unavailable.append(f"Changed {source} paths could not be read ({type(exc).__name__}).")
 
     version_in_scope = "VERSION" in touched
-    if touched and not version_in_scope and source == "worktree":
-        # Same doc-only carve as the commit gate. Code-bearing standalone
-        # advisory still requires VERSION; the version-neutral index lane does not.
-        from ouroboros.tools.git_review_cycle import _diff_is_doc_only
-        if not _diff_is_doc_only(sorted(touched)):
-            findings.append(
-                "Changed files are present but VERSION is not in scope. "
-                "BIBLE.md P9 requires every commit to bump VERSION and sync release artifacts. "
-                "Stage or include VERSION plus its release carriers before advisory review. "
-                f"Currently changed/in-scope: {', '.join(sorted(touched))}"
-            )
-    if version_in_scope or findings or unavailable:
+    from ouroboros.tools.git_review_cycle import _diff_is_doc_only
+    if version_in_scope:
+        report["form"] = "numbered"
         if source == "index" and version_in_scope and "README.md" not in touched:
             findings.append("Missing from staged: README.md (badge + changelog). Stage all related files together.")
         texts = {}
@@ -168,13 +170,68 @@ def release_metadata_diagnostics(
             except Exception as exc:
                 unavailable.append(f"{source}:{path} could not be read ({type(exc).__name__}).")
         findings.extend(release_metadata_findings(texts))
+    elif touched and not _diff_is_doc_only(sorted(touched)):
+        report["form"] = "neutral"
+        if neutral_allowed if neutral_allowed is not None else source == "index":
+            findings.extend(_neutral_carrier_findings(repo_dir, touched & set(CARRIER_SPAN_PATHS), source,
+                                                      read_text, unavailable))
+        else:
+            findings.append(
+                "Changed files are present but VERSION is not in scope. "
+                "BIBLE.md P9 requires every commit on the serving checkout to bump VERSION and sync release "
+                "artifacts; the version-neutral form belongs to a contribution or a body candidate commit. "
+                f"Currently changed/in-scope: {', '.join(sorted(touched))}")
+        if not findings:
+            report["status"] = "not_applicable"
     else:
+        report["form"] = "doc_only" if touched else "none"
         report["status"] = "not_applicable"
     if unavailable:
         report["status"] = "unavailable"
     elif findings:
         report["status"] = "blocked"
     return report
+
+
+def _neutral_carrier_findings(repo_dir, carriers: set, source: str, read_text, unavailable: list) -> list:
+    """Carrier spans a version-neutral change moved away from HEAD's, as findings."""
+    from ouroboros.tools.release_sync import carrier_spans_for, locate_carrier_span
+
+    findings = []
+    for path in sorted(carriers):
+        try:
+            after = read_text(path) if read_text else read_release_file(repo_dir, path, source=source)
+            shown = subprocess.run(["git", "show", f"HEAD:{path}"], cwd=str(repo_dir), capture_output=True, timeout=10)
+            before = (shown.stdout.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+                      if shown.returncode == 0 else None)
+        except Exception as exc:
+            unavailable.append(f"{source}:{path} could not be compared with HEAD ({type(exc).__name__}).")
+            continue
+        spans = carrier_spans_for(path)
+        if after is None or before is None:
+            if before is not None and after is None:
+                moved = [span.carrier_id for span in spans
+                         if locate_carrier_span(before, span)[0] == "ok"]
+                if moved:
+                    findings.append(
+                        f"Version-neutral change removes carrier file {path} with declared carrier(s) "
+                        f"{', '.join(moved)} while VERSION is unchanged. Choose a numbered release or preserve the carriers.")
+            continue  # a removed/new carrier file is handled above; other cases are release checks' concern
+        moved = []
+        for span in spans:
+            (status_after, loc_after), (status_before, loc_before) = (locate_carrier_span(after, span),
+                                                                       locate_carrier_span(before, span))
+            if status_before == "ok" and status_after != "ok":
+                moved.append(span.carrier_id)
+            elif status_after != status_before or (
+                    loc_after and loc_before and after[slice(*loc_after)] != before[slice(*loc_before)]):
+                moved.append(span.carrier_id)
+        if moved:
+            findings.append(
+                f"Version-neutral change alters the version carrier(s) {', '.join(moved)} in {path} while "
+                "VERSION is unchanged. A neutral contribution keeps every carrier span byte-identical to HEAD; "
+                "a numbered release bumps VERSION and syncs all carriers in the same diff. Choose one form.")
+    return findings
 
 
 def format_release_metadata_preflight(report: dict) -> Optional[str]:
@@ -204,10 +261,11 @@ def preflight_evidence_unavailable(message: Optional[str]) -> bool:
 
 def release_metadata_preflight(
     repo_dir: pathlib.Path, commit_message: str, paths: list[str] | None,
-    *, source: str = "worktree",
+    *, source: str = "worktree", neutral_allowed: Optional[bool] = None,
 ) -> Optional[str]:
     """Cheap deterministic P9/release checks before any paid review spend."""
-    return format_release_metadata_preflight(release_metadata_diagnostics(repo_dir, paths, source=source))
+    return format_release_metadata_preflight(release_metadata_diagnostics(
+        repo_dir, paths, source=source, neutral_allowed=neutral_allowed))
 
 
 def syntax_preflight_staged_py_files(

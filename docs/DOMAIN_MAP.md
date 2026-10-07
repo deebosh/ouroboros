@@ -14,10 +14,10 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D04 | Tool execution: registry, access & typed results | 22 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 29 | 0 |
 | D06 | Review stack | 72 | 0 |
-| D07 | Delegation, subagents & Claudexor | 60 | 0 |
+| D07 | Delegation, subagents & Claudexor | 61 | 0 |
 | D08 | Supervisor: queue, workers, events & runtime control | 57 | 0 |
 | D09 | Cancellation, owner control & process custody | 15 | 0 |
-| D10 | Git, update & release machinery | 29 | 0 |
+| D10 | Git, update & release machinery | 31 | 0 |
 | D11 | Gateway, server & Web UI | 70 | 0 |
 | D12 | Settings & configuration | 18 | 0 |
 | D13 | Safety, guards & runtime mode | 9 | 0 |
@@ -28,7 +28,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D18 | Launcher, packaging, platform & shared substrate | 20 | 0 |
 | D19 | Frozen contracts (ABI) | 11 | 0 |
 | D20 | Presence | 10 | 0 |
-| **total** | | **650** | **0** |
+| **total** | | **653** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -65,7 +65,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 
 ## Hidden coupling (classified out of the strict graph)
 
-- lazy-only cross-domain pairs: **114**
+- lazy-only cross-domain pairs: **115**
   - D01->D08
   - D01->D10
   - D01->D11
@@ -116,6 +116,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D09->D15
   - D09->D17
   - D10->D01
+  - D10->D07
   - D10->D09
   - D10->D11
   - D10->D14
@@ -431,6 +432,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 
 ### D07 — Delegation, subagents & Claudexor
 
+- `ouroboros/body_candidate.py`
 - `ouroboros/claudexor_daemon.py`
 - `ouroboros/claudexor_runtime.py`
 - `ouroboros/claudexor_startup_failure.py`
@@ -572,6 +574,8 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 
 ### D10 — Git, update & release machinery
 
+- `ouroboros/body_adoption.py`
+- `ouroboros/body_switch.py`
 - `ouroboros/merge_receipts.py`
 - `ouroboros/repo_remotes.py`
 - `ouroboros/size_ratchet_manifest.py`

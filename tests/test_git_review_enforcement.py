@@ -531,9 +531,16 @@ class TestReviewEnforcementModes:
         assert "PREFLIGHT_BLOCKED" in result
         assert "ARCHITECTURE.md" in result
 
-    def test_rename_into_ouroboros_with_architecture_passes(self):
-        """Renaming a .py file into ouroboros/ + staging ARCHITECTURE.md passes check 4."""
+    def test_rename_into_ouroboros_with_architecture_passes(self, monkeypatch):
+        """Renaming a .py file into ouroboros/ + staging ARCHITECTURE.md passes check 4.
+
+        ARCHITECTURE.md is a version carrier: the version-neutral index lane reads
+        the staged carrier to compare its span with HEAD, so the lexical case
+        supplies an index of its own (an unreadable one is honest unavailable evidence).
+        """
         review = _get_review_module()
+        monkeypatch.setattr(review, "_git_show_staged",
+                            lambda repo_dir, path: "# Ouroboros v3.24.0\n" if path == "docs/ARCHITECTURE.md" else None)
         result = review._preflight_check(
             "move module into ouroboros",
             "D  docs/old_module.py\nA  ouroboros/new_module.py\nM  tests/test_new.py\nM  docs/ARCHITECTURE.md",
@@ -599,9 +606,11 @@ class TestReviewEnforcementModes:
         assert "PREFLIGHT_BLOCKED" in result
         assert "ARCHITECTURE.md" in result
 
-    def test_copied_module_with_architecture_passes(self):
+    def test_copied_module_with_architecture_passes(self, monkeypatch):
         """Copied .py file in ouroboros/ + ARCHITECTURE.md staged → passes."""
         review = _get_review_module()
+        monkeypatch.setattr(review, "_git_show_staged",  # the staged carrier the neutral lane compares
+                            lambda repo_dir, path: "# Ouroboros v3.24.0\n" if path == "docs/ARCHITECTURE.md" else None)
         result = review._preflight_check(
             "add copied module",
             "C  ouroboros/new_copy.py\nM  tests/test_new_copy.py\nM  docs/ARCHITECTURE.md",
