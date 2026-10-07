@@ -7,18 +7,23 @@ row → dispatch, and only THIS process knows what happened to a row's dispatch:
 (its write raised before dispatch, so one retry hands it over) and the row's ``ingress_process``
 stamp (which process accepted it — ``accepted_here``). ``_DISPATCH_ENTERED`` records actual
 call entry separately; acceptance cannot prove it, even in this process. These facts do not
-survive the process, and nothing durable records dispatch. ``supervisor.message_bus`` re-exports
-the public names; its ``DATA_DIR`` and ``log_chat`` are read at call time.
+survive the process, and nothing durable records dispatch (``delivery_facts`` states them).
+Which row an id already names comes from ``_AcceptedIds``, this process's index over the
+retained chat chain. ``supervisor.message_bus`` re-exports the public names; its ``DATA_DIR``
+and ``log_chat`` are read at call time.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
+from pathlib import Path
 from typing import Optional, Tuple
 
 from ouroboros.chat_uploads import attachment_views, same_message, stored_refs
-from ouroboros.utils import utc_now_iso
+from ouroboros.utils import JsonlChainUnreadable, jsonl_chain_handles, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +64,21 @@ def accepted_here(row: dict) -> bool:
     return bool(stamp) and stamp == current_custody_session_id()
 
 
+def delivery_facts(row: dict, chat_id: int) -> dict:
+    """What this process knows of an accepted row's dispatch, as its echo and history row say it.
+
+    ``ingress_undispatched``: its write raised before dispatch (one retry hands it over);
+    ``ingress_dispatched``: dispatch was entered here; ``ingress_pending``: this live process took
+    it and has entered or refused neither yet (an append still returning, an echo sent before its
+    deferred dispatch) — a later echo or read says which. Nothing: a row of an ended process, or
+    from before the stamp, whose dispatch is unknown for good."""
+    if acceptance_undispatched(chat_id, str(row.get("client_message_id") or "")):
+        return {"ingress_undispatched": True}
+    if dispatch_entered(row):
+        return {"ingress_dispatched": True}
+    return {"ingress_pending": True} if accepted_here(row) else {}
+
+
 def _write_marked(key: Tuple[int, str], write) -> dict:
     """A named acceptance's canonical write, under ``_INGRESS_LOCK`` before any dispatch: a raise
     marks the id undispatched (positive proof); a write that lands clears the mark."""
@@ -79,29 +99,211 @@ def _take_undispatched(key: Tuple[int, str]) -> bool:
     return found
 
 
-def accepted_chat_message(drive_root, chat_id: int, client_message_id: str) -> Optional[dict]:
-    """Read a named canonical source across its retained generation chain.
+# --- which accepted row an id already names --------------------------------------------------
+#
+# Every web send and named skill delivery asks this before it may write, so the answer comes from a
+# process-local index over the retained chat chain, never a replay of it (DEVELOPMENT 03 "Projection
+# over replay"; the ``delegate_custody_memo`` fingerprint rules): the first lookup folds the whole
+# chain once — the cold cost each host process pays — and later ones fold only the bytes appended
+# since. The warm check is constant: the live file's identity, size and two short anchors of its
+# folded prefix. A rotation keeps the folded file's identity under its archive name, so its
+# remainder and any newer generation are folded next, in chain order; anything else that breaks the
+# folded prefix (a shorter or rewritten file, a generation gone or moved) folds again from scratch.
+# Nothing is assumed fresh: every complete row of the chain is in the index, a historical id stays
+# there for good, and a chain that cannot be read raises instead of answering "absent". The index
+# keeps where a row lies, not the row: a hit re-reads that one line and checks it names the id.
 
-    Every owner web message asks this once, so a segment that cannot hold the id
-    is skipped unparsed: a plain printable-ASCII id is written verbatim by any JSON
-    encoder, and a segment without those bytes has no row naming it.
+_ANCHOR_BYTES = 512
+
+
+class _Refold(Exception):
+    """The folded prefix is no longer the chain's prefix: fold the chain again from the start."""
+
+
+class _Generation:
+    """One folded chain file: its identity, the complete bytes folded and that prefix's anchors."""
+
+    __slots__ = ("path", "identity", "consumed", "anchor")
+
+    def __init__(self, path: Path, identity: tuple):
+        self.path, self.identity, self.consumed, self.anchor = path, identity, 0, (b"", b"")
+
+
+def _anchor(handle, consumed: int) -> tuple:
+    size = min(consumed, _ANCHOR_BYTES)
+    handle.seek(0)
+    head = handle.read(size)
+    handle.seek(consumed - size)
+    return head, handle.read(size)
+
+
+def _parsed(raw: bytes):
+    try:  # as ``iter_jsonl_objects`` reads a line: undecodable bytes replaced, not dropped
+        return json.loads(raw.decode("utf-8", errors="replace"))
+    except ValueError:
+        return None
+
+
+def _named_key(row) -> Optional[tuple]:
+    """The ``(chat_id, client_message_id)`` an inbound row answers to, compared as the scan did."""
+    if not isinstance(row, dict) or row.get("direction") != "in" or not isinstance(row.get("client_message_id"), str):
+        return None
+    key = (row.get("chat_id"), row["client_message_id"])
+    try:
+        hash(key)
+    except TypeError:
+        return None  # an unhashable chat_id never equals an int one
+    return key
+
+
+class _AcceptedIds:
+    """One chat chain's index: ``(chat_id, client_message_id)`` → where its row lies.
+
+    Its answer is the one a full scan gives: the newest generation holding the id, the first row
+    naming it there. A live file ending in a complete row that lacks only its newline (a crashed
+    writer's) holds it as ``unfinished``, unconsumed, until the next append completes the line.
     """
-    from pathlib import Path
-    from ouroboros.utils import iter_jsonl_objects, jsonl_chain_handles
 
-    plain = all(" " <= char <= "~" and char not in '"\\' for char in client_message_id)
-    needle = client_message_id.encode("ascii") if plain and client_message_id else b""
-    with jsonl_chain_handles(Path(drive_root) / "logs" / "chat.jsonl", strict=True) as handles:
-        for path, handle in reversed(handles):
-            if needle:
-                if needle not in handle.read():
+    def __init__(self, live: Path):
+        self.live, self.lock, self.cold_folds = live, threading.Lock(), 0
+        self._reset()
+
+    def _reset(self) -> None:
+        self.generations: list[_Generation] = []
+        self.where: dict[tuple, tuple[int, int, int]] = {}  # key -> (generation, offset, length)
+        self.unfinished: Optional[tuple] = None  # (key, row) at the live file's unterminated end
+
+    def lookup(self, chat_id: int, client_message_id: str) -> Optional[dict]:
+        key = (chat_id, client_message_id)
+        for _attempt in range(2):
+            try:
+                self._advance()
+                return self._row(key)
+            except _Refold:
+                log.debug("accepted ids of %s fold again", self.live, exc_info=True)
+                self._reset()
+            except BaseException:
+                self._reset()  # unknown is never cached as absent: the next lookup folds again
+                raise
+        raise JsonlChainUnreadable(f"{self.live} kept changing while its accepted ids were folded")
+
+    def _advance(self) -> None:
+        last = self.generations[-1] if self.generations else None
+        if last is not None:
+            try:
+                handle = self.live.open("rb")
+            except FileNotFoundError:
+                handle = None
+            if handle is not None:
+                with handle:
+                    stat = os.fstat(handle.fileno())
+                    if (stat.st_dev, stat.st_ino) == last.identity:
+                        self._fold(len(self.generations) - 1, handle, stat, live=True)  # the warm path
+                        return
+        self._resync()
+
+    def _resync(self) -> None:
+        """Cold, or the live file is a new generation: walk the chain, fold what is new to it."""
+        snapshot: dict = {}
+        with jsonl_chain_handles(self.live, strict=True, start_offset=0, snapshot=snapshot):
+            pass
+        chain, known = snapshot["entries"], len(self.generations)
+        if not known and chain:
+            self.cold_folds += 1
+        if known > len(chain):
+            raise _Refold("a folded generation left the chain")
+        self.unfinished = None
+        for index, (path, stat, was_live) in enumerate(chain):
+            identity = (stat.st_dev, stat.st_ino)
+            if index < known:
+                generation = self.generations[index]
+                if identity != generation.identity:
+                    raise _Refold("the chain's folded prefix changed")
+                generation.path = path  # a rotated live file keeps its identity under its archive name
+                if index < known - 1:
+                    if stat.st_size != generation.consumed:
+                        raise _Refold("an archive changed after it was folded")
                     continue
-                handle.seek(0)
-            for row in iter_jsonl_objects(path, _handle=handle):
-                if (row.get("direction") == "in" and row.get("chat_id") == chat_id
-                        and row.get("client_message_id") == client_message_id):
-                    return row
-    return None
+            else:
+                self.generations.append(_Generation(path, identity))
+            with path.open("rb") as handle:
+                actual = os.fstat(handle.fileno())
+                if (actual.st_dev, actual.st_ino) != identity:
+                    raise _Refold("a generation moved while the chain was walked")
+                self._fold(index, handle, actual, live=was_live and index == len(chain) - 1)
+
+    def _fold(self, index: int, handle, stat, *, live: bool) -> None:
+        generation = self.generations[index]
+        if stat.st_size < generation.consumed or (
+                generation.consumed and _anchor(handle, generation.consumed) != generation.anchor):
+            raise _Refold(f"{generation.path} changed under its folded prefix")
+        if live:
+            self.unfinished = None
+        handle.seek(generation.consumed)
+        position = generation.consumed
+        for raw in handle:
+            # Only a row whose bytes hold the value "in" can be inbound: the rest is not parsed.
+            key = _named_key(row := _parsed(raw)) if b'"in"' in raw else None
+            if live and not raw.endswith(b"\n"):
+                self.unfinished = (key, row) if key is not None else None
+                break  # unconsumed: the next boundary-ensuring append completes this line
+            if key is not None:
+                prior = self.where.get(key)
+                if prior is None or prior[0] < index:
+                    self.where[key] = (index, position, len(raw))
+            position += len(raw)
+        if position != generation.consumed:
+            generation.consumed, generation.anchor = position, _anchor(handle, position)
+
+    def _row(self, key: tuple) -> Optional[dict]:
+        located = self.where.get(key)
+        newest = len(self.generations) - 1
+        if self.unfinished is not None and self.unfinished[0] == key and (located is None or located[0] < newest):
+            return dict(self.unfinished[1])
+        if located is None:
+            return None
+        index, offset, length = located
+        generation = self.generations[index]
+        with generation.path.open("rb") as handle:
+            stat = os.fstat(handle.fileno())
+            if (stat.st_dev, stat.st_ino) != generation.identity:
+                raise _Refold("a located row's generation moved")
+            handle.seek(offset)
+            row = _parsed(handle.read(length))
+        if _named_key(row) != key:
+            raise _Refold("a located row no longer names its id")
+        return row
+
+
+_ACCEPTED_IDS: dict[str, _AcceptedIds] = {}
+_ACCEPTED_IDS_LOCK = threading.Lock()
+
+
+def _accepted_ids(drive_root) -> _AcceptedIds:
+    live = Path(drive_root) / "logs" / "chat.jsonl"
+    key = os.path.abspath(live)
+    with _ACCEPTED_IDS_LOCK:
+        index = _ACCEPTED_IDS.get(key)
+        if index is None:
+            index = _ACCEPTED_IDS[key] = _AcceptedIds(live)
+        return index
+
+
+def reset_accepted_ids() -> None:
+    """Forget every index (tests): the next lookup folds its chain again."""
+    with _ACCEPTED_IDS_LOCK:
+        _ACCEPTED_IDS.clear()
+
+
+def accepted_chat_message(drive_root, chat_id: int, client_message_id: str) -> Optional[dict]:
+    """The named inbound row ``(chat_id, client_message_id)`` already names in the retained chat chain.
+
+    Answered by this process's index (``_AcceptedIds``); a chain that cannot be read raises
+    ``OSError`` (``JsonlChainUnreadable``), never None.
+    """
+    index = _accepted_ids(drive_root)
+    with index.lock:
+        return index.lookup(chat_id, client_message_id)
 
 
 def _accepted_web_message(chat_id: int, client_message_id: str) -> Optional[dict]:

@@ -284,6 +284,8 @@
  * @property {string} ts
  * @property {boolean=} ingress_accepted Canonical inbound row saved; not proof of task start or model delivery.
  * @property {boolean=} ingress_dispatched This live host process accepted the row and entered its dispatch; absent after a host restart (unknown).
+ * @property {boolean=} ingress_pending This live host process accepted the row and has entered or refused neither yet: a later echo or history read says which.
+ * @property {boolean=} ingress_undispatched History only: this live host process proved the row's write raised before dispatch; one Send again hands it over.
  * @property {Array<NonNullable<UploadResponse['view']>>=} attachments The owner message's ChatAttachmentView list: the same views history replays.
  * @property {boolean=} text_placeholder The owner row's text is the host's placeholder (no words were sent): no caption is shown.
  * @property {boolean=} markdown
@@ -296,9 +298,7 @@
  * @property {string=} suggested_name
  * @property {Object=} model_execution
  * @property {string=} task_phase "finalizing" on a root's early final answer: post-task synthesis still runs, so the frame is not the task's terminal conclusion.
- * @property {string=} task_terminal_status
- *   Typed terminal fact on a frame that IS the turn's conclusion (stamped on
- *   direct/ephemeral finals and the direct error branch).
+ * @property {string=} task_terminal_status Typed terminal fact on a frame that IS the turn's conclusion (stamped on direct/ephemeral finals and the direct error branch).
  * @property {string=} task_incident
  * @property {string=} cancel_physical_task_id
  *   A cancellation fault names the physical task it could not settle when that

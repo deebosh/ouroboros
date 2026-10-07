@@ -181,7 +181,8 @@ def _user_annotation(
 def _origin_fallback_rows(data_dir, thread_id: int, human_tail: list) -> list:
     """Binding-backed context absent from this physical page, with disclosed cap.
 
-    The immutable source ref links it to canonical adoption, never ts alone.
+    The immutable source ref links it to canonical adoption, never ts alone; a
+    copy with recorded attachments renders as its row does (views, source, mark).
     """
     from ouroboros.project_dialogue import project_origin_rows
 
@@ -207,13 +208,15 @@ def _origin_fallback_rows(data_dir, thread_id: int, human_tail: list) -> list:
             "is_progress": False,
             "system_type": "",
             "markdown": False,
-            "source": "",
+            "source": str(row.get("channel") or ""),
             "sender_label": "",
             "sender_session_id": "",
             "client_message_id": cmid,
             "task_id": "",
             "origin_projected": True,
             "origin_id": row["origin_id"],
+            **({"attachments": attachment_views(row["attachments"], data_dir)} if row.get("attachments") else {}),
+            **({"text_placeholder": True} if row.get("text_placeholder") is True else {}),
         })
         if len(synthesized) >= _ORIGIN_SYNTH_CAP:
             omitted = sum(
@@ -695,7 +698,7 @@ def _collect_chat_rows(
     replay_evidence: Optional[list] = None,
 ) -> tuple[list, int] | tuple[list, int, set[str]]:
     """Project selected chat entries (or the legacy recent read), with quota/gaps."""
-    from supervisor.message_ingress import dispatch_entered, acceptance_undispatched
+    from supervisor.message_ingress import delivery_facts
 
     # Quiz lifecycle merge (#Q-2b): the chat row froze the card at ask time
     # ("open"); the durable truth lives in the owner_quiz task-result
@@ -810,10 +813,8 @@ def _collect_chat_rows(
             }
             if role == "user" and entry.get("ingress_accepted") is True:
                 rec["ingress_accepted"] = True
-                if acceptance_undispatched(entry_chat, rec["client_message_id"]):  # saved, proven never dispatched
-                    rec["ingress_undispatched"] = True
-                elif dispatch_entered(entry):  # positive entry evidence; acceptance alone proves none
-                    rec["ingress_dispatched"] = True
+                # Proven undispatched, entered, or this live process's and pending; an ended process's: nothing.
+                rec.update(delivery_facts(entry, entry_chat))
             if role == "user" and entry.get("attachments"):  # the same views the live echo carried
                 rec["attachments"] = attachment_views(entry["attachments"], chat_path.parent.parent)
             if role == "user" and entry.get("text_placeholder") is True:  # host-written text, not the owner's

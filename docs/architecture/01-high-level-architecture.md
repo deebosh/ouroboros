@@ -40,7 +40,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
   ├── supervisor/              ← Background thread inside server.py (§5)
   │   ├── active_activity.py   ← process-local owner of in-flight native chat actors (`DirectActivityRegistry`): private handles for controls and the writer drain, public snapshots for `/api/state` `active_direct_turns` and WS typing frames; no queue records (§3 Direct turns and the activity block)
   │   ├── message_bus.py       ← Queue-based local message bus (Web UI + reviewed transport skills)
-  │   ├── message_ingress.py   ← Named ingress it re-exports: one accepted row per message id before dispatch; this process's dispatch facts
+  │   ├── message_ingress.py   ← Named ingress it re-exports: one accepted row per message id before dispatch, found through its process-local index of the chat chain; this process's dispatch facts
   │   ├── workers.py           ← Multiprocessing worker pool (forkserver on Linux, spawn on macOS/Windows; never fork from the multi-threaded supervisor)
   │   ├── worker_assignment.py, worker_chat_lane.py, worker_health.py, worker_pool_lifecycle.py, worker_process.py, worker_promotion.py ← Pool leaves: assignment/refusals; direct chat/restart/update admission; crash and terminal-file recovery; lifecycle and `kill_worker_tree` (daemon roots spared), diagnostic `worker_sha_verify` ancestry (normal descendants only in Logs); worker child; chat/project promotion via `_persist_promote_rejection` (§5; §6 Owner routing verbs)
   │   ├── worker_owner_wait.py ← Queue-owned active-capacity transfer for a required owner wait: the task stays RUNNING and custodied while another worker takes the active slot (§5)
@@ -717,7 +717,7 @@ Bundled resources use the CLI / Headless Boundary lookup order rather than assum
 │   │   ├── update_letter.json     ← update letter (base/target/channel/ref, state, text, `last_good`); kept after apply; panel uses startup source, context its checkout (update_letter.py)
 │   │   ├── projects.json          ← Project registry: immutable id/chat identity, working folder, lifecycle/routing fence, revision; tombstones are durable and never age-pruned
 │   │   ├── projects.json.committed ← registry commit witness: beside it a missing registry is unavailable, not empty
-│   │   ├── project_task_bindings.json ← schema v1 root↔Project bindings with REQUIRED typed origin; one-way enrichment; tombstoning never removes a binding
+│   │   ├── project_task_bindings.json ← schema v1 root↔Project bindings with REQUIRED typed origin (a cross-thread copy keeps its row's recorded attachment refs); one-way enrichment; tombstoning never removes a binding
 │   │   ├── ui_preferences.json    ← owner-local layout/`welcome` prefs + monotonic project_seen_revision ACKs
 │   │   ├── i18n/<tag>.json        ← one translation memory per interface language (schema 1: entries by code or rendered English, provenance owner > imported > generated, `refused` ledger; i18n_memory.py), beside `<tag>.pending.json`, the generator's bounded miss queue
 │   │   ├── cancel_intents.json    ← compact locked projection of ACTIVE cancel intents; the forensic trail is typed cancel_intent rows in logs/supervisor.jsonl, never read back (cancel_intents.py)

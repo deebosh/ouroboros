@@ -832,24 +832,27 @@ def test_a_failed_web_write_keeps_its_uploads_and_one_retry_hands_a_proven_undis
 
 def test_an_unreadable_chat_archive_refuses_the_frame_instead_of_guessing_it_new(files_app, tmp_path, monkeypatch):
     """Absent history is a new message; history that cannot be READ is unknown: the frame is
-    refused before any claim, row, queue item or echo, so a redelivery can never log twice."""
+    refused before any claim, row, queue item or echo, so a redelivery can never log twice.
+    A host process's first lookup folds the whole retained chain (``message_ingress._AcceptedIds``)."""
     import ouroboros.utils as utils
+    from supervisor import message_ingress
 
     bridge, echoes = _web_bridge(tmp_path, monkeypatch)
     photo = _upload(files_app, "one.png", PNG)
     text = "Посмотри\n\n[Attached file: one.png]"
     _send_web(bridge, "первое", [])  # a fresh install has no chat.jsonl: absent, not unreadable
-    real = utils.jsonl_chain_handles
+    real = message_ingress.jsonl_chain_handles
 
     def unreadable(*_args, **_kwargs):
         raise utils.JsonlChainUnreadable("archive segment could not be opened")
 
-    monkeypatch.setattr(utils, "jsonl_chain_handles", unreadable)
+    message_ingress.reset_accepted_ids()  # the next host process: nothing folded yet
+    monkeypatch.setattr(message_ingress, "jsonl_chain_handles", unreadable)
     with pytest.raises(OSError):
         _send_web(bridge, text, [photo], cmid="cm-2")
     assert len(_rows(tmp_path)) == 1 and bridge._inbox.qsize() == 1 and len(echoes) == 1
     assert photo["filename"] in chat_uploads._PENDING, "nothing was claimed"
-    monkeypatch.setattr(utils, "jsonl_chain_handles", real)
+    monkeypatch.setattr(message_ingress, "jsonl_chain_handles", real)
     _send_web(bridge, text, [photo], cmid="cm-2")
     _send_web(bridge, text, [photo], cmid="cm-2")  # and a redelivery still rejoins
     assert [row["client_message_id"] for row in _rows(tmp_path)][1:] == ["cm-2"] and bridge._inbox.qsize() == 2

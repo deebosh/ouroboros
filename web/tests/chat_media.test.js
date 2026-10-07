@@ -971,19 +971,27 @@ test('the composer owns thumbnail URLs: once per image, revoked on remove/send/d
     }
 });
 
-test('releasing a message closes the file dialog its own card opened', async () => {
+test('releasing a message, or the group buildGallery moved a file card into, closes the dialog that card opened', async () => {
     const fx = fixture();
+    const doc = (name, task) => ({ type: 'document', role: 'assistant', task_id: task, filename: name, mime: 'application/pdf', file_base64: 'aGVsbG8=' });
     try {
-        const bubble = new NodeStub('div', fx.tracker);
-        bubble.innerHTML = '<div class="message">x</div>';
+        const bubble = Object.assign(new NodeStub('div', fx.tracker), { innerHTML: '<div class="message">x</div>' });
         fx.controller.mountAttachments(bubble, [uploadView('plan.pdf', 'file')], 'x');
-        await bubble.querySelector('.chat-file-card').click();
-        const dialog = globalThis.document.body.querySelector('.chat-file-dialog');
-        assert.equal(dialog.attributes.has('open'), true, 'the card opened the dialog');
-        fx.controller.release(new NodeStub('div', fx.tracker));
-        assert.equal(dialog.attributes.has('open'), true, 'releasing another message leaves it open');
-        fx.controller.release(bubble);
-        assert.equal(dialog.attributes.has('open'), false, 'no actions remain on a released message\'s file');
+        const [a, b] = ['a', 'b'].map((task) => ['one.pdf', 'two.pdf'].map((name) => {
+            const built = fx.controller.buildDocumentBubble(doc(name, task));
+            return fx.controller.buildGallery('files', doc(name, task), built) && built;
+        })).map(([group, dropped]) => ({ group, dropped, item: group.querySelectorAll('.chat-file-item')[1] }));
+        for (const [holder, other, owner] of [[bubble, new NodeStub('div', fx.tracker), bubble], [a.item, a.dropped, a.group], [b.item, b.dropped, b.item]]) {
+            await holder.querySelector('.chat-file-card').click();
+            const dialog = globalThis.document.body.querySelector('.chat-file-dialog'), created = fx.tracker.created.length;
+            assert.equal(dialog.attributes.has('open'), true, 'the card opened the dialog');
+            fx.controller.release(other);
+            assert.equal(dialog.attributes.has('open'), true, 'releasing another message (or a dropped bubble) leaves it open');
+            fx.controller.release(owner);
+            assert.equal(dialog.attributes.has('open'), false, 'no actions remain on a released message\'s file');
+            await dialog.querySelector('[data-file-action="download"]').click();
+            assert.equal(fx.tracker.created.length, created, 'its pending Download acts on nothing');
+        }
     } finally {
         fx.controller.destroy();
         fx.restore();

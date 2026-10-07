@@ -570,3 +570,111 @@ test('after a host restart a kept send meets its saved row: delivery not confirm
         assert.deepEqual(later.notes('cm-1').map((node) => node.textContent), ['Input saved']);
     } finally { tab.close(); }
 });
+
+// The running host can be read between its append and its dispatch (supervisor/message_bus.py writes the row,
+// then enters dispatch; a deferred dispatch is echoed first): that row says `ingress_pending`. It is no delivery
+// doubt: the kept frame waits for the next fact — dispatched settles it, a proven-undispatched row offers its one
+// handover, and only a row of a process that has since ended (none of the three) ends it in the doubt.
+test('a saved row the running host has not yet dispatched keeps its frame for the next fact', async () => {
+    const tab = keptTab();
+    const pending = { restarted: true, ingress_pending: true };
+    try {
+        const room = tab.open();
+        await room.send('during the append');
+        const first = room.sent[0].frame.content;
+        tab.host.history = [tab.row('cm-1', first, pending)];
+        await room.instance.refreshHistory({ revision: 1 });
+        assert.deepEqual(room.notes('cm-1').map((node) => node.textContent), ['Input saved'], 'saved, and nothing more is claimed');
+        assert.deepEqual(room.actions('cm-1'), [], 'no doubt and no Send again while the host has not said');
+        assert.deepEqual(tab.kept().map((entry) => entry.frame.client_message_id), ['cm-1'], 'the frame waits');
+        room.echo('cm-1', first);  // the same process entered its dispatch
+        assert.deepEqual(room.notes('cm-1').map((node) => node.textContent), ['Input saved']);
+        assert.deepEqual(tab.kept(), [], 'positive dispatch evidence settles it');
+
+        await room.send('then its write failed');
+        const second = room.sent[1].frame.content;
+        tab.host.history = [tab.row('cm-1', first), tab.row('cm-2', second, pending)];
+        await room.instance.refreshHistory({ revision: 2 });
+        assert.deepEqual(tab.kept().map((entry) => entry.frame.client_message_id), ['cm-2']);
+        tab.host.history = [tab.row('cm-1', first), tab.row('cm-2', second, { ingress_undispatched: true })];
+        await room.instance.refreshHistory({ revision: 3 });
+        assert.deepEqual(room.notes('cm-2').map((node) => node.textContent.split(' ')[0]), ['Saved,']);
+        assert.ok(room.notes('cm-2')[0].textContent.startsWith('Saved, not delivered.'), 'the later fact replaces the pending note');
+        assert.deepEqual(room.actions('cm-2').map((node) => node.textContent), ['Send again', 'Discard'], 'its one handover');
+        room.press('cm-2', 'Send again');
+        assert.deepEqual(room.sent[2].frame, room.sent[1].frame, 'the same frame and id');
+        assert.equal(room.instance.hasPendingWork(), true);
+    } finally { tab.close(); }
+});
+
+test('an echo sent before a deferred dispatch waits; a close offers Send again, a restart ends it in the doubt', async () => {
+    const tab = keptTab();
+    const DOUBT = 'Saved; delivery not confirmed.';
+    try {
+        const room = tab.open();
+        await room.send('first');
+        await room.send('second');
+        const [first, second] = room.sent.map((item) => item.frame.content);
+        room.echo('cm-1', first, { restarted: true, ingress_pending: true });
+        room.echo('cm-2', second, { restarted: true, ingress_pending: true });
+        assert.deepEqual(tab.kept().map((entry) => entry.frame.client_message_id), ['cm-1', 'cm-2']);
+        room.fire('close');
+        assert.deepEqual(room.actions('cm-1').map((node) => node.textContent), ['Send again', 'Discard'],
+            'the socket closed before the host said: the owner may ask again');
+        room.press('cm-1', 'Send again');
+        assert.deepEqual(room.actions('cm-1'), [], 'resent: the doubt waits for the next fact');
+        room.echo('cm-1', first);  // the rejoin says the same process dispatched it
+        assert.deepEqual(tab.kept().map((entry) => entry.frame.client_message_id), ['cm-2']);
+        // cm-2's host ended before it said: the next read shows its row from an ended process.
+        tab.host.history = [tab.row('cm-1', first), tab.row('cm-2', second, { restarted: true })];
+        await room.instance.refreshHistory({ revision: 1 });
+        assert.deepEqual(room.notes('cm-2').map((node) => node.textContent), [DOUBT]);
+        assert.deepEqual(room.actions('cm-2'), []);
+        assert.deepEqual(tab.kept(), []);
+        assert.equal(room.instance.hasPendingWork(), false);
+    } finally { tab.close(); }
+});
+
+// Only the web composer writes the `[Attached file: …]` tail; skills/telegram/plugin.py passes the owner's caption
+// unchanged, so a Telegram row keeps every word of it — live and on replay — while a web row hides its own tail.
+test('a Telegram caption that ends like a tail is kept word for word, live and on replay', async () => {
+    const upload = `${'c'.repeat(32)}_plan.pdf`;
+    const view = { name: 'plan.pdf', kind: 'file', mime: 'application/pdf', size: 4, available: true,
+        url: `/api/files/download?upload=${upload}` };
+    const caption = 'Keep this note\n\n[Attached file: plan.pdf]';
+    const telegram = { role: 'user', chat_id: 1, ts: TS, source: 'skill:telegram', sender_label: 'Telegram (Anton)',
+        sender_session_id: '', attachments: [view] };
+    const message = (node) => node.innerHTML.match(/<div class="message[^"]*">([\s\S]*?)<\/div>/)[1];
+    const live = fixture();
+    try {
+        live.echo({ ...telegram, content: caption, client_message_id: 'tg:1' });
+        live.echo({ role: 'user', content: 'Look\n\n[Attached file: plan.pdf]', sender_session_id: 'session-other',
+            client_message_id: 'web-1', attachments: [view] });
+        assert.equal(message(live.bubble('tg:1')), caption, 'live: the Telegram caption, whole');
+        assert.equal(message(live.bubble('web-1')), 'Look', "live: the composer's own tail is hidden");
+    } finally { live.close(); }
+    const replay = fixture([{ ...telegram, text: caption, client_message_id: 'tg:1', history_id: 'h-tg-1' },
+        { role: 'user', text: 'Look\n\n[Attached file: plan.pdf]', ts: TS, chat_id: 1, source: 'web', sender_session_id: ME,
+            client_message_id: 'web-1', history_id: 'h-web-1', attachments: [view] }]);
+    try {
+        await replay.instance.refreshHistory({ revision: 1 });
+        assert.equal(message(replay.bubble('tg:1')), caption, 'replay: the Telegram caption, whole');
+        assert.equal(message(replay.bubble('web-1')), 'Look');
+    } finally { replay.close(); }
+});
+
+// ws.py and server_control.dispatch_accepted_restart recognize only the exact `/restart`; a staged file must not
+// turn it into `/restart\n\n[Attached file: …]` (an ordinary message to the startup door). Prose stays a message.
+test('Restart typed with a staged file stays the exact command; words around it stay a message', async () => {
+    const tab = keptTab();
+    try {
+        const room = tab.open();
+        await room.send('/restart');
+        await room.send('/restart please');
+        const [command, prose] = room.sent.map((item) => item.frame);
+        assert.equal(command.content, '/restart', 'exact, as the host gate matches it');
+        assert.equal(command.attachments.length, 1, 'its file rides the same row');
+        assert.equal(prose.content, '/restart please\n\n[Attached file: scan.pdf]', 'prose keeps the tail: never the command');
+        assert.ok(room.bubble('cm-1').innerHTML.includes('<div class="message">/restart</div>'));
+    } finally { tab.close(); }
+});

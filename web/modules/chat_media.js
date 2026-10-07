@@ -195,7 +195,7 @@ export function createChatMedia({
     const fileGroups = new Map();
     let fileDialog = null;
     let dialogFile = null;
-    let dialogOwner = null;  // the card's node: releasing it closes the dialog it opened
+    let dialogOwner = null;  // the card's item (buildGallery may move it to an earlier group): releasing it or its holder closes the dialog
     let destroyed = false;
 
     function listen(target, type, handler, options, owner = target) {
@@ -657,8 +657,8 @@ export function createChatMedia({
                 audio: true, source, filename, mime,
             });
         } else {
-            const card = bubble.querySelector('.chat-file-card');
-            if (card && source.src) listen(card, 'click', () => openFileDialog({ source, filename, mime }, bubble));
+            const card = bubble.querySelector('.chat-file-card'), item = bubble.querySelector('.chat-file-item');
+            if (card && source.src) listen(card, 'click', () => openFileDialog({ source, filename, mime }, item));
         }
         return bubble;
     }

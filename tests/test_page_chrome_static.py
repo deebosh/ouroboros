@@ -226,7 +226,8 @@ def test_server_navigation_and_chat_static_contracts():
     # chat.js uploads through it on Send and names the uploads for the model.
     attachments_source = _read("web/modules/chat_attachments.js")
     assert "createComposerAttachments({" in chat_source
-    assert "attachmentTail(uploadedAttachments.map(" in chat_source
+    assert "composerText(text, uploadedAttachments.map(" in chat_source
+    assert "attachmentTail(names);" in attachments_source  # every message but the exact /restart command
     assert "list.slice(0, ATTACHMENT_PREVIEW_COUNT)" in attachments_source
     assert "for (const item of [...pending])" in attachments_source
     assert "attachBtn.classList.toggle('uploading', flag)" in attachments_source

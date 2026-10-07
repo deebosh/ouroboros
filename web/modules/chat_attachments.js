@@ -27,17 +27,33 @@ export function attachmentTail(names) {
 }
 
 /**
- * The words to show under the attachments. Display only: the canonical text and
- * what the model reads stay as stored. A tail is hidden only when it is EXACTLY
- * the one these attachments generate (names in order), and the whole text only
- * when the row marks it as the host's (`text_placeholder`: the sender sent no
- * words, e.g. "(image attached)"); the same words typed by the owner are the
- * owner's and show as is.
+ * The words a composer frame carries: the owner's text, then the generated tail
+ * naming the files for the model. Only the host's exact `/restart` stays exact, as
+ * the host matches it (ws.py, server_control): it is still the Restart command,
+ * its files ride the same accepted row. Any other words — `/restart …` too — are a
+ * message and get the tail.
  */
-export function attachmentCaption(text, views, { placeholder = false } = {}) {
+export function composerText(text, names) {
+    const words = String(text ?? '');
+    if (words.trim().toLowerCase() === '/restart') return words;
+    return words + (words ? '\n\n' : '') + attachmentTail(names);
+}
+
+/**
+ * The words to show under the attachments. Display only: the canonical text and
+ * what the model reads stay as stored. A tail is hidden only on a row the web
+ * composer wrote (`composed`: its `source` is `web`, the one producer of that
+ * tail) and only when it is EXACTLY the one these attachments generate (names in
+ * order); the whole text only when the row marks it as the host's
+ * (`text_placeholder`: the sender sent no words, e.g. "(image attached)"). The
+ * same words typed by the owner, or a Telegram/skill caption no composer wrote,
+ * are the owner's and show as is.
+ */
+export function attachmentCaption(text, views, { placeholder = false, composed = false } = {}) {
     const raw = String(text ?? '');
     if (!views?.length) return raw;
     if (placeholder === true) return '';
+    if (composed !== true) return raw;
     const tail = attachmentTail(views.map((view) => view.name));
     if (raw === tail) return '';
     return raw.endsWith(`\n\n${tail}`) ? raw.slice(0, raw.length - tail.length - 2) : raw;
@@ -306,8 +322,10 @@ function keptFrame(frame) {
  * and "Discard", which forgets only this tab's copy. A saved row the host marks
  * `ingress_undispatched` (it proved the row never reached dispatch) keeps its frame
  * and offers both too: its Send again is the one retry the host hands over. A saved row
- * without `ingress_dispatched` came from a host process that has since ended (a restart
- * came between): whether it reached the agent is unknown and Send again would only rejoin
+ * marked `ingress_pending` is the running host's, between its append and its dispatch
+ * (or echoed before a deferred dispatch): the frame waits for the next fact. A saved row
+ * with none of the three came from a host process that has since ended (a restart came
+ * between): whether it reached the agent is unknown and Send again would only rejoin
  * it, so its bubble says "Saved; delivery not confirmed" and the frame is dropped. Nothing
  * here resends by itself or deletes an upload: those stay on the host.
  */
@@ -418,8 +436,9 @@ export function createUnconfirmedSends({ send, root, onDomWrite, showToast, stor
             persist();
         },
         /** The host's saved row for an id (its echo or history): the only thing that ends a doubt — unless
-         *  the host proved that row never reached dispatch, which keeps the frame for its one handover. A
-         *  saved row this host process did not take (`ingress_dispatched` absent) ends it in a delivery doubt. */
+         *  the host proved that row never reached dispatch, which keeps the frame for its one handover, or
+         *  the running host has not yet said (`ingress_pending`), which keeps it for that word. A saved row
+         *  of a host process that has since ended (none of the three) ends it in a delivery doubt. */
         settle(row) {
             const id = String(row?.client_message_id || '');
             if (row?.role !== 'user' || row.ingress_accepted !== true || !frames.has(id)) return;
@@ -428,6 +447,8 @@ export function createUnconfirmedSends({ send, root, onDomWrite, showToast, stor
                 if (bubble) onDomWrite(() => mark(id, bubble));
             } else if (row.ingress_dispatched === true) {
                 forget(id);
+            } else if (row.ingress_pending === true) {
+                // The running host took it and will say dispatched or undispatched: the frame waits for that.
             } else if (bubble) {  // without its bubble the frame waits, so the doubt is not lost unseen
                 forget(id);
                 onDomWrite(() => doubtDelivery(bubble));

@@ -69,11 +69,11 @@ def test_after_a_restart_a_landed_web_row_only_rejoins(files_app, tmp_path, monk
     _new_process(monkeypatch)  # the process ended: its proof with it
     (replayed,) = _history(tmp_path)
     assert replayed["ingress_accepted"] is True, "saved"
-    assert "ingress_undispatched" not in replayed and "ingress_dispatched" not in replayed, "its delivery unknown"
+    assert not {"ingress_undispatched", "ingress_dispatched", "ingress_pending"} & set(replayed), "its delivery unknown"
     _send_web(bridge, "Посмотри", [photo])
     assert len(_rows(tmp_path)) == 1 and bridge._inbox.qsize() == 0, "unknown is never replayed"
     assert echoes[-1]["ingress_accepted"] is True
-    assert "ingress_undispatched" not in echoes[-1] and "ingress_dispatched" not in echoes[-1]
+    assert not {"ingress_undispatched", "ingress_dispatched", "ingress_pending"} & set(echoes[-1])
 
 
 def test_a_web_dispatch_that_was_entered_then_raised_is_unknown(tmp_path, monkeypatch):
@@ -108,6 +108,7 @@ def test_a_changed_message_under_a_proven_id_is_refused_and_the_proof_waits(tmp_
         _send_web(bridge, "другие слова", [])
     assert message_bus.acceptance_undispatched(1, "cm-1") and bridge._inbox.qsize() == 0
     assert "ingress_dispatched" not in _history(tmp_path)[0], "proven undispatched is not dispatched"
+    assert _history(tmp_path)[0]["ingress_undispatched"] is True and "ingress_pending" not in _history(tmp_path)[0]
     _send_web(bridge, "исходные слова", [])
     assert bridge._inbox.qsize() == 1 and not message_bus.acceptance_undispatched(1, "cm-1")
     assert echoes[-1]["ingress_dispatched"] is True and _history(tmp_path)[0]["ingress_dispatched"] is True, "handed over"
@@ -193,8 +194,10 @@ def test_only_the_process_that_accepted_a_row_says_its_dispatch_was_entered(tmp_
     _new_process(monkeypatch)
     (replayed,) = _history(tmp_path)
     assert replayed["ingress_accepted"] is True and "ingress_dispatched" not in replayed
+    assert "ingress_pending" not in replayed, "an ended process's row is unknown, never pending"
     _send_web(bridge, "слова", [])
     assert "ingress_dispatched" not in echoes[-1] and echoes[-1]["ingress_accepted"] is True
+    assert "ingress_pending" not in echoes[-1]
     assert len(_rows(tmp_path)) == 1 and bridge._inbox.qsize() == 1, "nothing replays"
 
 
@@ -225,7 +228,9 @@ def test_a_host_operation_from_before_a_crash_reads_lost_though_the_session_surv
 
 
 def test_history_during_append_does_not_claim_dispatch(tmp_path, monkeypatch):
-    """The durable row may be read before log_chat returns to its enqueue caller."""
+    """The durable row may be read before log_chat returns to its enqueue caller: that read says the
+    running process took it and has not yet said (``ingress_pending``), never dispatched and never the
+    ended-process unknown a client would settle for good."""
     from supervisor import message_bus
     bridge, echoes = _web_bridge(tmp_path, monkeypatch)
     original = message_bus.log_chat
@@ -238,8 +243,10 @@ def test_history_during_append_does_not_claim_dispatch(tmp_path, monkeypatch):
     _send_web(bridge, "during append", [])
     assert observations[0][1] == 0
     assert "ingress_dispatched" not in observations[0][0]
+    assert observations[0][0]["ingress_pending"] is True and "ingress_undispatched" not in observations[0][0]
     assert _history(tmp_path)[0]["ingress_dispatched"] is True
-    assert echoes[-1]["ingress_dispatched"] is True
+    assert "ingress_pending" not in _history(tmp_path)[0]
+    assert echoes[-1]["ingress_dispatched"] is True and "ingress_pending" not in echoes[-1]
 
 
 def test_retention_callback_failure_is_not_dispatch_entry(tmp_path, monkeypatch):
@@ -257,7 +264,7 @@ def test_retention_callback_failure_is_not_dispatch_entry(tmp_path, monkeypatch)
 
 
 def test_deferred_dispatch_echo_does_not_claim_future_call(tmp_path, monkeypatch):
-    from supervisor import message_bus, message_ingress
+    from supervisor import message_ingress
     bridge, echoes = _web_bridge(tmp_path, monkeypatch)
     observed = []
     def dispatch(text, **message):
@@ -265,5 +272,6 @@ def test_deferred_dispatch_echo_does_not_claim_future_call(tmp_path, monkeypatch
         bridge.enqueue_local_message(text, **message)
     bridge.handle_web_message("deferred", client_message_id="deferred", dispatch=dispatch)
     assert "ingress_dispatched" not in echoes[0]
+    assert echoes[0]["ingress_pending"] is True, "the echo before a deferred dispatch: this process has not said yet"
     assert observed == [True]
     assert _history(tmp_path)[0]["ingress_dispatched"] is True

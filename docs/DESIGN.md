@@ -1030,21 +1030,26 @@ file (owner choice 1C/2A/3A/4A/5A/6A with mobile first-class).
   bridge says so; a copied link is a fallback, never reported as opened.
 - **The same view everywhere:** the sender's bubble, another tab and the replay
   after reload or restart render the one server view of each attachment. The
-  stored text still names the files for the model; only an exact generated tail
-  (or text the row marks as host-written, `text_placeholder`, such as "(image
-  attached)" — the echo carries the same mark) is hidden from the caption — the
-  owner's words, even those same ones, are never rewritten. Every attachment renders, however many; only the text tail is
-  bounded. History without recorded attachments stays as it was; nothing is
-  guessed from a file name.
+  stored text still names the files for the model; only the exact tail the web
+  composer generated, on its own row (or text the row marks as host-written,
+  `text_placeholder`, such as "(image attached)" — the echo carries the same
+  mark), is hidden from the caption — the owner's words, even those same ones,
+  and a Telegram or skill caption are never rewritten. Every attachment renders, however many; only the text tail is
+  bounded. A Project's start message copied from Main shows the attachments its
+  row recorded when that row is outside the window. History without recorded
+  attachments stays as it was; nothing is guessed from a file name.
 - **Composer:** each staged image shows a small thumbnail beside its name; the
   field stays focusable (read-only, not disabled) while files upload, so a phone
-  keeps its keyboard. A sent attachment message is not yet saved: if the socket
+  keeps its keyboard. `/restart` typed with staged files stays the Restart
+  command (the files ride its row); any other words are a message. A sent
+  attachment message is not yet saved: if the socket
   closes, or the host refuses the frame, before its "Input saved" echo, the
   bubble says "Not confirmed as saved" with "Send again", which resends the same
   frame and id (the host rejoins it if it was saved after all — never a second
   message), and "Discard", which forgets this tab's copy (never an upload).
   Nothing resends by itself. The frame is kept, with no count bound, until that
-  id's saved echo or history row settles it: a bubble the feed released or
+  id's saved echo or history row settles it (a row the running host has not
+  yet dispatched keeps it until the host says which): a bubble the feed released or
   rebuilt keeps its frame, and a Project room holding one is hidden, not
   destroyed. The tab's sessionStorage keeps its words, id, routing and upload
   references (never file bytes) across a reload — the asset reload a reconnect

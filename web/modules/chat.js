@@ -7,7 +7,7 @@ import { tx } from './i18n.js';
 import { decorateProjectRow, syncSavedProjectContext } from './project_answer.js';
 import { createProjectHandoffs, receiptNotice } from './project_handoff.js';
 import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
-import { attachmentCaption, attachmentTail, attachmentViews, createComposerAttachments, createUnconfirmedSends } from './chat_attachments.js';
+import { attachmentCaption, attachmentViews, composerText, createComposerAttachments, createUnconfirmedSends } from './chat_attachments.js';
 import { createChatDecision } from './chat_decision.js';
 import { bindProjectWorkPointer } from './project_work_pointer.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
@@ -2265,7 +2265,9 @@ export function createChatInstance({
         }, chatSessionId);
         if (role === 'system' && ['task_pause_notice', 'legacy_memory_notice'].includes(systemType)) text = tx(text);
         const richMarkdown = role !== 'user' && systemType !== 'skill_review' && (role !== 'system' || markdown === true);
-        const shown = attachments.length ? attachmentCaption(text, attachments, { placeholder: opts.textPlaceholder === true }) : text;
+        // Only the web composer writes the file-name tail; a Telegram/skill caption is kept word for word.
+        const shown = attachments.length ? attachmentCaption(text, attachments,
+            { placeholder: opts.textPlaceholder === true, composed: source === 'web' }) : text;
         const rendered = role === 'user'
             ? escapeHtml(shown)
             : role === 'system' && systemType === 'skill_review'
@@ -2895,8 +2897,8 @@ export function createChatInstance({
             } finally {
                 setSendBusy(false);
             }
-            // The model reads these names; the bubble shows the server views above the caption.
-            text += (text ? '\n\n' : '') + attachmentTail(uploadedAttachments.map((item) => item.view?.name || item.display_name));
+            // The model reads these names (an exact /restart stays the command); the bubble shows the server views.
+            text = composerText(text, uploadedAttachments.map((item) => item.view?.name || item.display_name));
         }
         if (!text) return;
         const forcePlan = !!planMode && !text.startsWith('/');

@@ -14,7 +14,7 @@ from ouroboros.chat_uploads import attachment_views, claim_refs, same_message, s
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.event_bus import CHAT_DOCUMENT, CHAT_LINKS, CHAT_OUTBOUND, CHAT_PHOTO, CHAT_QUIZ, CHAT_QUIZ_STATE, CHAT_TYPING, CHAT_VIDEO, publish_event
 from supervisor.state import append_jsonl, load_state
-from supervisor.message_ingress import _INGRESS_LOCK, _accepted_web_message, _take_undispatched, _write_marked, _enter_dispatch, dispatch_entered
+from supervisor.message_ingress import _INGRESS_LOCK, _accepted_web_message, _take_undispatched, _write_marked, _enter_dispatch, delivery_facts
 from supervisor.message_ingress import (  # noqa: F401 - the named ingress's public names stay importable here
     _UNDISPATCHED, accept_local_message, accepted_chat_message, acceptance_undispatched, record_inbound_message)
 from ouroboros.projects_registry import stamp_project_thread
@@ -403,8 +403,8 @@ class LocalChatBridge:
                 }
                 if placeholder:
                     echo["text_placeholder"] = True
-                if dispatch_entered(row):  # Positive call-entry evidence, not the earlier acceptance stamp.
-                    echo["ingress_dispatched"] = True
+                # Positive call-entry evidence, never the acceptance stamp alone; a deferred dispatch is still pending.
+                echo.update(delivery_facts(row, thread_id))
                 stamp_project_thread(DATA_DIR, echo)
                 self._broadcast_fn(echo)
         finally:
