@@ -501,8 +501,8 @@ def finalize_contributor_outcome(
     """Turn execution-receipt drift into the contributor lane's typed outcome.
 
     Nothing about WHICH files the proposal touches is consulted: the lane always
-    executes the target base's review machinery (owner decision 2026-08-19), so
-    there is no per-proposal trust downgrade left to apply.
+    executes the installed body's review flow and rules, never the proposal's
+    copy (D31), so there is no per-proposal trust downgrade left to apply.
     """
     if mismatches:
         original_block_reason = str(outcome.get("block_reason") or "")

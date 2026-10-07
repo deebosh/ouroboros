@@ -167,7 +167,7 @@ def test_review_prompt_text_reads_nothing_from_the_repository():
 
 
 def test_review_helper_leaves_are_review_substrate_members():
-    """A PR editing either leaf must trip the contributor lane's trusted rerun."""
+    """A PR editing either leaf must show in the contributor packet's review_substrate_changed."""
     from scripts.run_external_review import _REVIEW_SUBSTRATE_PATHS
 
     for module in _LEAVES:
