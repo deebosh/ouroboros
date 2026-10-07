@@ -7,6 +7,7 @@ import { apiFetch, taskArtifactDownloadUrl } from './api_client.js';
 import { bindMenu } from './ui_interactions.js';
 import { stampHistoryNode } from './chat_history_replay.js';
 import { isFileDrag } from './chat_activity.js';
+import { createDocumentReader, documentReaderKind } from './document_reader.js';
 
 const MIME_RE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
 const BASE64_RE = /^[A-Za-z0-9+/=\s]+$/;
@@ -298,6 +299,8 @@ export function createChatMedia({
         return {
             base64,
             durable,
+            // The reader takes only the delivered copy: inline bytes or the immutable artifact route.
+            reader: base64 ? { base64 } : durable && durable === canonical ? { url: durable } : null,
             bridge: compatMediaUrl(msg?.download_url_compat) || durable,
             src: base64 ? `data:${mime};base64,${base64}` : durable,
         };
@@ -336,6 +339,29 @@ export function createChatMedia({
         downloadBlob(await sourceBlob(source, mime), filename);
     }
 
+    // The card's Open and Download, shared by the file dialog and the document reader.
+    const fileActions = {
+        async open(file) {
+            try {
+                await openViaHostBridge(file.source.bridge || file.source.durable, file.filename, { browserUrl: file.source.durable });
+                return true;
+            } catch (error) {
+                showToast(`Could not open file: ${error?.message || error}`, 'error');
+                return false;
+            }
+        },
+        async download(file) {
+            try {
+                await downloadSource(file.source, file.filename, file.mime);
+                return true;
+            } catch (error) {
+                showToast(`Could not download file: ${error?.message || error}`, 'error');
+                return false;
+            }
+        },
+    };
+    const reader = createDocumentReader({ actions: fileActions, formatSize: humanSize });
+
     function ensureFileDialog() {
         if (fileDialog) return fileDialog;
         fileDialog = document.createElement('dialog');
@@ -358,26 +384,10 @@ export function createChatMedia({
         listen(fileDialog.querySelector('[data-file-action="close"]'), 'click', close);
         listen(fileDialog, 'cancel', close);
         listen(fileDialog.querySelector('[data-file-action="open"]'), 'click', async () => {
-            if (!dialogFile?.source.durable) return;
-            try {
-                await openViaHostBridge(
-                    dialogFile.source.bridge || dialogFile.source.durable,
-                    dialogFile.filename,
-                    { browserUrl: dialogFile.source.durable },
-                );
-                close();
-            } catch (error) {
-                showToast(`Could not open file: ${error?.message || error}`, 'error');
-            }
+            if (dialogFile?.source.durable && await fileActions.open(dialogFile)) close();
         });
         listen(fileDialog.querySelector('[data-file-action="download"]'), 'click', async () => {
-            if (!dialogFile) return;
-            try {
-                await downloadSource(dialogFile.source, dialogFile.filename, dialogFile.mime);
-                close();
-            } catch (error) {
-                showToast(`Could not download file: ${error?.message || error}`, 'error');
-            }
+            if (dialogFile && await fileActions.download(dialogFile)) close();
         });
         return fileDialog;
     }
@@ -624,6 +634,10 @@ export function createChatMedia({
         const size = explicitSize ? Number(msg.size_bytes)
             : source.base64 ? base64Bytes(source.base64) : null;
         const meta = [fileExtension(filename), humanSize(size)].filter(Boolean).join(' · ');
+        const readable = source.reader ? documentReaderKind(filename, mime) : '';
+        const more = readable
+            ? `<span class="chat-file-more is-read">${escapeHtml(tr('media.read', 'Read'))}</span>`
+            : '<span class="chat-file-more" aria-hidden="true">•••</span>';
         let content;
         if (mime.startsWith('audio/') && source.src) {
             content = playerHtml({ audio: true, src: source.src, title: filename });
@@ -631,13 +645,13 @@ export function createChatMedia({
             const preview = mime.startsWith('image/') && source.src
                 ? `<img class="chat-file-thumb" src="${escapeHtmlAttr(source.src)}" alt="">`
                 : '<span class="chat-file-glyph" aria-hidden="true">▤</span>';
-            content = `<button type="button" class="chat-file-card" ${source.src ? '' : 'disabled'}>
+            content = `<button type="button" class="chat-file-card" aria-haspopup="dialog" ${source.src ? '' : 'disabled'}>
                 ${preview}
                 <span class="chat-file-copy">
                     <span class="chat-file-name">${escapeHtml(filename)}</span>
                     <span class="chat-file-meta">${escapeHtml(meta)}</span>
                 </span>
-                <span class="chat-file-more" aria-hidden="true">•••</span>
+                ${more}
             </button>`;
         }
         const body = `<div class="message"><div class="chat-file-grid">
@@ -650,7 +664,12 @@ export function createChatMedia({
             });
         } else {
             const card = bubble.querySelector('.chat-file-card');
-            if (card && source.src) listen(card, 'click', () => openFileDialog({ source, filename, mime }));
+            // The item, not the bubble: a grouped file moves into an earlier bubble's grid.
+            const item = bubble.querySelector('.chat-file-item');
+            const file = { source, filename, mime, meta, kind: readable, reader: source.reader, size, canOpen: Boolean(source.durable) };
+            if (card && source.src) listen(card, 'click', (event) => (readable
+                ? reader.open(file, { owner: item, returnFocus: card, pointer: event?.detail > 0 })
+                : openFileDialog(file)));
         }
         return bubble;
     }
@@ -829,11 +848,13 @@ export function createChatMedia({
             try { fileDialog.remove(); } catch {}
             fileDialog = null;
         }
+        reader.close({ restoreFocus: false });
     }
 
     // Release only the evicted page's subtree; other media and copy controls
     // keep their listeners, playback, focus and outstanding user actions.
     function release(root) {
+        reader.release(root);
         const owns = (node) => node === root || root?.contains?.(node);
         for (const [dispose, owner] of resourceOwners) if (owns(owner)) {
             try { dispose(); } catch {}
@@ -858,6 +879,7 @@ export function createChatMedia({
     function destroy() {
         if (destroyed) return;
         reset();
+        reader.destroy();
         destroyed = true;
     }
 
