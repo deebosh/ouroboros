@@ -294,10 +294,9 @@ _TOOL_ARG_ALIASES: dict[str, dict[str, str]] = {
 }
 
 
-_IGNORE_ROOT_ARG_TOOLS = frozenset({
-    "commit_reviewed",
-    "vcs_commit_reviewed",
-})
+# Empty: the commit tools declare ``root`` and refuse every root but the system
+# repository themselves; the name stays for ``registry.py``'s re-export.
+_IGNORE_ROOT_ARG_TOOLS: frozenset[str] = frozenset()
 
 
 _GENERIC_VCS_TARGET_TOOLS = frozenset({
