@@ -432,8 +432,11 @@ async def _api_identity(request: Request) -> JSONResponse:
     except HostServiceAuthError as exc:
         return _json_error(str(exc), 403)
     name, description = await asyncio.to_thread(_identity_facts, ctx)
+    from ouroboros.presence_continuation import CONTINUATION_VERSION
+
     return JSONResponse({"ok": True, "name": name, "description": description,
                          "presence_delivery_version": DELIVERY_VERSION,
+                         "presence_continuation_version": CONTINUATION_VERSION,
                          "notify_version": NOTIFY_VERSION})
 
 
@@ -784,8 +787,10 @@ async def _api_presence_turn(request: Request) -> JSONResponse:
 
     Authentication, admission and file confinement run off the event loop. The turn is
     host work this request only waits on (``presence_runner.PresenceTurnExecutions``): it
-    queues on the gate as a coroutine, runs on its own thread, keeps its in-flight slot
-    until it settles, and a retry of the same event joins it instead of running it twice.
+    queues on the gate as a coroutine and runs on its own thread. Both versions release
+    the request reservation at a qualified park (or terminal settlement); version 1
+    returns the initial envelope while version 0's HTTP waiter stays open until the
+    terminal result. A retry of the same event joins the retained execution.
     """
 
     ctx: HostServiceContext = request.app.state.host_service_context
@@ -799,6 +804,7 @@ async def _api_presence_turn(request: Request) -> JSONResponse:
         return _presence_error("rate limit exceeded", 429, "presence_rate_limited", "retry")
     from ouroboros.presence_admission import PresenceAdmissionError
     from ouroboros.presence_bindings import conversation_key
+    from ouroboros.presence_continuation import continuation_version, turn_response
     from ouroboros.presence_runner import (
         PresenceTurnError,
         PresenceTurnEvent,
@@ -811,10 +817,11 @@ async def _api_presence_turn(request: Request) -> JSONResponse:
     try:
         payload = await request.json()
         if not isinstance(payload, dict) or set(payload) - {
-            "binding_id", "event", "staged_files", "delivery_reporting_version",
+            "binding_id", "event", "staged_files", "delivery_reporting_version", "continuation_version",
         }:
             return _presence_error("invalid presence payload", 400, "presence_payload_invalid", "rejected")
         reporting_version = delivery_reporting_version(payload.get("delivery_reporting_version", 0))
+        continuing = continuation_version(payload.get("continuation_version", 0))
         event_payload = payload.get("event")
         expected = {
             "source_event_id", "provider", "account_id", "conversation_id", "thread_id",
@@ -859,17 +866,23 @@ async def _api_presence_turn(request: Request) -> JSONResponse:
             message=dict(event_payload["message"]) if isinstance(event_payload["message"], dict) else {},
             text=str(event_payload["text"] or ""),
             delivery_reporting_version=reporting_version,
+            continuation_version=continuing,
         )
         if not event.source_event_id or not event.conversation_key or not event.actor:
             return _presence_error("presence event is missing identity facts", 400,
                                    "presence_identity_missing", "rejected")
+        if "transport_queue" in event.conversation:
+            from ouroboros.presence_observations import validate_transport_queue
+
+            validate_transport_queue(event.conversation["transport_queue"], event.conversation_key,
+                                     event.source_event_id)
         staged_files = await _bounded_host_read(
             ctx, functools.partial(_presence_staged_files, ctx, skill_name, payload.get("staged_files")))
         turn_id = presence_turn_task_id(admission.binding_id, event.source_event_id)
         identity = presence_event_identity(admission.binding_id, event)
         # A settled turn answers from its durable row without queueing behind its conversation.
-        result = await _bounded_host_read(
-            ctx, functools.partial(presence_turn_replay, ctx.data_dir, turn_id, event.conversation_key, identity))
+        result = await _bounded_host_read(ctx, functools.partial(
+            presence_turn_replay, ctx.data_dir, turn_id, event.conversation_key, identity, continuing))
         if result is None:
             budget = f"{skill_name}:presence"
             execution, _started = ctx.presence_turns.start_or_join(
@@ -883,16 +896,9 @@ async def _api_presence_turn(request: Request) -> JSONResponse:
             )
             if execution is None:
                 return _presence_error("too many in-flight presence requests", 429, "presence_capacity_full", "retry")
-            result = await asyncio.wrap_future(execution.result)
-        return JSONResponse({
-            "ok": True,
-            "status": "completed",
-            "outcome": result.outcome,
-            "text": result.text,
-            "turn_ref": result.task_id,
-            "work_ref": result.work_ref,
-            "delivery_reporting_version": getattr(result, "delivery_reporting_version", 0),
-        })
+            # A version-1 consumer takes a continuing author's initial envelope; v0 waits for its terminal.
+            result = await asyncio.wrap_future(execution.initial if continuing else execution.result)
+        return JSONResponse(turn_response(result, continuing))
     except json.JSONDecodeError:
         return _presence_error("invalid json", 400, "presence_payload_invalid", "rejected")
     except (PresenceAdmissionError, PresenceTurnError) as exc:
@@ -921,6 +927,11 @@ def _presence_work_view(
     if str(presence.get("binding_id") or "") != binding_id:
         return 404, {"ok": False, "error": "presence work reference not found",
                      "code": "presence_work_not_found", "disposition": "rejected"}
+    from ouroboros.presence_continuation import work_view
+
+    continued = work_view(stored, work_ref)  # a continuing Presence author's own poll (#1536)
+    if continued is not None:
+        return continued
     status = str(stored.get("status") or "")
     if status not in {"completed", "failed", "cancelled"}:
         return 202, {"ok": True, "status": "pending", "work_ref": work_ref,
@@ -939,7 +950,7 @@ def _presence_work_view(
 
 
 async def _api_presence_work(request: Request) -> JSONResponse:
-    """Return a correlated late result without exposing the general task API."""
+    """Read a correlated late result, or retain an attributed inbox observation."""
 
     ctx: HostServiceContext = request.app.state.host_service_context
     try:
@@ -951,7 +962,23 @@ async def _api_presence_work(request: Request) -> JSONResponse:
     work_ref = str(request.path_params.get("work_ref") or "").strip()
     binding_id = str(request.query_params.get("binding_id") or "").strip()
     try:
+        if request.method == "POST":
+            from ouroboros.presence_bindings import load_presence_binding
+            from ouroboros.presence_observations import record_transport_queue
+
+            payload = await request.json()
+            if not isinstance(payload, dict) or set(payload) != {"binding_id", "transport_queue"}:
+                raise ValueError("expected binding_id and transport_queue")
+            binding_id = str(payload["binding_id"] or "").strip()
+            await _bounded_host_read(ctx, functools.partial(load_presence_binding, ctx.data_dir, skill_name, binding_id))
+            body = await asyncio.to_thread(record_transport_queue, ctx.data_dir, work_ref, binding_id,
+                                            payload["transport_queue"])
+            return JSONResponse(body)
         status, body = await asyncio.to_thread(_presence_work_view, ctx, skill_name, work_ref, binding_id)
+    except (ValueError, json.JSONDecodeError) as exc:
+        if getattr(exc, "code", ""):
+            return _presence_exception(exc, 404)
+        return _presence_error(str(exc), 400, "presence_observation_invalid", "rejected")
     except Exception as exc:
         code = str(getattr(exc, "code", ""))
         if code:
@@ -1456,7 +1483,7 @@ def create_host_service_app(
             Route("/ui/language", _api_ui_language, methods=["POST"]),
             Route("/presence/turn", _api_presence_turn, methods=["POST"]),
             Route("/presence/delivery", _api_presence_delivery, methods=["POST"]),
-            Route("/presence/work/{work_ref}", _api_presence_work, methods=["GET"]),
+            Route("/presence/work/{work_ref}", _api_presence_work, methods=["GET", "POST"]),
             Route("/ui/ws-message", _api_ws_message, methods=["POST"]),
             Route("/notify", _api_notify, methods=["POST"]),
             WebSocketRoute("/events", _ws_events),

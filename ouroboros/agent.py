@@ -668,6 +668,7 @@ class OuroborosAgent:
             ctx.model_wait_context.tool_context = ctx
         ctx.task_started_at = self._task_started_ts
         ctx.owner_wait_callback = getattr(self, "owner_wait_callback", None)
+        ctx.review_wait_callback = getattr(self, "review_wait_callback", None)  # Presence review park (#1536)
         ctx.owner_wait_resume = task.get("_owner_wait_resume")
         ctx.budget_pause_resume = task.get("_budget_pause_resume")
         from ouroboros.owner_wait import load_owner_wait
