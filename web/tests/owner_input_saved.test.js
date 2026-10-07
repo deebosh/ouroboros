@@ -640,6 +640,43 @@ test('a saved row the running host has not yet dispatched keeps its frame for th
     } finally { tab.close(); }
 });
 
+// A reload's first read that shows a kept send's row `ingress_pending` has answered for it: saved, the running host
+// not yet said. The kept frame waits for that word like a live one — no doubt, no actions, nothing resent — so a
+// Discard cannot drop the one handover a later proven-undispatched row offers.
+test('a kept send the first read shows pending waits for the next fact, with no doubt from the reload', async () => {
+    const tab = keptTab();
+    const pending = { restarted: true, ingress_pending: true };
+    try {
+        const first = tab.open();
+        await first.send('handed over later');
+        await first.send('dispatched later');
+        await first.send('never seen');
+        const [handover, dispatched] = first.sent.map((item) => item.frame.content);
+        first.instance.destroy();
+        tab.host.history = [tab.row('cm-1', handover, pending), tab.row('cm-2', dispatched, pending)];
+
+        const reloaded = tab.open();
+        await until(() => reloaded.actions('cm-3').length === 2, 'the first read is reconciled: the unseen one is in doubt');
+        for (const cmid of ['cm-1', 'cm-2']) {
+            assert.deepEqual(reloaded.notes(cmid).map((node) => node.textContent), ['Input saved'], 'saved, and nothing more is claimed');
+            assert.deepEqual(reloaded.actions(cmid).map((node) => node.textContent), [], 'no Send again or Discard while the running host has not said');
+            assert.equal(reloaded.bubbles(cmid), 1, 'the history row, no restored duplicate');
+        }
+        assert.deepEqual(reloaded.sent, [], 'nothing resends by itself');
+        assert.deepEqual(tab.kept().map((entry) => entry.frame.client_message_id), ['cm-1', 'cm-2', 'cm-3'], 'the frames wait');
+
+        tab.host.history = [tab.row('cm-1', handover, { ingress_undispatched: true }), tab.row('cm-2', dispatched)];
+        await reloaded.instance.refreshHistory({ revision: 2 });
+        assert.ok(reloaded.notes('cm-1')[0].textContent.startsWith('Saved, not delivered.'));
+        assert.deepEqual(reloaded.actions('cm-1').map((node) => node.textContent), ['Send again', 'Discard'], 'its one handover');
+        assert.deepEqual(reloaded.notes('cm-2').map((node) => node.textContent), ['Input saved']);
+        assert.deepEqual(reloaded.actions('cm-2').map((node) => node.textContent), []);
+        assert.deepEqual(tab.kept().map((entry) => entry.frame.client_message_id), ['cm-1', 'cm-3'], 'dispatched ends its kept copy');
+        reloaded.press('cm-1', 'Send again');
+        assert.deepEqual(reloaded.sent.map((item) => item.frame), [first.sent[0].frame], 'the same frame and id');
+    } finally { tab.close(); }
+});
+
 test('an echo sent before a deferred dispatch waits; a close offers Send again, a restart ends it in the doubt', async () => {
     const tab = keptTab();
     const DOUBT = 'Saved; delivery not confirmed.';

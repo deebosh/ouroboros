@@ -211,23 +211,38 @@ class RecordingWin32:
         return getattr(self.api, name)
 
     def _identity(self, handle):
-        """(volume, file index) of the file HANDLE names now, or None when it names no file."""
+        """(volume, file index) of the file HANDLE names now, or None when the query fails."""
         info = self.api._info_type()
         if not self.api._info(handle, self.api._ctypes.byref(info)):
             return None
         return info.volume, info.index_high, info.index_low
 
+    def _kind(self, handle):
+        """The kernel object type HANDLE names now (``File`` for a file or directory), or None when the
+        query fails."""
+        import ctypes
+        from ctypes import wintypes
+
+        query = ctypes.WinDLL("ntdll").NtQueryObject
+        query.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.ULONG, ctypes.c_void_p]
+        query.restype = ctypes.c_long
+        buffer = (ctypes.c_void_p * 512)()  # PUBLIC_OBJECT_TYPE_INFORMATION opens with a UNICODE_STRING
+        if query(handle, 2, buffer, ctypes.sizeof(buffer), None) < 0 or not buffer[1]:  # ObjectTypeInformation
+            return None
+        return ctypes.wstring_at(buffer[1], ctypes.c_ushort.from_buffer(buffer).value // 2)
+
     def leaked(self):
         """Handles still open now. ``GetHandleInformation`` fails on a closed one, but Windows hands a
         closed handle's value to the next kernel object (CPython 3.10's locks, a BufferedReader's too,
-        are semaphores), so the value must also still name the file it opened (unknown: still open)."""
+        are semaphores), so an open value is released only when proven to name something else: a
+        non-file object, or another file. A query that fails proves nothing: still open."""
         import ctypes
         from ctypes import wintypes
 
         info = ctypes.WinDLL("kernel32", use_last_error=True).GetHandleInformation
         info.argtypes, info.restype = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL
-        return [h for h in self.handles if info(h, ctypes.byref(wintypes.DWORD()))
-                and (self.objects[h] is None or self._identity(h) == self.objects[h])]
+        return [h for h in self.handles if info(h, ctypes.byref(wintypes.DWORD())) and self._kind(h) in (None, "File")
+                and (self.objects[h] is None or self._identity(h) in (None, self.objects[h]))]
 
 
 def _windows_uploads(tmp_path):
@@ -237,6 +252,36 @@ def _windows_uploads(tmp_path):
     (uploads / "plain.png").write_bytes(PNG)
     (outside / "plain.png").write_bytes(b"OUTSIDE")
     return uploads, outside
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="real Windows handles (Windows CI leg)")
+def test_windows_leak_probe_reports_a_held_handle_and_releases_only_a_proven_reuse(tmp_path):
+    """Controls for the probe the real-handle tests trust: ``leaked() == []`` there means something."""
+    import _winapi
+
+    uploads, _outside = _windows_uploads(tmp_path)
+    api = RecordingWin32()
+    held = api.open(str(uploads / "plain.png"), directory=False)
+    try:
+        assert api._kind(held) == "File" and api.objects[held] is not None
+        assert api.leaked() == [held], "a real handle still held is reported"
+        for unknown in ("_identity", "_kind"):  # a query that fails is no proof of release
+            setattr(api, unknown, lambda _handle: None)
+            assert api.leaked() == [held], unknown
+        del api._identity, api._kind
+        recorded, api.objects[held] = api.objects[held], (0, 0, 0)
+        assert api.leaked() == [], "the value now names another file: released"
+        api.objects[held] = recorded
+        other = _winapi.OpenProcess(_winapi.PROCESS_DUP_HANDLE, False, os.getpid())  # a live non-file object
+        try:
+            api.handles.append(other)
+            api.objects[other] = recorded  # as if the file's value had been handed to it
+            assert api._kind(other) == "Process" and api.leaked() == [held], "a value naming a non-file is released"
+        finally:
+            _winapi.CloseHandle(other)
+    finally:
+        api.close(held)
+    assert api.leaked() == []
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="real Windows handles (Windows CI leg)")

@@ -454,7 +454,9 @@ export function createUnconfirmedSends({ send, root, onDomWrite, showToast, stor
             } else if (row.ingress_dispatched === true) {
                 forget(id);
             } else if (row.ingress_pending === true) {
-                // The running host took it and will say dispatched or undispatched: the frame waits for that.
+                // The running host took it and will say dispatched or undispatched: the frame waits for that,
+                // and a reload's first read that shows it so has answered for the kept copy (no doubt from `reconcile`).
+                frames.get(id).restored = false;
             } else if (bubble) {  // without its bubble the frame waits, so the doubt is not lost unseen
                 forget(id);
                 onDomWrite(() => doubtDelivery(bubble));
@@ -462,8 +464,8 @@ export function createUnconfirmedSends({ send, root, onDomWrite, showToast, stor
         },
         /** The socket closed or a frame was refused: every still-unsaved sent message in the feed says so. */
         unsettle,
-        /** After a reload's first history read (or its failure): a kept message it did not settle
-         *  shows its bubble again from the kept words and views if the read did not, then its doubt.
+        /** After a reload's first history read (or its failure): a kept message it did not settle (nor show
+         *  `ingress_pending`) shows its bubble again from the kept words and views if the read did not, then its doubt.
          *  A message this page sent while that read was pending is not in doubt: the read predates it. */
         reconcile(show) {
             const kept = [...frames].filter(([, entry]) => entry.restored);
