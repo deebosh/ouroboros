@@ -1381,7 +1381,7 @@ class TestTriadPromptAntiPatternLock:
         tpl = mod._REVIEW_PROMPT_TEMPLATE_STABLE + mod._REVIEW_PROMPT_TEMPLATE_DYNAMIC
         assert "Anti pattern-lock guard" in tpl
         assert "exactly one FAIL" not in tpl
-        guard = mod.REPO_ANTI_PATTERN_LOCK_GUARD
+        guard = mod.anti_pattern_lock_guard("body")
         # Normalize whitespace so prompt reflow doesn't break the contract.
         import re
         flat = re.sub(r"\s+", " ", f"{tpl}\n{guard}")

@@ -96,6 +96,8 @@ _REVIEW_SUBSTRATE_PATHS = frozenset({
     "ouroboros/tools/git.py", "ouroboros/tools/parallel_review.py", "ouroboros/tools/registry.py",
     "ouroboros/tools/review.py", "ouroboros/tools/review_multi_model.py", "ouroboros/tools/review_context_atlas.py",
     "ouroboros/tools/review_helpers.py", "ouroboros/tools/review_prompt_text.py", "ouroboros/tools/review_file_pack.py",
+    "ouroboros/tools/review_checklist.py", "ouroboros/tools/review_subject.py", "ouroboros/tools/review_change.py",
+    "ouroboros/review_body_fact.py", "ouroboros/review_ledger.py",
     "ouroboros/tools/review_revalidation.py", "ouroboros/tools/review_binary_context.py", "ouroboros/tools/release_sync.py",
     "ouroboros/tools/review_synthesis.py", "ouroboros/tools/scope_review.py", "ouroboros/tools/scope_review_contract.py",
     "ouroboros/tools/scope_review_session.py", "ouroboros/tools/scope_required_sources.py",

@@ -25,9 +25,9 @@ from ouroboros.tools.governance_context import (
 )
 from ouroboros.tools.review_helpers import (
     CRITICAL_FINDING_CALIBRATION,
-    REPO_ANTI_PATTERN_LOCK_GUARD,
     REVIEW_PREAMBLE,
     REVIEW_PREAMBLE_CORE,
+    anti_pattern_lock_guard,
     load_checklist_layers,
 )
 from ouroboros.triad_review import REVIEW_JSON_ARRAY_CONTRACT
@@ -115,7 +115,7 @@ def _packet_prompt(governance_root, *, layer: str, subject_root=None, explicit: 
         preamble=REVIEW_PREAMBLE_CORE if layer == "core" else REVIEW_PREAMBLE,
         critical_calibration=CRITICAL_FINDING_CALIBRATION,
         json_contract=REVIEW_JSON_ARRAY_CONTRACT,
-        anti_pattern_lock_guard=REPO_ANTI_PATTERN_LOCK_GUARD,
+        anti_pattern_lock_guard=anti_pattern_lock_guard(layer),
         checklist_section=checklist,
     ) + (f"\n{governance.stable_inline}\n" if governance.stable_inline.strip() else "")
     tail = "\n\n".join(part for part in (governance.selected_inline, governance.navigation) if part.strip())

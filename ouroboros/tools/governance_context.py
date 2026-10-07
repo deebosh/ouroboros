@@ -295,9 +295,11 @@ def _core_layer_context(*, surface: str, touched_paths: Optional[Iterable[Any]],
     subject_nav, subject_rows = _subject_navigation(subject_root, packet=packet)
     rows.extend(subject_rows)
     pairs = [("M", _normalize(path)) for path in (touched_paths or ()) if _normalize(path)]
+    # The scope brief states its own required-source manifest (with its identity)
+    # in its tail; every other surface receives the layer's statement here.
     required = (scope_required_sources(subject_root, pairs, layer=CORE_LAYER)
-                if subject_root is not None else [])
-    rule_set = ("The `Change Review Checklist` above is the whole rule set for this review"
+                if subject_root is not None and surface != "scope" else [])
+    rule_set = ("The checklist section inlined above is the whole rule set for this review"
                 if checklist_text.strip() else
                 f"NO section of `{CHECKLISTS_PATH}` is inlined for this review (this surface "
                 "supplies none); the universal change-review rules are the whole rule set")
@@ -313,7 +315,7 @@ def _core_layer_context(*, surface: str, touched_paths: Optional[Iterable[Any]],
             " Everything named below is complete on disk in the subject repository; read any "
             "range you need with your own tools."),
         subject_nav,
-        render_required_sources(required, layer=CORE_LAYER),
+        render_required_sources(required, layer=CORE_LAYER) if surface != "scope" else "",
     ])
     return GovernanceContext(navigation=navigation, manifest=rows,
                              tokens_estimate=estimate_tokens(navigation), layer=CORE_LAYER)

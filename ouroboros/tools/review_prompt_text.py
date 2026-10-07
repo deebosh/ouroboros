@@ -127,6 +127,26 @@ uncovers new FAILs — return only one JSON array, not two.
 """
 
 
+# The core layer's guard names only universal items: a reviewer of a subject that
+# is not the body has no `version_bump`, `changelog_and_badge` or `self_consistency`.
+REPO_ANTI_PATTERN_LOCK_GUARD_CORE = """\
+Before returning, do a deliberate SECOND pass focused on a materially
+DIFFERENT concern class. This is a semantic breadth check, not a numeric
+finding quota: zero or one FAIL is valid, and you must never manufacture a
+finding merely to increase the count. For example:
+if your FAIL is `code_quality`, re-examine `tests_affected` and
+`capability_regression`; if `cross_platform`, re-examine `security_issues` and
+`architecture_doc`; if `changelog_accuracy`, re-examine `perf_lifecycle`
+and `secrets_check`. Update PASS entries in-place if your second pass
+uncovers new FAILs — return only one JSON array, not two.
+"""
+
+
+def anti_pattern_lock_guard(layer: str = "body") -> str:
+    """The triad's second-pass guard for a checklist layer (`review_body_fact.layer_for`)."""
+    return REPO_ANTI_PATTERN_LOCK_GUARD if layer == "body" else REPO_ANTI_PATTERN_LOCK_GUARD_CORE
+
+
 _ANTI_THRASHING_RULE_VERDICT = (
     "The JSON `\"verdict\"` field is the **authoritative signal** — withdrawal notes in "
     "`\"reason\"` text are silently ignored by the system. If you verify a finding is "

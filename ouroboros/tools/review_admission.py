@@ -498,8 +498,9 @@ def prepare_scope_review(
 
         touched = staged_touched_paths(repo_dir, path_subject)
         tree_sha = staged_tree_identity(repo_dir, path_subject)
+        layer = str(frozen.spec.layer or "body") if frozen is not None else "body"
         manifest_rows = scope_required_sources(
-            repo_dir, touched, staged_tree_sha=tree_sha, subject=path_subject)
+            repo_dir, touched, staged_tree_sha=tree_sha, subject=path_subject, layer=layer)
         required_ref = required_sources_ref(manifest_rows, staged_tree_sha=tree_sha)
         session_task, session_manifest = build_scope_session_task(repo_dir, ScopeBriefInputs(
             commit_message=commit_message,
@@ -514,6 +515,7 @@ def prepare_scope_review(
             required_sources_ref=required_ref,
             touched_manifest=touched_manifest(repo_dir, touched),
             touched_paths=tuple(path for _status, path in touched),
+            layer=layer,
             delegated=delegated,
             scope_model=scope_model_id,
             slot_id=slot_id,
@@ -656,6 +658,7 @@ def commit_gate_paid_seats(triad_prepared, triad_exited, scope_rows) -> list:
                 messages, _ = triad_api_messages(
                     str(triad_prepared.get("prompt") or ""),
                     int(triad_prepared.get("stable_prefix_len") or 0), TRIAD_USER_TURN,
+                    layer=str(triad_prepared.get("layer") or "body"),
                 )
                 triad_chars = _chars(messages)
             chars = triad_chars

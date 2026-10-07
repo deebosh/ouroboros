@@ -144,7 +144,8 @@ def _handle_multi_model_review(ctx: ToolContext, content: str = "",
                                 surface: str = "multi_model_review",
                                 session_policy: dict = None,
                                 usage_attribution: dict = None,
-                                retry_key: str = "", task_evidence: dict = None) -> str:
+                                retry_key: str = "", task_evidence: dict = None,
+                                layer: str = "body") -> str:
     if models is None:
         models = []
     try:
@@ -161,13 +162,13 @@ def _handle_multi_model_review(ctx: ToolContext, content: str = "",
                     _multi_model_review_async(content, prompt, models, ctx, stable_prefix_len,
                                               routes, session_task, session_root, row_plan,
                                               surface, session_policy, usage_attribution,
-                                              retry_key, task_evidence),
+                                              retry_key, task_evidence, layer=layer),
                 ).result()
         except RuntimeError:
             result = asyncio.run(_multi_model_review_async(content, prompt, models, ctx, stable_prefix_len,
                                                            routes, session_task, session_root, row_plan,
                                                            surface, session_policy, usage_attribution,
-                                                           retry_key, task_evidence))
+                                                           retry_key, task_evidence, layer=layer))
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         log.error("Multi-model review failed: %s", e, exc_info=True)
@@ -302,7 +303,8 @@ async def _multi_model_review_async(content: str, prompt: str,
                                      surface: str = "multi_model_review",
                                      session_policy: dict = None,
                                      usage_attribution: dict = None,
-                                     retry_key: str = "", task_evidence: dict = None):
+                                     retry_key: str = "", task_evidence: dict = None,
+                                     layer: str = "body"):
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.reviewer_slot_config import row_plan_retrieves
 
@@ -340,10 +342,12 @@ async def _multi_model_review_async(content: str, prompt: str,
     # assembles the api pack (5.2); the constitutional flag below stays a fact
     # about the repository either way.
     if any_api_rows:
-        messages, bible_text = triad_api_messages(prompt, stable_prefix_len, content)
+        messages, bible_text = triad_api_messages(prompt, stable_prefix_len, content, layer=layer)
     else:
         messages = []
-        bible_text = _rev().load_governance_doc(_rev()._REPO_ROOT, "BIBLE.md", on_missing="explicit")
+        # The core layer carries no constitution on any delivery (review_body_fact.layer_for).
+        bible_text = "" if layer != "body" else _rev().load_governance_doc(
+            _rev()._REPO_ROOT, "BIBLE.md", on_missing="explicit")
 
     # One round, one wave: each row sends its own request, so a fan-out without a paid-cycle
     # key names its round here (review_records.resolve_review_wave); attribution only.

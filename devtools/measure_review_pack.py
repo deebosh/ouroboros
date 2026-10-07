@@ -216,10 +216,10 @@ def _governance_prefix(
         already_inline=("BIBLE.md", "docs/CHECKLISTS_ARCHIVE.md"),
     ) if api_models else GovernanceContext()
     stable = review._REVIEW_PROMPT_TEMPLATE_STABLE.format(
-        preamble=review.REVIEW_PREAMBLE,
+        preamble=review.review_preamble("body"),
         critical_calibration=review.CRITICAL_FINDING_CALIBRATION,
         json_contract=review.REVIEW_JSON_ARRAY_CONTRACT,
-        anti_pattern_lock_guard=review.REPO_ANTI_PATTERN_LOCK_GUARD,
+        anti_pattern_lock_guard=review.anti_pattern_lock_guard("body"),
         checklist_section=checklist,
     ) + (f"\n{governance.stable_inline}\n" if governance.stable_inline.strip() else "")
     tail = "\n\n".join(

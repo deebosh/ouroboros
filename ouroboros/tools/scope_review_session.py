@@ -128,6 +128,10 @@ class ScopeBriefInputs:
     # Repo-relative paths of the reviewed change: the index's change-relative
     # rows and the governance tiers' change class are selected from them.
     touched_paths: Tuple[str, ...] = ()
+    # The checklist layer of the subject (review_body_fact.layer_for): ``body``
+    # runs the body's governance tiers, ``core`` indexes the subject's own
+    # documents under ``repo_dir`` and inlines no Ouroboros governance.
+    layer: str = "body"
     # The row: `delegated` is the transport, the rest is its route identity.
     delegated: bool = False
     scope_model: str = ""
@@ -374,14 +378,14 @@ def _repository_index(repo_dir: pathlib.Path, touched_paths: Sequence[str]) -> T
         )
 
 
-def _required_sources_tail(rows: Optional[list], ref: dict) -> str:
+def _required_sources_tail(rows: Optional[list], ref: dict, *, layer: str = "body") -> str:
     """The required-source manifest and its identity, or ``""``."""
     if rows is None:
         return ""
     from ouroboros.tools.scope_required_sources import render_required_sources
 
     return (
-        "\n\n" + render_required_sources(rows)
+        "\n\n" + render_required_sources(rows, layer=layer)
         + "\nThe required source surface is independent from your working window. "
         "Read it completely in the order you choose; preserve your own conclusions "
         "and exact source references across focus changes. Missing or unread sources "
@@ -458,6 +462,7 @@ def build_scope_session_task(
         intent.scope_review_history, history_section)
 
     bound = scope_first_send_bound(brief)
+    layer = str(brief.layer or "body")
     governance = governance_context(
         pathlib.Path(brief.governance_repo_dir or repo_dir),
         surface="scope",
@@ -465,6 +470,8 @@ def build_scope_session_task(
         usable_window_tokens=bound // _CHARS_PER_ESTIMATED_TOKEN,
         delivery=RETRIEVING_DELIVERY,
         checklist_section_text=scope_checklist,
+        layer=layer,
+        subject_root=repo_dir if layer != "body" else None,
     )
     from ouroboros.tools.scope_required_sources import required_sources_ref, with_inline_sources
 
@@ -499,7 +506,7 @@ def build_scope_session_task(
         governance.navigation,
     ) if str(part or "").strip())
     touched_slot = _touched_slot(brief)
-    required_tail = _required_sources_tail(required_rows, required_ref)
+    required_tail = _required_sources_tail(required_rows, required_ref, layer=layer)
 
     def _assemble(diff_slot: str) -> str:
         task_text, _stable_len = build_scope_review_prompt(
@@ -512,6 +519,7 @@ def build_scope_session_task(
             repo_pack_placeholder=wider,
             critical_calibration=CRITICAL_FINDING_CALIBRATION,
             task_evidence_section=brief.task_evidence_section,
+            layer=layer,
         )
         return task_text + required_tail
 
@@ -541,7 +549,7 @@ def build_scope_session_task(
                 source["required_row"] = diff_row
                 required_rows = [*(required_rows or []), diff_row]
                 required_ref = required_sources_ref(required_rows, staged_tree_sha=tree_sha)
-                required_tail = _required_sources_tail(required_rows, required_ref)
+                required_tail = _required_sources_tail(required_rows, required_ref, layer=layer)
                 diff_slot = _diff_slot(
                     brief, header, body, _paged_diff_pointer(brief, body, source))
                 delivery.update(diff_delivery="paged", diff_source=source)

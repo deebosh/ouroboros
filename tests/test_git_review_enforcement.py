@@ -728,7 +728,7 @@ def _mock_triad_gates(review, monkeypatch, *, changed=("uv.lock", "VERSION")):
     import ouroboros.tools.review_binary_context as _rbc
     monkeypatch.setattr(_rbc, "capture_staged_diff", lambda _repo, *, unified=3: "diff --cached")
     monkeypatch.setattr(review, "_preflight_check", lambda *a, **k: None)
-    monkeypatch.setattr(review, "_load_checklist_section", lambda: "## checklist")
+    monkeypatch.setattr(review, "_load_checklist_section", lambda *_a, **_k: "## checklist")
     monkeypatch.setattr(review, "load_governance_doc", lambda repo, rel, **k: f"{rel} PREFIX TEXT")
     captured = {}
 

@@ -58,7 +58,7 @@ import pathlib
 import shutil
 import subprocess
 import uuid
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from ouroboros.tools import review_binary_context as _rbc
 from ouroboros.tools.review_binary_context import StagedDiffUnavailable
@@ -576,7 +576,7 @@ def build_triad_session_task(*, goal_section: str, scope_section: str,
     from ouroboros.reference_books import BOOK_ENTRYPOINTS, load_reference_book
     from ouroboros.tools.review_helpers import (
         CRITICAL_FINDING_CALIBRATION,
-        REPO_ANTI_PATTERN_LOCK_GUARD,
+        anti_pattern_lock_guard,
         review_preamble,
     )
 
@@ -629,7 +629,7 @@ def build_triad_session_task(*, goal_section: str, scope_section: str,
     return "\n\n".join(part for part in [
         review_preamble(layer),
         CRITICAL_FINDING_CALIBRATION,
-        REPO_ANTI_PATTERN_LOCK_GUARD,
+        anti_pattern_lock_guard(layer),
         checklist_section,
         governance.stable_inline if governance is not None else "",
         governance.selected_inline if governance is not None else "",
@@ -700,6 +700,9 @@ class FrozenSubject:
     name_status: Tuple[Tuple[str, str], ...] = ()
     patch: bytes = dataclasses.field(default=b"", repr=False, compare=False)
     managed: Optional[ManagedReviewSubject] = dataclasses.field(default=None, repr=False, compare=False)
+    # An index/worktree read against a commit other than HEAD is an ordinary
+    # tree delta, never the gate's subject.
+    at_head: bool = True
 
     @property
     def review_root(self) -> str:
@@ -712,7 +715,7 @@ class FrozenSubject:
         wave reads it through the gate's own capture (``managed_review_subject`` /
         ``capture_staged_diff`` on the reading root), byte-identical to today, so
         the gate's tree assertion and per-attempt memo see exactly what they did."""
-        return self.spec.kind == SUBJECT_KIND_INDEX and self.spec.root_kind == ROOT_KIND_SYSTEM
+        return self.spec.kind == SUBJECT_KIND_INDEX and self.spec.root_kind == ROOT_KIND_SYSTEM and self.at_head
 
     # Duck-typed twins of the managed subject's pinned-tree fields, so the
     # scope path helpers (``scope_required_sources``) read the FROZEN trees of
@@ -759,6 +762,16 @@ def _patch(root, *refs: str) -> Tuple[bytes, str]:
     return raw, hashlib.sha256(raw.decode("utf-8", "replace").strip().encode("utf-8")).hexdigest()
 
 
+def _tree_parent(root, spec: ReviewSubjectSpec) -> Tuple[str, bool]:
+    """``(parent_sha, at_head)`` of an ``index``/``worktree`` subject: the tree is
+    read against ``spec.base`` when given (any commit), else against HEAD. Only a
+    HEAD-relative system index is the gate's own subject (``at_head``)."""
+    head_sha = _rev_parse(root, "HEAD^{commit}")
+    base = str(spec.base or "").strip()
+    parent_sha = _rev_parse(root, f"{base}^{{commit}}") if base else head_sha
+    return parent_sha, parent_sha == head_sha
+
+
 def _resolve_range(root, base: str, head: str) -> Tuple[str, str]:
     """``(base_sha, head_sha)`` of a committed proposal whose base is an ancestor of
     its head — otherwise the diff would attribute the target's own progress to it."""
@@ -800,23 +813,29 @@ def freeze_subject(ctx: Any, spec: ReviewSubjectSpec, *, checkout: str = "") -> 
     reads HEAD→snapshot. ``base..head`` is frozen only through
     ``isolated_checkout``: its reviewers read the head tree, never the live root."""
     spec = _normalized_spec(ctx, spec)
-    root, managed = spec.root, None
+    root, managed, at_head = spec.root, None, True
     if spec.kind == SUBJECT_KIND_INDEX:
-        if spec.root_kind == ROOT_KIND_SYSTEM:
+        parent_sha, at_head = _tree_parent(root, spec)
+        if spec.root_kind == ROOT_KIND_SYSTEM and at_head:
             managed = managed_review_subject(ctx, pathlib.Path(root), surface="gate")
-        diff_text = (managed.render_prompt_diff() if managed is not None
-                     else _rbc.capture_staged_diff(pathlib.Path(root)))
         tree_sha = managed.staged_tree if managed is not None else _real_index_tree(root)
-        parent_sha = _rev_parse(root, "HEAD^{commit}")
-        patch, diff_sha = _patch(root, "--cached")
+        if at_head:
+            diff_text = (managed.render_prompt_diff() if managed is not None
+                         else _rbc.capture_staged_diff(pathlib.Path(root)))
+            patch, diff_sha = _patch(root, "--cached")
+        else:
+            diff_text = _tree_delta_diff(root, parent_sha, tree_sha, 3)
+            patch, diff_sha = _patch(root, parent_sha, tree_sha)
         name_status = managed.name_status if managed is not None else _tree_delta_name_status(root, parent_sha, tree_sha)
+        spec = dataclasses.replace(spec, base=parent_sha)
     elif spec.kind == SUBJECT_KIND_WORKTREE:
         from supervisor.update_candidate import worktree_snapshot_tree
 
         tree_sha, tree_error = worktree_snapshot_tree("HEAD", cwd=root)
         if not tree_sha:
             raise StagedDiffUnavailable(f"live worktree could not be serialized: {tree_error}")
-        parent_sha = _rev_parse(root, "HEAD^{commit}")
+        parent_sha, at_head = _tree_parent(root, spec)
+        spec = dataclasses.replace(spec, base=parent_sha)
         diff_text = _tree_delta_diff(root, parent_sha, tree_sha, 3)
         patch, diff_sha = _patch(root, parent_sha, tree_sha)
         name_status = _tree_delta_name_status(root, parent_sha, tree_sha)
@@ -831,7 +850,8 @@ def freeze_subject(ctx: Any, spec: ReviewSubjectSpec, *, checkout: str = "") -> 
         patch, diff_sha = _patch(root, parent_sha, head_sha)
         name_status = _tree_delta_name_status(root, parent_sha, head_sha)
     return FrozenSubject(spec=spec, diff_text=diff_text, diff_sha=diff_sha, tree_sha=tree_sha, parent_sha=parent_sha,
-                         checkout=str(checkout or ""), name_status=tuple(name_status), patch=patch, managed=managed)
+                         checkout=str(checkout or ""), name_status=tuple(name_status), patch=patch, managed=managed,
+                         at_head=at_head)
 
 
 @contextlib.contextmanager
@@ -847,7 +867,7 @@ def isolated_checkout(ctx: Any, spec: ReviewSubjectSpec) -> Iterator[FrozenSubje
     if spec.kind == SUBJECT_KIND_RANGE:
         parent_sha, _head = _resolve_range(spec.root, spec.base, spec.head)
     else:
-        parent_sha = _rev_parse(spec.root, "HEAD^{commit}")
+        parent_sha, _at_head = _tree_parent(spec.root, spec)
     checkout_root = canonical_data_root(ctx) / "state" / CHECKOUT_SUBDIR / uuid.uuid4().hex[:12]
     checkout = checkout_root / "repo"
     checkout_root.mkdir(parents=True, exist_ok=True)
@@ -899,13 +919,18 @@ def review_reuse_key(frozen: FrozenSubject, *, rules_sha: str, layer: str, assig
                             rebuttal_sha=rebuttal_sha)
 
 
-def reuse_or_none(drive_root: Any, key: str) -> Optional[Dict[str, Any]]:
+def reuse_or_none(drive_root: Any, key: str, *, questions: Sequence[str] = ()) -> Optional[Dict[str, Any]]:
     """The settled, dispatched record this reuse key already has — returned instead
-    of a wave (``reused=True``, $0) — or ``None`` when the wave must run."""
+    of a wave (``reused=True``, $0) — or ``None`` when the wave must run. The record
+    must have been asked exactly these author ``questions``: a new question is not
+    answered by an old record, and an old question is not dropped by a new one."""
     from ouroboros.review_ledger import find_reusable
 
     record = find_reusable(drive_root, key)
     if record is None:
+        return None
+    asked = [str(item) for item in ((record.get("brief") or {}).get("author_questions") or [])]
+    if asked != [str(item) for item in questions]:
         return None
     return {"reused": True, "record_id": str(record.get("record_id") or ""), "record": record, "usd": 0.0}
 

@@ -198,19 +198,116 @@ def test_frozen_system_index_wave_is_byte_identical_to_the_gate(tmp_path, monkey
     assert _run_wave(monkeypatch, kept, subject=freeze_subject(kept, _index_spec(repo)))["retry_key"] == "gate-key"
 
 
+def test_frozen_foreign_base_head_wave_runs_the_core_layer_on_every_delivery(tmp_path, monkeypatch):
+    """The mirror of the golden case: a foreign ``base..head`` subject under the
+    core layer. All three deliveries (api packet, session task, scope brief) are
+    assembled by the SAME code as the gate's wave, with the layer threaded through
+    every builder: the universal checklist and the subject's own navigation are
+    delivered; the body's constitution, standing disclosures, body-layer section
+    and reference books are not."""
+    from ouroboros.tools.review_multi_model import _CONSTITUTIONAL_PREAMBLE, triad_api_messages
+
+    system = _system_repo(tmp_path)
+    foreign, base, head = _foreign_repo(tmp_path, docs={"README.md": "# Foreign\n\n## Usage\n\nRun it.\n"})
+    ctx = _ctx(system, tmp_path)
+    spec = ReviewSubjectSpec(root_kind="active_workspace", root=str(foreign), kind="base..head", base=base, head=head,
+                             surface="change", layer="core", body_fact="false", body_how="foreign_remote")
+    with isolated_checkout(ctx, spec) as frozen:
+        given = _run_wave(monkeypatch, ctx, subject=frozen)
+        checkout = frozen.checkout
+
+    assert given["review_err"] is None and given["scope_status"] == "responded"
+    assert given["target_repo"] == checkout and given["structured"]["layer"] == "core"
+    deliveries = {"prompt": given["prompt"], "session_task": given["session_task"], **{
+        f"scope_brief_{i}": brief for i, brief in enumerate(given["scope_briefs"])}}
+    assert len(given["scope_briefs"]) == 1
+    for name, text in deliveries.items():
+        # The packet and the brief carry the frozen diff; the retrieving session reads the checkout.
+        assert name == "session_task" or ("+two" in text and "-one" in text), name
+        # The universal rule set and the subject's own navigation are delivered …
+        assert "## Change Review Checklist" in text or "## Intent / Scope Review Checklist" in text, name
+        assert "## Governance navigation (core layer)" in text and "### Subject documents" in text, name
+        assert "README.md" in text and "Usage" in text and checkout in text, name
+        # … the body's governance is not: no constitution text, no standing
+        # disclosures, no body-layer section or items, no book navigation.
+        assert "BIBLE.md (Full Text)" not in text and "P1 Continuity" not in text, name
+        assert "CHECKLISTS_ARCHIVE" not in text and "## Ouroboros Body Layer" not in text, name
+        assert "| 10 |" not in text and "version_bump" not in text, name
+        assert "docs/ARCHITECTURE.md" not in text and "(navigation map)" not in text.replace("## README.md (navigation map)", ""), name
+        assert "Its Constitution is BIBLE.md" not in text, name
+    assert "## Change Review Checklist" in deliveries["prompt"] and "## Change Review Checklist" in deliveries["session_task"]
+    # The api head of a core-layer row carries no constitutional preamble either.
+    messages, bible_text = triad_api_messages(given["prompt"], 0, "turn", layer="core")
+    system_text = "".join(block.get("text", "") if isinstance(block, dict) else str(block)
+                          for block in ([messages[0]["content"]] if isinstance(messages[0]["content"], str)
+                                        else messages[0]["content"]))
+    assert bible_text == "" and _CONSTITUTIONAL_PREAMBLE not in system_text and "BIBLE" not in system_text
+    # The same subject under the body layer (treat_as_body) carries the body's rules.
+    body_spec = ReviewSubjectSpec(**{**spec.__dict__, "layer": "body", "body_fact": "true", "body_how": "treat_as_body"})
+    with isolated_checkout(_ctx(system, tmp_path), body_spec) as body_frozen:
+        body = _run_wave(monkeypatch, _ctx(system, tmp_path), subject=body_frozen)
+    assert "## Ouroboros Body Layer" in body["prompt"] and "Its Constitution is BIBLE.md" in body["prompt"]
+    assert "## Governance navigation (core layer)" not in body["prompt"]
+
+
 # ---------------------------------------------------------------------------
 # base..head in an isolated checkout under the data root; worktree of a live tree
 # ---------------------------------------------------------------------------
 
 
-def _foreign_repo(tmp_path):
+def _foreign_repo(tmp_path, *, docs=None):
     repo = _repo(tmp_path / "foreign", files={"a.txt": "one\n", "keep.txt": "k\n"})
     base = _out(repo, "rev-parse", "HEAD")
     (repo / "a.txt").write_text("two\n", encoding="utf-8")
     (repo / "new.bin").write_bytes(b"\x00\x01\x02\xff")
+    for name, text in (docs or {}).items():
+        (repo / name).write_text(text, encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "proposal")
     return repo, base, _out(repo, "rev-parse", "HEAD")
+
+
+def test_an_index_or_worktree_subject_is_read_against_its_base_when_one_is_named(tmp_path):
+    """``review_change(subject=index|worktree, base=<rev>)`` promises a tree judged
+    against ``base``; the frozen parent, diff, patch and name-status follow it, and
+    the record's ``base`` is that commit — not HEAD. Without ``base`` the parent is
+    HEAD and the system index stays the gate's own subject."""
+    system = _system_repo(tmp_path)
+    foreign, base, head = _foreign_repo(tmp_path)
+    (foreign / "keep.txt").write_text("staged later\n", encoding="utf-8")
+    _git(foreign, "add", "keep.txt")
+    ctx = _ctx(system, tmp_path)
+
+    plain = freeze_subject(ctx, ReviewSubjectSpec(root_kind="active_workspace", root=str(foreign), kind="index", surface="change"))
+    assert plain.parent_sha == head and plain.spec.base == head and plain.record_subject()["base"] == head
+    assert plain.name_status == (("M", "keep.txt"),) and "+staged later" in plain.diff_text and "+two" not in plain.diff_text
+
+    against = freeze_subject(ctx, ReviewSubjectSpec(root_kind="active_workspace", root=str(foreign), kind="index",
+                                                    base="HEAD~1", surface="change"))
+    assert against.parent_sha == base and against.spec.base == base and against.record_subject()["base"] == base
+    assert against.tree_sha == plain.tree_sha == _out(foreign, "write-tree")
+    assert against.name_status == (("M", "a.txt"), ("M", "keep.txt"), ("A", "new.bin"))
+    assert "+two" in against.diff_text and "+staged later" in against.diff_text and against.diff_sha != plain.diff_sha
+    with isolated_checkout(ctx, ReviewSubjectSpec(root_kind="active_workspace", root=str(foreign), kind="index",
+                                                  base=base, surface="change")) as checked:
+        assert checked.parent_sha == base and _out(checked.checkout, "rev-parse", "HEAD") == base
+        assert _out(checked.checkout, "write-tree") == against.tree_sha
+        assert (pathlib.Path(checked.checkout) / "keep.txt").read_text(encoding="utf-8") == "staged later\n"
+
+    live = freeze_subject(ctx, ReviewSubjectSpec(root_kind="active_workspace", root=str(foreign), kind="worktree",
+                                                 base=base, surface="change"))
+    assert live.parent_sha == base and live.spec.base == base and live.name_status == against.name_status
+    # The system index named against HEAD is the gate's subject; against another
+    # commit it is an ordinary tree delta (the gate never reviews that).
+    assert freeze_subject(ctx, _index_spec(system)).is_system_index
+    _git(system, "commit", "-q", "-m", "landed")
+    (system / "x.txt").write_text("z\n", encoding="utf-8")
+    _git(system, "add", "-A")
+    older = freeze_subject(ctx, _index_spec(system, base="HEAD~1"))
+    assert not older.is_system_index and older.managed is None and older.parent_sha == _out(system, "rev-parse", "HEAD~1")
+    assert "-x" in older.diff_text and "+z" in older.diff_text
+    with pytest.raises(ValueError):
+        freeze_subject(ctx, _index_spec(system, base="not-a-revision"))
 
 
 def test_base_head_subject_reads_an_isolated_checkout_in_the_data_root(tmp_path):

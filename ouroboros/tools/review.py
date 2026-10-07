@@ -48,8 +48,8 @@ from ouroboros.tools.review_helpers import (
     review_drive_root,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     build_rebuttal_section,
     CRITICAL_FINDING_CALIBRATION,
-    REPO_ANTI_PATTERN_LOCK_GUARD,
-    REVIEW_PREAMBLE,
+    anti_pattern_lock_guard,
+    review_preamble,
     build_self_verification_template,
     build_review_history_section as _build_review_history_section,
     calibrated_input_token_limit,  # noqa: F401 — patchable seam (see note above)
@@ -1053,6 +1053,20 @@ def _subject_changed_paths(frozen: Any, target_repo) -> tuple[str, str]:
     return changed, _build_preflight_staged(target_repo, fallback=changed)
 
 
+def _review_history_with_open_obligations(ctx: ToolContext, frozen: Any) -> str:
+    """The prior-rounds section with the subject root's durable open obligations
+    (anti-thrashing across restarts; best-effort, never fatal)."""
+    open_obligations = []
+    try:
+        from ouroboros.review_state import load_state, make_repo_key
+        state = load_state(pathlib.Path(ctx.drive_root))
+        repo_key = make_repo_key(pathlib.Path(frozen.spec.root if frozen is not None else ctx.repo_dir))
+        open_obligations = state.get_open_obligations(repo_key=repo_key)
+    except Exception:
+        pass
+    return _build_review_history_section(ctx._review_history, open_obligations=open_obligations)
+
+
 def _prepare_unified_review(ctx: ToolContext, commit_message: str,
                             review_rebuttal: str = "",
                             repo_dir=None,
@@ -1073,6 +1087,10 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
     layer = str(frozen.spec.layer or "body") if frozen is not None else "body"
     target_repo = frozen.review_root if frozen is not None else (repo_dir or ctx.repo_dir)
     governance_root = pathlib.Path(frozen.spec.governance_root) if frozen is not None else pathlib.Path(ctx.repo_dir)
+    # The core layer indexes the SUBJECT's own documents where the reviewers read
+    # them (the isolated checkout of a base..head subject); the body layer's
+    # navigation is the body's own and names no subject root.
+    subject_root = pathlib.Path(target_repo) if layer != "body" else None
     ctx._review_iteration_count += 1
     ctx._last_review_block_reason = ""  # reset per attempt
     ctx._last_triad_models = []  # reset forensic field so stale values never persist on early exit
@@ -1112,7 +1130,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
     rebuttal_section = build_rebuttal_section(review_rebuttal)
 
     try:
-        checklist_section = _load_checklist_section()
+        checklist_section = _load_checklist_section(layer)
     except (FileNotFoundError, ValueError) as e:
         log.error("Checklist loading failed (fail-closed): %s", e)
         ctx._last_review_block_reason = "infra_failure"
@@ -1126,18 +1144,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
             "Review enforcement=Advisory: review checklist failed to load; commit proceeding anyway. ",
         ), True
 
-    # Durable open obligations reduce review thrashing across restarts.
-    _open_obs_for_review = []
-    try:
-        from ouroboros.review_state import load_state, make_repo_key
-        _rs = load_state(pathlib.Path(ctx.drive_root))
-        _repo_key = make_repo_key(pathlib.Path(frozen.spec.root if frozen is not None else ctx.repo_dir))
-        _open_obs_for_review = _rs.get_open_obligations(repo_key=_repo_key)
-    except Exception:
-        pass  # Non-fatal: anti-thrashing hint is best-effort
-    review_history_section = _build_review_history_section(
-        ctx._review_history, open_obligations=_open_obs_for_review,
-    )
+    review_history_section = _review_history_with_open_obligations(ctx, frozen)
 
     touched_paths = [f.strip() for f in review_changed.strip().splitlines() if f.strip()]
 
@@ -1179,7 +1186,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
     # packet, so it asks for none.
     governance = _triad_governance_context(
         ctx, touched_paths, checklist_section, api_models, api_slots,
-        governance_root=governance_root, layer=layer)
+        governance_root=governance_root, layer=layer, subject_root=subject_root)
 
     # Build touched-file pack for full current context (managed: the reviewed
     # resolution set; binary rows carry the M0 baseline identity). A plain
@@ -1232,10 +1239,10 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         """Return (prompt, stable_prefix_len): the stable governance prefix is
         byte-identical across rounds and becomes the cache-marked block."""
         stable = _REVIEW_PROMPT_TEMPLATE_STABLE.format(
-            preamble=REVIEW_PREAMBLE,
+            preamble=review_preamble(layer),
             critical_calibration=CRITICAL_FINDING_CALIBRATION,
             json_contract=REVIEW_JSON_ARRAY_CONTRACT,
-            anti_pattern_lock_guard=REPO_ANTI_PATTERN_LOCK_GUARD,
+            anti_pattern_lock_guard=anti_pattern_lock_guard(layer),
             checklist_section=checklist_section,
         ) + (f"\n{governance.stable_inline}\n" if governance.stable_inline.strip() else "")
         dynamic = (f"{governance_tail}\n\n" if governance_tail else "") + _REVIEW_PROMPT_TEMPLATE_DYNAMIC.format(
@@ -1324,7 +1331,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         session_governance = _triad_governance_context(
             ctx, touched_paths, checklist_section,
             [models[i] for i in retrieving_indices], retrieving_slots, delivery="retrieving",
-            governance_root=governance_root, layer=layer)
+            governance_root=governance_root, layer=layer, subject_root=subject_root)
         session_task = _triad_session_task(
             ctx,
             governance_root=governance_root,
@@ -1336,6 +1343,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
             governance=session_governance,
             subject=subject,
             layer=layer,
+            subject_root=subject_root,
         )
 
     # The governance manifest is the packet's disclosure record: which rules were
@@ -1348,6 +1356,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         "models": models, "routes": row_routes, "row_plan": row_plan,
         "session_task": session_task, "target_repo": target_repo,
         "blocking_review": blocking_review, "task_evidence": task_evidence,
+        "layer": layer,
         "governance_manifest": list(governance.manifest),
         "governance_packet_slots": [slot.slot_id for slot in api_slots],
         "governance_retrieving_manifest": list(session_governance.manifest) if session_governance else [],
@@ -1374,6 +1383,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
             row_plan=prepared["row_plan"],
             retry_key=str(prepared.get("retry_key") or ""),
             task_evidence=prepared.get("task_evidence"),
+            layer=str(prepared.get("layer") or "body"),
         )
         result = json.loads(result_json)
     except Exception as e:

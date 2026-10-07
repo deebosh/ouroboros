@@ -645,29 +645,37 @@ def _retain_wave_sources(drive_root: Any, task_id: str, record_id: str, rows: Li
 
 
 def _checklist_facts(repo_dir: Any, *, layer: str = "", body_fact: str = "", how: str = "") -> Dict[str, Any]:
-    """The rules the wave was judged by: the governance root's checklist digest plus
-    the subject's layer and body fact (``unknown`` when nobody established them)."""
+    """The rules the wave was judged by (``review_helpers.checklist_fingerprint``): the
+    sha256 of the layered checklist text and ``rules_source`` = ``docs/CHECKLISTS.md``
+    at the governance root's blob, plus the subject's layer and body fact (``unknown``
+    when nobody established them). The gate's wave is the body's (layer ``body``)."""
+    from ouroboros.tools.review_checklist import checklist_fingerprint
+
     facts = _empty_checklist()
     try:
-        digest = hashlib.sha256((pathlib.Path(repo_dir) / "docs" / "CHECKLISTS.md").read_bytes()).hexdigest()
-        facts.update(checklist_hash=digest, rules_source={"path": "docs/CHECKLISTS.md", "sha": digest})
-    except (OSError, TypeError):
+        facts.update(checklist_fingerprint(layer or "body", pathlib.Path(repo_dir) / "docs" / "CHECKLISTS.md"))
+    except (OSError, TypeError, ValueError):
         pass
     facts.update({k: v for k, v in (("layer", layer), ("body_fact", body_fact), ("how", how)) if str(v or "").strip()})
     return facts
 
 
 def _assigned_rows(assigned: Any) -> List[str]:
-    """Canonical ``seat:part`` rows of a composition given as ``(seat, part)`` pairs
-    or as seat dicts (``seat_id``/``slot_id`` with ``parts``)."""
+    """Canonical ``seat:part`` rows of a composition given as ``(seat, part)`` pairs,
+    ``(seat, part, standing)`` triples or seat dicts (``seat_id``/``slot_id`` with
+    ``parts``). A seat outside the quorum (standing ``additional`` / row
+    ``additional=True``) is a different composition from the same seat assigned:
+    its row carries the ``:additional`` suffix."""
     rows: List[str] = []
     for item in assigned or ():
         if isinstance(item, dict):
             seat = str(item.get("seat_id") or item.get("slot_id") or "")
-            rows.extend(f"{seat}:{part}" for part in (item.get("parts") or []))
+            suffix = ":additional" if item.get("additional") else ""
+            rows.extend(f"{seat}:{part}{suffix}" for part in (item.get("parts") or []))
         else:
-            seat, part = item
-            rows.append(f"{seat}:{part}")
+            seat, part, *standing = item
+            suffix = ":additional" if "additional" in standing else ""
+            rows.append(f"{seat}:{part}{suffix}")
     return sorted(rows)
 
 
@@ -739,7 +747,8 @@ def build_wave_record(facts: Dict[str, Any], *, surface: str, record_id: str = "
     known_costs = [float(s["usd"]) for s in rows if isinstance(s.get("usd"), (int, float))]
     for seat in rows:
         seat.pop("raw_text", None)  # retained as a source above; the row names it, never copies it
-    frozen = dict(facts.get("subject") or structured.get("subject") or {})
+    frozen = facts.get("subject") or structured.get("subject") or {}
+    frozen = dict(frozen.record_subject() if hasattr(frozen, "record_subject") else frozen)
     if frozen:
         subject = {k: str(frozen.get(k) or "") for k in ("root_kind", "root", "kind", "base", "head", "tree_sha", "diff_sha", "checkout")}
     else:

@@ -32,15 +32,20 @@ from ouroboros.config import (
     adaptive_quorum, get_finalization_grace_sec, get_llm_transport_read_timeout_sec, get_review_enforcement,
     get_runtime_mode, get_task_abs_ceiling_sec, operation_window_sec,
 )
+from ouroboros.review_body_fact import body_fact, layer_for
 from ouroboros.review_ledger import (
-    PART_CHANGE, PART_COUPLING, PARTS, QUESTION_NOT_PERFORMED, ledger_root, new_record_id, panel_facts,
-    reduce_verdict, row_verdict, write_record,
+    PART_CHANGE, PART_COUPLING, PARTS, QUESTION_NOT_PERFORMED, build_wave_record, ledger_root, new_record_id,
+    panel_facts, reduce_verdict, row_verdict, write_record,
 )
 from ouroboros.runtime_mode_policy import runtime_mode_at_least
 from ouroboros.settings_scales import EFFORT_SCALE, effort_rank
 from ouroboros.tools.arg_feedback import argument_refusal
 from ouroboros.tools.parallel_review import run_parallel_review
 from ouroboros.tools.registry import ToolContext, ToolEntry
+from ouroboros.tools.review_helpers import checklist_fingerprint
+from ouroboros.tools.review_subject import (
+    ReviewSubjectSpec, freeze_subject, isolated_checkout, reuse_or_none, review_retry_key, review_reuse_key,
+)
 from ouroboros.utils import run_cmd, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -49,7 +54,6 @@ TOOL_NAME = "review_change"
 SURFACE = "change"
 ROOTS = ("active_workspace", "system_repo")
 SUBJECT_KINDS = ("index", "worktree", "base..head")
-_DECIDED = frozenset({"PASS", "FAIL"})
 # Wave block reasons the seat rows state themselves (findings, quorum, scope);
 # any other block keeps a verdict recomputed over the assigned seats from PASS.
 _ROW_STATED_BLOCKS = frozenset({"", "critical_findings", "review_quorum", "scope_blocked"})
@@ -60,72 +64,6 @@ _SEAT_ID_MAX = 64
 
 class ReviewChangeArgumentError(ValueError):
     """A deterministic call error, refused before any reviewer is paid."""
-
-
-# --- Neighbour seams: the review subject (W5) and the rules layer (W6). Module-level
-# names so a test substitutes them in place; each import resolves at call time.
-
-def subject_spec(**fields: Any) -> Any:
-    from ouroboros.tools.review_subject import ReviewSubjectSpec
-    return ReviewSubjectSpec(**fields)
-
-
-def freeze_subject(ctx: ToolContext, spec: Any) -> Any:
-    from ouroboros.tools.review_subject import freeze_subject as freeze
-    return freeze(ctx, spec)
-
-
-@contextlib.contextmanager
-def isolated_checkout(ctx: ToolContext, spec: Any) -> Iterator[Any]:
-    from ouroboros.tools.review_subject import isolated_checkout as checkout
-    with checkout(ctx, spec) as frozen:
-        yield frozen
-
-
-def review_retry_key(frozen: Any) -> str:
-    from ouroboros.tools.review_subject import review_retry_key as retry_key
-    return str(retry_key(frozen))
-
-
-def review_reuse_key(frozen: Any, **identity: Any) -> str:
-    from ouroboros.tools.review_subject import review_reuse_key as reuse_key
-    return str(reuse_key(frozen, **identity))
-
-
-def find_reusable(drive_root: Any, reuse_key: str) -> Optional[Dict[str, Any]]:
-    from ouroboros.review_ledger import find_reusable as find
-    return find(drive_root, reuse_key)
-
-
-def reuse_or_none(drive_root: Any, reuse_key: str, questions: Sequence[str] = ()) -> Optional[Dict[str, Any]]:
-    """The settled, decided record of exactly this identity that was asked these
-    author questions (a new question is not answered by an old record), or ``None``."""
-    record = find_reusable(drive_root, reuse_key) if reuse_key else None
-    if not isinstance(record, dict) or record.get("state") != "settled":
-        return None
-    asked = list((record.get("brief") or {}).get("author_questions") or [])
-    decided = str((record.get("verdict") or {}).get("aggregate") or "") in _DECIDED
-    return record if decided and asked == list(questions) else None
-
-
-def body_fact(root: Any, **kwargs: Any) -> Any:
-    from ouroboros.review_body_fact import body_fact as fact
-    return fact(root, **kwargs)
-
-
-def layer_for(fact: Any) -> str:
-    from ouroboros.review_body_fact import layer_for as layer
-    return str(layer(fact))
-
-
-def checklist_fingerprint(layer: str) -> Dict[str, Any]:
-    from ouroboros.tools.review_helpers import checklist_fingerprint as fingerprint
-    return dict(fingerprint(layer))
-
-
-def build_wave_record(facts: Dict[str, Any], **kwargs: Any) -> Any:
-    from ouroboros.review_ledger import build_wave_record as build
-    return build(facts, **kwargs)
 
 
 # --- Arguments ------------------------------------------------------------------
@@ -444,12 +382,12 @@ def _prepare_wave(ctx: ToolContext, request: ReviewChangeRequest, frozen: Any, p
     rules = checklist_fingerprint(layer)
     enforcement = str(get_review_enforcement() or "")
     contract_fp = str(commit_review_contract_fingerprint() or "")
+    rebuttal_sha = str(compute_rebuttal_sha256(request.review_rebuttal) or "")
     reuse_key = review_reuse_key(
         frozen, rules_sha=str((rules.get("rules_source") or {}).get("sha") or ""), layer=layer,
-        assigned=panel.assigned, enforcement=enforcement, contract_fp=contract_fp)
+        assigned=panel.assigned, enforcement=enforcement, contract_fp=contract_fp, rebuttal_sha=rebuttal_sha)
     return _Wave(request=request, frozen=frozen, panel=panel, root=root, fact=fact, layer=layer, rules=rules,
-                 enforcement=enforcement, contract_fp=contract_fp,
-                 rebuttal_sha=compute_rebuttal_sha256(request.review_rebuttal),
+                 enforcement=enforcement, contract_fp=contract_fp, rebuttal_sha=rebuttal_sha,
                  retry_key=review_retry_key(frozen), reuse_key=reuse_key,
                  root_task_id=str(resolve_root_task_id(ctx) or ""), record_id=new_record_id(),
                  label=_wave_label(request, root))
@@ -468,7 +406,7 @@ _CTX_FIELDS = (
     "_current_review_rebuttal_sha256", "_current_review_contract_fingerprint", "_review_history",
     "_review_iteration_count", "_scope_review_history", "_triad_withheld_seat_records",
     "_review_paid_stamp", "_review_reserved_roster", "_review_reserved_operations",
-    "_review_pending_invocation_checkpoint",
+    "_review_pending_invocation_checkpoint", "_last_review_slot_executions",
 )
 
 
@@ -567,6 +505,9 @@ def _forensic(ctx: ToolContext) -> Dict[str, Any]:
         "degraded_reasons": [str(item) for item in (getattr(ctx, "_review_degraded_reasons", []) or [])],
         "block_reason": str(getattr(ctx, "_last_review_block_reason", "") or ""),
         "custody_lost": bool(getattr(ctx, "_review_custody_lost", False)),
+        # This wave's seat executions (``reviewer_slot_config.record_reviewer_slot_execution``
+        # keeps them on the wave's ctx), never the process-wide last-execution projection.
+        "slot_executions": dict(getattr(ctx, "_last_review_slot_executions", {}) or {}),
     }
 
 
@@ -604,7 +545,6 @@ def seat_findings(triad_raw: Sequence[Dict[str, Any]], scope_raw: Dict[str, Any]
 def wave_facts(ctx: ToolContext, wave: _Wave, *, outcome: Dict[str, Any], forensic: Dict[str, Any]) -> Dict[str, Any]:
     """The ledger facts of this wave, in the commit gate's vocabulary."""
     from ouroboros.review_records import ReviewRequest, resolve_review_wave
-    from ouroboros.reviewer_slot_config import reviewer_slot_last_executions
     from ouroboros.tools import git as git_mod
     from ouroboros.tools.review_helpers import review_enforcement_blocks
 
@@ -618,10 +558,7 @@ def wave_facts(ctx: ToolContext, wave: _Wave, *, outcome: Dict[str, Any], forens
     if outcome.get("crash"):
         degraded.append(f"review_change_wave_crashed: {outcome['crash']}")
     critical, advisory, additional = seat_findings(triad_raw, scope_raw, set(wave.panel.additional))
-    executions: Dict[str, Any] = {}
-    if triad_raw or scope_raw:
-        with contextlib.suppress(Exception):
-            executions = dict(reviewer_slot_last_executions() or {})
+    executions = dict(forensic.get("slot_executions") or {})
     mode = ""
     with contextlib.suppress(Exception):
         mode = str(git_mod._current_runtime_mode() or "")
@@ -630,9 +567,11 @@ def wave_facts(ctx: ToolContext, wave: _Wave, *, outcome: Dict[str, Any], forens
         "review_wave_id": resolve_review_wave(ReviewRequest(
             surface=SURFACE, goal=wave.request.goal or wave.label, task_id=task_id, retry_key=wave.retry_key), {}, ""),
         "subject": wave.frozen, "repo_dir": str(wave.root), "commit_message": wave.label,
+        "governance_root": str(wave.frozen.spec.governance_root or ""), "layer": wave.layer,
+        "body_fact": str(wave.fact.body), "body_how": str(wave.fact.how),
         "goal": wave.request.goal, "scope": wave.request.scope, "author_questions": list(wave.request.author_questions),
         "binding_fingerprint": str(wave.frozen.diff_sha), "review_contract_fingerprint": wave.contract_fp,
-        "enforcement": wave.enforcement, "mode": mode,
+        "rebuttal_sha256": wave.rebuttal_sha, "enforcement": wave.enforcement, "mode": mode,
         "enforcement_blocks": wave.layer == "body" and bool(review_enforcement_blocks(wave.enforcement)),
         "structured": structured, "slot_executions": executions, "triad_raw": triad_raw, "scope_raw": scope_raw,
         "blocked": bool(outcome.get("blocked")), "block_reason": str(outcome.get("block_reason") or ""),
@@ -791,19 +730,18 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
     layer = layer_for(fact)
     panel = compose_panel(request, adds_only=layer == "body"
                           and not runtime_mode_at_least(get_runtime_mode(), "cyber_pro"))
-    spec = subject_spec(root_kind=root_kind, root=str(root), kind=request.subject, base=request.base,
-                        head=request.head, governance_root=str(system), surface=SURFACE,
-                        body_fact=str(fact.body), body_how=str(fact.how), layer=layer)
+    spec = ReviewSubjectSpec(root_kind=root_kind, root=str(root), kind=request.subject, base=request.base,
+                             head=request.head, governance_root=str(system), surface=SURFACE,
+                             body_fact=str(fact.body), body_how=str(fact.how), layer=layer)
     frozen_subject = (isolated_checkout(ctx, spec) if request.subject == "base..head"
                       else contextlib.nullcontext(freeze_subject(ctx, spec)))
     with frozen_subject as frozen, _panel_in_force(panel):
         if not str(getattr(frozen, "diff_text", "") or "").strip():
             raise ReviewChangeArgumentError(f"subject={request.subject} of {root} has no change to review")
         wave = _prepare_wave(ctx, request, frozen, panel, root=root, fact=fact, layer=layer)
-        if not request.review_rebuttal:
-            prior = reuse_or_none(ledger_root(ctx), wave.reuse_key, request.author_questions)
-            if prior is not None:
-                return review_result(prior, reused=True)
+        prior = reuse_or_none(ledger_root(ctx), wave.reuse_key, questions=request.author_questions)
+        if prior is not None:
+            return review_result(prior["record"], reused=True)
         exhausted = _cycles_exhausted(ctx, wave)
         if exhausted is not None:
             return _refuse_exhausted(ctx, wave, exhausted)

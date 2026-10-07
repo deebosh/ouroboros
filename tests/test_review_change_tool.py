@@ -1,10 +1,14 @@
 """``review_change``: one review-only wave over a change in any registered root.
 
 The neighbour seams (the frozen review subject and the rules layer of the body
-fact) are substituted on the module under test; the paid wave is a stub that reads
+fact) are substituted on the module under test with fakes of the SAME contract
+(``review_subject.FrozenSubject`` / ``review_body_fact.BodyFact``); the identities
+(reuse and retry keys) and the ledger are real. The paid wave is a stub that reads
 the panel in force, stamps the paid fact at dispatch and answers the way
 ``parallel_review`` leaves its forensic facts on the context. Every assertion is
-about what ``review_change`` decides, dispatches, records and returns.
+about what ``review_change`` decides, dispatches, records and returns; the
+end-to-end proof over the real subject operation is
+``test_review_change_end_to_end.py``.
 """
 from __future__ import annotations
 
@@ -23,6 +27,7 @@ from ouroboros import review_ledger as rl
 from ouroboros import reviewer_slot_config as slots
 from ouroboros.tools import commit_gate
 from ouroboros.tools import review_change as rc
+from ouroboros.tools.review_subject import ReviewSubjectSpec, review_retry_key
 
 
 def _git(repo: pathlib.Path, *args: str) -> str:
@@ -63,32 +68,21 @@ def _configured() -> tuple:
 
 
 @dataclass(frozen=True)
-class Spec:
-    """The ``ReviewSubjectSpec`` contract of the subject operation."""
-
-    root_kind: str
-    root: str
-    kind: str
-    base: str = ""
-    head: str = ""
-    governance_root: str = ""
-    surface: str = "change"
-    body_fact: str = "unknown"
-    body_how: str = ""
-    layer: str = "core"
-
-
-@dataclass(frozen=True)
 class Frozen:
     """The ``FrozenSubject`` contract: the exact bytes one wave reviews."""
 
-    spec: Spec
+    spec: ReviewSubjectSpec
     diff_text: str
     diff_sha: str
     tree_sha: str
     parent_sha: str
     checkout: str = ""
     name_status: tuple = ()
+
+    def record_subject(self) -> Dict[str, Any]:
+        return {"root_kind": self.spec.root_kind, "root": self.spec.root, "kind": self.spec.kind,
+                "base": self.parent_sha, "head": self.spec.head, "tree_sha": self.tree_sha,
+                "diff_sha": self.diff_sha, "checkout": self.checkout}
 
 
 class Wave:
@@ -174,7 +168,7 @@ class Harness:
 
 
 def _install_seams(monkeypatch: pytest.MonkeyPatch, h: Harness) -> None:
-    def freeze(ctx: Any, spec: Spec) -> Frozen:
+    def freeze(ctx: Any, spec: ReviewSubjectSpec) -> Frozen:
         h.calls.append(("freeze", spec))
         root, base = pathlib.Path(spec.root), spec.base or "HEAD"
         diff = _git(root, "diff", "--binary", *(["--cached"] if spec.kind == "index" else []), base)
@@ -182,22 +176,13 @@ def _install_seams(monkeypatch: pytest.MonkeyPatch, h: Harness) -> None:
         return Frozen(spec, diff, _sha(diff), tree, _git(root, "rev-parse", base))
 
     @contextlib.contextmanager
-    def checkout(ctx: Any, spec: Spec):
+    def checkout(ctx: Any, spec: ReviewSubjectSpec):
         h.calls.append(("checkout", spec))
         root = pathlib.Path(spec.root)
         diff = _git(root, "diff", "--binary", spec.base, spec.head)
         yield Frozen(spec, diff, _sha(diff), _git(root, "rev-parse", f"{spec.head}^{{tree}}"),
                      _git(root, "rev-parse", spec.base), checkout=str(h.drive / "checkouts" / "head"))
         h.calls.append(("checkout_closed", spec))
-
-    def reuse_key(frozen: Frozen, *, rules_sha: str, layer: str, assigned: Any, enforcement: str, contract_fp: str) -> str:
-        spec = frozen.spec
-        return _sha(json.dumps([spec.surface, spec.kind, spec.root, frozen.diff_sha, frozen.tree_sha, rules_sha, layer,
-                                [list(seat) for seat in assigned], enforcement, contract_fp]))
-
-    def find(drive_root: Any, key: str) -> Any:
-        hits = [rid for rid, payload in h.written.items() if (payload.get("fingerprints") or {}).get("reuse_key") == key]
-        return rl.load_record(drive_root, hits[-1]) if hits else None
 
     def write(drive_root: Any, record: Any) -> Dict[str, Any]:
         payload = rl.write_record(drive_root, record)
@@ -216,13 +201,8 @@ def _install_seams(monkeypatch: pytest.MonkeyPatch, h: Harness) -> None:
         record.surface = surface
         return record
 
-    monkeypatch.setattr(rc, "subject_spec", lambda **fields: Spec(**fields))
     monkeypatch.setattr(rc, "freeze_subject", freeze)
     monkeypatch.setattr(rc, "isolated_checkout", checkout)
-    monkeypatch.setattr(rc, "review_reuse_key", reuse_key)
-    monkeypatch.setattr(rc, "review_retry_key",
-                        lambda frozen: f"review:{frozen.spec.root}:{frozen.spec.kind}:{frozen.diff_sha}:{frozen.spec.surface}")
-    monkeypatch.setattr(rc, "find_reusable", find)
     monkeypatch.setattr(rc, "write_record", write)
     monkeypatch.setattr(rc, "body_fact", fact)
     monkeypatch.setattr(rc, "layer_for", lambda fact: "body" if fact.body == "true" else "core")
@@ -474,6 +454,8 @@ def test_the_same_identity_returns_the_settled_record_free(h: Harness) -> None:
     assert len(h.wave.calls) == 3 and rebutted["reused"] is False
     assert h.wave.calls[2].rebuttal.startswith("The finding is stale")
     assert h.wave.calls[2].retry_key == h.wave.calls[0].retry_key
+    same_round = h.run(subject="index", review_rebuttal="The finding is stale: line 3 already bounds it.")
+    assert len(h.wave.calls) == 3 and same_round["reused"] is True and same_round["record_id"] == rebutted["record_id"]
     h.run(subject="index", author_questions=["Is the cache bounded?"])
     assert len(h.wave.calls) == 4
     assert [attempt.attempt for attempt in h.attempts(h.project)] == [1, 2, 3, 4]
@@ -499,7 +481,7 @@ def test_the_wave_runs_under_its_own_identities_and_restores_the_task(h: Harness
     [call] = h.wave.calls
     frozen = call.subject
     assert call.tool == "review_change" and call.record_id == result["record_id"]
-    assert call.retry_key == f"review:{frozen.spec.root}:index:{frozen.diff_sha}:change"
+    assert call.retry_key == review_retry_key(frozen) and call.retry_key.endswith(f":index:{frozen.diff_sha}:change")
     record = rl.load_record(h.drive, result["record_id"])
     assert record["fingerprints"]["retry_key"] == call.retry_key and record["fingerprints"]["reuse_key"]
     assert (h.ctx._current_review_tool_name, h.ctx._current_review_retry_key, h.ctx._review_history) == (
