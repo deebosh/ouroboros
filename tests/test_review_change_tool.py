@@ -193,10 +193,22 @@ def _install_seams(monkeypatch: pytest.MonkeyPatch, h: Harness) -> None:
         return payload
 
     def fact(root: Any, *, system_repo: Any, manifest: Any = None, data_dir: Any = None, treat_as_body: bool = False):
+        """``review_body_fact.body_fact``'s contract: the system repository is the body
+        (``dir``); a root with a remote that reaches neither the managed remote nor the
+        install's origin is a recognized foreign root (``false``); a root git cannot
+        place (no remote) is ``unknown``, and ONLY that one is raised by ``treat_as_body``
+        — ``how`` keeps the fact's value and ``detail`` records the raise."""
+        from ouroboros.review_body_fact import BodyFact
+
         h.calls.append(("body_fact", pathlib.Path(root), treat_as_body))
-        if pathlib.Path(root).resolve() == pathlib.Path(system_repo).resolve():
-            return SimpleNamespace(body="true", how="dir")
-        return SimpleNamespace(body="true", how="treat_as_body") if treat_as_body else SimpleNamespace(body="false", how="foreign_remote")
+        root = pathlib.Path(root).resolve()
+        if root == pathlib.Path(system_repo).resolve():
+            return BodyFact("true", "dir", f"{root} is the system repository")
+        if _git(root, "remote"):
+            return BodyFact("false", "remote_chain", "a remote reaches neither the managed remote nor the install's origin")
+        if treat_as_body:
+            return BodyFact("true", "unknown", f"{root} has no remote; raised to body by treat_as_body")
+        return BodyFact("unknown", "unknown", f"{root} has no remote")
 
     def build(facts: Dict[str, Any], *, surface: str, record_id: str = "", drive_root: Any = None) -> Any:
         h.built.append(facts)
@@ -261,7 +273,11 @@ def test_the_schema_is_the_planned_call() -> None:
     assert props["subject"]["enum"] == ["index", "worktree", "base..head"]
     assert props["surface"]["enum"] == ["change"]
     assert props["reviewer_effort"]["enum"] == list(EFFORT_SCALE)
-    assert props["treat_as_body"] == {"type": "boolean", "default": False, "description": props["treat_as_body"]["description"]}
+    assert (props["treat_as_body"]["type"], props["treat_as_body"]["default"]) == ("boolean", False)
+    # The schema states the predicate's rule (review_body_fact.body_fact): the flag raises
+    # only an UNKNOWN body fact; a recognized body or foreign root is unchanged.
+    description = props["treat_as_body"]["description"]
+    assert "unknown" in description and "unchanged" in description and "even if it is not the body" not in description
     assert entry.timeout_sec and entry.timeout_sec > 0
 
 
@@ -307,7 +323,7 @@ def test_a_foreign_base_head_is_core_untested_and_locks_nothing(h: Harness, monk
         "active_workspace", "core", "false")
     assert call.subject.checkout and [kind for kind, *_ in h.calls if kind.startswith("checkout")] == [
         "checkout", "checkout_closed"]
-    assert result["checklist"] == {"layer": "core", "body_fact": "false", "how": "foreign_remote", "treat_as_body": False}
+    assert result["checklist"] == {"layer": "core", "body_fact": "false", "how": "remote_chain", "treat_as_body": False}
     assert result["tests"] == {"policy": "NOT_RUN", "result": "unknown"}
     assert result["aggregate"] == rl.VERDICT_FAIL and [f["seat_id"] for f in result["findings"]["critical_findings"]] == [triad[0]]
     assert (result["enforcement"], result["enforcement_blocks"]) == ("blocking", False)
@@ -323,22 +339,34 @@ def test_a_foreign_base_head_is_core_untested_and_locks_nothing(h: Harness, monk
     assert _git(h.system, "diff", "--cached", "--name-only") == "body.py"
 
 
-def test_treat_as_body_reads_a_foreign_root_under_the_body_layer(h: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_treat_as_body_raises_only_an_unknown_root_to_the_body_layer(
+        h: Harness, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     triad, scope = _configured()
     monkeypatch.setattr(rc, "get_review_enforcement", lambda: "blocking")
+    # A recognized foreign root (its remote reaches neither the managed remote nor the
+    # install's origin) stays on the core layer whatever the flag says; the flag is recorded.
     _stage(h.project, "a.py", "a = 1\n")
-    raised = h.run(subject="index", treat_as_body=True, reviewers=[triad[0]])
-
+    foreign = h.run(subject="index", treat_as_body=True, reviewers=[triad[0]], reason="one seat")
     assert ("body_fact", h.project.resolve(), True) in h.calls
     [call] = h.wave.calls
+    assert call.subject.spec.layer == "core" and (call.triad, call.coupling) == ([triad[0]], [])
+    assert foreign["checklist"] == {"layer": "core", "body_fact": "false", "how": "remote_chain", "treat_as_body": True}
+    assert foreign["enforcement_blocks"] is False
+
+    # A root git cannot place (no remote, no copy binding) is raised: the body layer, the
+    # owner's panel outside Cyber Pro, enforcement binding; ``how`` keeps the fact's value.
+    local = _repo(tmp_path / "work" / "local", "local")
+    _stage(local, "b.py", "b = 2\n")
+    raised = h.run(subject="index", workspace_root=str(local), treat_as_body=True, reviewers=[triad[0]])
+    call = h.wave.calls[-1]
     assert call.subject.spec.layer == "body" and (call.triad, call.coupling) == (triad, scope)
-    assert raised["checklist"] == {"layer": "body", "body_fact": "true", "how": "treat_as_body", "treat_as_body": True}
+    assert raised["checklist"] == {"layer": "body", "body_fact": "true", "how": "unknown", "treat_as_body": True}
     assert raised["panel"]["reviewers_subset_ignored"] is True and raised["enforcement_blocks"] is True
 
-    _stage(h.project, "b.py", "b = 2\n")
-    plain = h.run(subject="index", reviewers=[triad[0]], reason="one seat")
-    assert plain["checklist"]["layer"] == "core" and h.wave.calls[-1].triad == [triad[0]]
-    assert plain["enforcement_blocks"] is False
+    _stage(local, "c.py", "c = 3\n")
+    plain = h.run(subject="index", workspace_root=str(local), reviewers=[triad[0]], reason="one seat")
+    assert plain["checklist"] == {"layer": "core", "body_fact": "unknown", "how": "unknown", "treat_as_body": False}
+    assert h.wave.calls[-1].triad == [triad[0]] and plain["enforcement_blocks"] is False
 
 
 def test_workspace_root_names_any_registered_repository(h: Harness, tmp_path: pathlib.Path) -> None:

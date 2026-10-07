@@ -851,8 +851,9 @@ def get_tools() -> List[ToolEntry]:
             "Panel strength for THIS wave; outranks each seat's effort (a compound route keeps its own). "
             "Omitted = the owner's settings.")},
         "review_rebuttal": _string("Your answer to the previous wave's findings; buys a new wave."),
-        "treat_as_body": {"type": "boolean", "default": False,
-                          "description": "Review this root under the body layer even if it is not the body."},
+        "treat_as_body": {"type": "boolean", "default": False, "description": (
+            "Raise a root whose body fact is unknown (git cannot place it: no remote, no copy binding) to the "
+            "body layer. A recognized body and a recognized foreign root are unchanged; the record notes the raise.")},
     }
     schema = {"name": "review_change", "description": _DESCRIPTION,
               "parameters": {"type": "object", "properties": properties, "required": ["subject"]}}
