@@ -114,7 +114,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── presence_admission.py ← Fresh review/enablement/profile/state admission + immutable per-turn Presence snapshot
       ├── presence_context.py  ← Presence instructions, exact event facts, declared knowledge-topic projection
       ├── presence_runner.py   ← Fresh-agent Presence turns: cross-process installation cap, per-conversation serialization, idempotency, typed result, dialogue provenance (§12)
-      ├── presence_delivery.py ← Provider receipts in canonical chat history; Host-context deduplication projection (§12)
+      ├── presence_delivery.py ← Provider receipts in canonical chat history; Host-context deduplication projection (§12); the new reflection's task-lineage receipt reader (§6 Post-task reflection)
       ├── dialogue_provenance.py ← Shared exact transport-provenance rendering for history, memory, and consolidation
       ├── extension_companion.py ← Host-supervised companion processes for transport skills (§12)
       ├── extension_reconcile_queue.py ← Durable worker→server extension reconcile markers + server pickup loop
@@ -397,7 +397,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── browser_policy.py    ← The browser tool's target and control-request policy: task-granted concrete origins, metadata/private/reserved refusals, the three-valued Ouroboros control-service identity (`runtime_service_kind`: proven kind / unknown / none); `tools/browser.py` keeps the Playwright lifecycle (§6 MCP and browser-facing external tools)
       ├── skill_payload_binding.py ← Skill payload targeting: `.seed-origin` distinguishes native vs external; read/list/search only for read profiles; bounded manifestless skill_publish recovery
       ├── utils.py             ← SSOT for atomic JSON, timestamps, hashes, sanitization, subprocess helpers, `truncate_review_artifact`
-      ├── jsonl_tail.py        ← `JsonlChainSnapshot` owns captured byte reads for history and wake; bounded filtered tails (window doubling, newest-first three-archive backfill, `coverage_line` facts) serve history/logs/routing and task context; gateway wrappers keep the parser seam
+      ├── jsonl_tail.py        ← `JsonlChainSnapshot` owns captured byte reads for history, wake and reflection receipts (complete rows for the latter two); bounded filtered tails (window doubling, newest-first three-archive backfill, `coverage_line` facts) serve history/logs/routing and task context; gateway wrappers keep the parser seam
       ├── markdown_source.py   ← Byte-preserving Markdown structure shared by books and knowledge notes; physical LF/UTF-8 ranges tied to source SHA; `MarkdownSourceError` keeps missing grammars or malformed YAML visible without replacing original bytes
       ├── world_profiler.py    ← Generates WORLD.md
       ├── contracts/           ← Frozen ABI package (§11)

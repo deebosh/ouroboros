@@ -11,13 +11,13 @@ names its inline and on-demand delivery; neither permits silent truncation.
 
 Commit triad, scope, advisory and deep self-review share
 `ouroboros/tools/governance_context.py`. Tier 1 always delivers BIBLE.md, the
-applicable CHECKLISTS section and CHECKLISTS_ARCHIVE standing disclosures in
+applicable CHECKLISTS sections and CHECKLISTS_ARCHIVE standing disclosures in
 full. Tier 2 selects the review-protocol chapter, DEVELOPMENT chapters naming
 touched files, and DESIGN for `web/` changes within
 `runtime_limits.REVIEW_GOVERNANCE_INLINE_SHARE` of the usable window; overflow
 stays named in navigation. Tier 3 delivers the ARCHITECTURE book navigation,
 never the whole map; tool-free triad packet rows also receive relevant
-sections within that same share. This keeps shared rules consistent without
+sections within that share. This keeps shared rules consistent without
 letting reference books crowd out the change. A pointer gives a packet row
 no tools or evidence it did not receive.
 
