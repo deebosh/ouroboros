@@ -18,7 +18,7 @@ from ouroboros.gateway.host_service import create_host_service_app
 from ouroboros.presence_runner import run_presence_turn
 from ouroboros.task_results import load_task_result, write_task_result
 from tests.test_host_service_api import _seed_presence_behavior, _seed_token
-from tests.test_presence_continuation import ANSWER, NEW_WORDS, finish, harness, wait_for  # noqa: F401 -- fixture
+from tests.test_presence_continuation import ANSWER, NEW_WORDS, finish, harness as harness, wait_for
 
 _TOKEN = "presence-token"
 _HEADERS = {"X-Skill-Token": _TOKEN}
