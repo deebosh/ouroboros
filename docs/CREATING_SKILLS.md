@@ -709,11 +709,13 @@ A transport extension declares `permissions: [presence]`, obtains its ordinary
 content-hash-bound skill token, and sends:
 
 - `POST /presence/turn` with exactly `binding_id`, `event`, and optional
-  `staged_files` and negotiated `delivery_reporting_version`. The event carries the provider/account/conversation/thread,
+  `staged_files` and negotiated `delivery_reporting_version` and `continuation_version`. The event carries the provider/account/conversation/thread,
   stable source-event and conversation ids, structured actor/conversation/message
   facts, and text. Files must already be under that transport skill's state root.
 - `GET /presence/work/{work_ref}?binding_id=...` to poll only late work created
   by the same owner binding.
+- `POST /presence/work/{continuation_ref}` with `binding_id` and `transport_queue`
+  to refresh the same continuing turn's observed transport inbox facts, under the same token and binding.
 
 The nested fact maps may include optional provider evidence such as the agent's
 own account identity, explicit mention occurrences and the thread-root author.
@@ -758,6 +760,73 @@ refusal after a terminal task does not itself prove safe regeneration on the
 same ID; if prior effects remain unproven the conversation may need explicit
 owner recovery. Never treat these refusals as `completed/silent` or resend a
 confirmed provider effect merely because a Host receipt failed.
+
+#### Presence continuation
+
+`GET /identity` advertises `presence_continuation_version: 1` on supporting hosts. Request
+`continuation_version: 1` beside `binding_id` and `event` on `/presence/turn` (negotiation is not
+event identity). An author whose result waits for acceptance review then yields the conversation
+and answers early: `status: "continuing"` with `continuation_ref` (equal to `turn_ref`) and an
+initial `outcome`/`text`/`output_ref`. `deferred` with empty text means a result may follow; an
+author-selected early output (Advisory `pending_review=finish`) is speech to send once under its
+`output_ref`; `silent`/`tool_delivered` send nothing. A promoted child keeps its own `work_ref`; poll
+both independently. `status: "completed"` (with `continuation_ref: ""`) means the author ended
+within the request. A retry of the same event returns the identical stored envelope, never a rerun;
+`continuing` releases text to you and is not proof of provider delivery.
+
+Poll `GET /presence/work/{continuation_ref}?binding_id=...` like other late work. While the author
+lives it answers HTTP 202 `pending` with `outputs`: the ordered `{output_ref, outcome, text}` the
+author released so far. Its terminal answers 200 with `outcome`/`text`/`output_ref` holding only a new
+terminal output (a re-finalized released selection yields `silent` and empty text), `child_work_ref`,
+and the same `outputs`. A lost author answers 200 `status: "interrupted"` when its retained
+process identity proves it dead; a missing or unobservable identity alone does not prove a crash.
+It is never restarted automatically and its original event is not regenerated. An explicit new
+event can request manual continuation after checking prior effects; it creates a new turn and
+retains the interrupted reference, rather than resuming the dead stack. Send each `output_ref` at most once:
+deduplicate by `output_ref`, never by text, since an identical correction is new speech. Without
+`continuation_version` the legacy shape is unchanged and the request waits for the author's terminal.
+
+Before speaking again, the same author reacquires the conversation and active slot and receives
+observed conversation and delivery facts since its yield. Reentry retains the exact observed text,
+explicit read gaps and frozen history descriptor in the existing task artifact store. Through the
+turn's already granted reader, `get_task_result(task_id, presence_reentry_sha256)` returns the
+checkpoint's character count/hash and `history_start`/`history_end`. Character ranges
+(`source_start_char`, `source_end_char`) read the retained checkpoint. To read the full frozen
+canonical interval, start `presence_reentry_offset` at `history_start` and follow `next_offset`
+until `interval_exhausted`; pages contain complete rows from this conversation and explicit gaps.
+For an oversized page, keep its `presence_reentry_offset` and use the character-range arguments
+to read its serialized text. Later appends are outside this interval. Missing, replaced or truncated
+history is unavailable, never empty-complete; concurrent in-place edits plus append remain outside
+the shared reader's non-atomic capture guarantee. Canonical history follows ordinary archive
+retention, while the checkpoint retains its originally observed facts.
+
+An inline note can omit whole rows only with an accessible source. Frozen ceilings lacking the
+reader walk the interval and keep all available text inline; this can increase context and memory,
+without widening permissions. Complete observed text does not erase history gaps. The initial
+yield anchors the previous-turn pointer across repeated parks and final completion, so the
+returning author cannot replace a newer turn's pointer. Unsubmitted transport facts remain unknown.
+
+Supply an initial inbox observation in `event.conversation.transport_queue`. To refresh it while
+an author waits, post `{binding_id, transport_queue}` to its continuation work URL; `GET` remains
+a read-only poll. The snapshot has `schema_version: 1`, `source`, timezone-qualified ISO
+`observed_at`, the exact derived `conversation_key`, `after_source_event_id` matching the turn's
+original source event, `complete: true`, `pending_count` equal to `len(events)`, and
+`omitted_count: 0`. `source` is a nonempty attribution string. Each event has a unique nonempty
+`source_event_id` and string `text`; optional `text_chars` equals the text's character count,
+and `text_truncated` is absent or false. Other provider facts are retained. These are transport
+observations of queued events, not admissions, owner instructions, or provider-delivery receipts.
+Keep the snapshot's identity and content unchanged when retrying its report.
+
+The original event retains the initial snapshot; refresh snapshots use the existing task artifact
+store, with `presence_transport_queue` pointing at the latest one. A successful refresh returns
+`{ok: true, status: "recorded" | "duplicate" | "stale", observed_at: ...}`. Older observations cannot
+replace a newer timestamp; `stale` returns the retained observation's time. Malformed snapshots or
+different content at the same timestamp return HTTP 400 `presence_observation_invalid` with
+`disposition: "rejected"`. Reentry carries the full latest received
+snapshot in its exact source and dates the observation: it is not proof that the transport inbox
+still has those contents. No received snapshot means unknown, never an empty inbox. Posting facts
+neither dequeues nor executes the events; the transport retains its ordinary admission and outbox
+custody. A later arrival can still race the author's decision and delivery.
 
 #### Reporting actual Presence delivery
 

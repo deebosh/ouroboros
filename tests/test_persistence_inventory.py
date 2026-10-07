@@ -612,7 +612,10 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # ``*.*.json`` registrations written when the custody lock is held; one section-2 row.
 # 320 -> 321 (obligations rebuild): ``state/obligations/rebuild.owed``, left by a transition whose
 # set write failed so the next start rebuilds the sets; it joins the obligations section-2 row.
-EXPECTED_SCAN_PATHS = 321
+# 321 -> 322 (#1536 reentry): ``task_results/artifacts/*/source_handles/
+# context_checkpoints/presence-reentry-*.json``, retained by presence_continuation
+# through store_actor_source_bytes and resolved by its digest reader; its own section-7 row.
+EXPECTED_SCAN_PATHS = 322
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
@@ -629,6 +632,7 @@ SENTINELS = frozenset({
     "logs/chat.jsonl",
     "memory/identity.md",
     "task_results/artifacts/*",
+    "task_results/artifacts/*/source_handles/context_checkpoints/presence-reentry-*.json",
     "task_trees/*/blackboard.jsonl",
     "uploads",
     # stage-2: names that live in constants, helper returns or f-strings
