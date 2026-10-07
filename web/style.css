@@ -7226,7 +7226,13 @@ textarea.chat-input {
     max-width: 100%;
     height: auto;
     max-height: var(--chat-photo-max-height);
+    /* A tiny, very narrow or very short photo still gets a box its always-present
+       actions fit in (the figure clips what overflows it); scale-down shows the
+       photo whole at its own size and ratio inside that box, never enlarged. */
+    min-width: var(--chat-photo-min-box);
+    min-height: var(--chat-photo-min-box);
     aspect-ratio: auto;
+    object-fit: scale-down;
 }
 
 /* Owner attachments: one block above the caption inside the owner's bubble

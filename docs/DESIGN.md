@@ -1013,7 +1013,9 @@ file (owner choice 1C/2A/3A/4A/5A/6A with mobile first-class).
 - **Order:** attachments sit above the caption inside the owner's bubble; a
   message with no words shows its attachments alone, never an empty text row.
 - **Photos are whole on both sides.** One photo keeps its own ratio up to
-  `--chat-photo-max-height`; several share the existing two-column grid with
+  `--chat-photo-max-height`, never enlarged; a tiny, very narrow or very short
+  one sits inside a `--chat-photo-min-box` box so its `•••` is never clipped
+  (either side); several share the existing two-column grid with
   letterboxed (`contain`) tiles, one column in a narrow chat column. Ouroboros's
   own photo tiles letterbox the same way — no side crops an image.
 - **Video and audio** play in the existing inline players; every other file is

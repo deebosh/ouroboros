@@ -101,6 +101,17 @@ def test_stored_names_are_plain_on_every_platform_and_keep_their_extension():
         assert chat_uploads.upload_id(bad) == "", bad
 
 
+def test_a_name_is_bounded_in_code_points_the_bound_the_browser_mirrors():
+    """web/tests/chat_attachment_values.test.js keeps these same names: the browser's display
+    bound counts code points too, so it passes a server name whole and never splits a pair."""
+    name = chat_uploads.safe_upload_name("a" * 180 + "😀" * 10 + ".png")
+    assert name == "a" * 180 + "😀" * 9 + ".png" and len(name) == 193
+    assert len(name.encode("utf-16-le")) // 2 == 202, "past 200 UTF-16 units"
+    view = chat_uploads.attachment_view({"upload": f"{'0' * 32}_{name}", "name": name, "kind": "image", "size": 1})
+    assert view["available"] and view["name"] == name
+    assert chat_uploads.attachment_view({"name": "😀" * 201})["name"] == "😀" * 200
+
+
 # --- confined open ------------------------------------------------------------------
 
 @pytest.mark.skipif(not confined_files.POSIX_CONFINED, reason="POSIX directory-relative opens")

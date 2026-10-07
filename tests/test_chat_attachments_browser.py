@@ -284,6 +284,74 @@ def test_owner_attachments_render_once_everywhere(direct_server_with_data, engin
             browser.close()
 
 
+_ODD_PHOTOS = {"tiny": (8, 8), "narrow": (6, 300), "short": (400, 6)}
+# A box its figure clips keeps its whole bounding rect, so the rect proves nothing: the middle of
+# each edge (2px in, clear of the rounded corners) and the centre of the `•••` must hit-test to
+# the control itself.
+_ACTIONS_HIT = """item => {
+    item.scrollIntoView({ block: 'center' });
+    const summary = item.querySelector('.chat-photo-actions summary'), photo = item.querySelector('img.chat-photo');
+    const box = summary.getBoundingClientRect(), image = photo.getBoundingClientRect(), d = 2;
+    const x = (box.left + box.right) / 2, y = (box.top + box.bottom) / 2;
+    const points = [[x, box.top + d], [box.right - d, y], [x, box.bottom - d], [box.left + d, y], [x, y]];
+    const found = points.map(([px, py]) => document.elementFromPoint(px, py));
+    return { hits: found.map(node => summary.contains(node)),
+        misses: found.filter(node => !summary.contains(node)).map(node => node ? `${node.tagName}.${node.className}` : null),
+        summary: [Math.round(box.width), Math.round(box.height)], box: [Math.round(image.width), Math.round(image.height)],
+        natural: [photo.naturalWidth, photo.naturalHeight], fit: getComputedStyle(photo).objectFit };
+}"""
+
+
+@pytest.mark.parametrize("engine", ["chromium", "webkit"])
+def test_a_tiny_or_narrow_single_photo_keeps_its_actions_whole_on_both_sides(direct_server_with_data, engine):
+    """One photo shows at its own size and ratio, so an 8x8, a 6x300 or a 400x6 one once clipped
+    its own `•••` to nothing: the owner's attachment and Ouroboros's photo alike, on a phone."""
+    from playwright.sync_api import sync_playwright
+
+    url = direct_server_with_data["url"]
+    with sync_playwright() as pw:
+        browser = getattr(pw, engine).launch()
+        try:
+            phone = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=engine == "chromium",
+                                        has_touch=True, device_scale_factor=2)
+            page = phone.new_page()
+            page.add_init_script(f"({_CAPTURE_TEST_SOCKET})()")
+            page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_function("() => window.__testSockets?.some(s => s.readyState === 1)", timeout=30_000)
+            items = []
+            for index, (shape, (width, height)) in enumerate(_ODD_PHOTOS.items()):
+                png = _png(width, height, (200, 60, 60))
+                page.locator("#chat-file-input").set_input_files([{"name": f"{shape}.png", "mimeType": "image/png",
+                                                                   "buffer": png}])
+                page.wait_for_function("() => document.querySelectorAll('#chat-attachment-preview .attach-badge').length === 1")
+                page.locator("#chat-send").click()
+                page.wait_for_function(f"n => document.querySelectorAll('{_BUBBLE}').length === n", arg=index + 1,
+                                       timeout=30_000)
+                items.append((f"{engine} owner {shape}", (width, height),
+                              page.locator(_BUBBLE).nth(index).locator(".chat-gallery-item")))
+                page.evaluate("""frame => window.__testSockets.find(s => s.readyState === 1)
+                    .dispatchEvent(new MessageEvent('message', { data: JSON.stringify(frame) }))""", {
+                    "type": "photo", "role": "assistant", "chat_id": 1, "task_id": f"odd-{shape}", "mime": "image/png",
+                    "image_base64": base64.b64encode(png).decode("ascii"), "ts": f"2026-10-07T09:00:0{index}Z"})
+                items.append((f"{engine} Ouroboros {shape}", (width, height),
+                              page.locator(f'[data-media-group="assistant:photos:odd-{shape}"] .chat-gallery-item')))
+            for where, natural, item in items:
+                item.evaluate("el => el.scrollIntoView({ block: 'center' })")
+                page.wait_for_function("img => img.complete && img.naturalWidth > 0",
+                                       arg=item.locator("img.chat-photo").element_handle(), timeout=15_000)
+                facts = item.evaluate(_ACTIONS_HIT)
+                assert all(facts["hits"]), f"{where}: the photo's actions are clipped: {facts}"
+                assert facts["natural"] == list(natural) and facts["fit"] == "scale-down", (where, facts)
+                item.locator(".chat-photo-actions summary").tap(timeout=5_000)
+                menu = page.locator(".chat-photo-menu:not([hidden])")
+                menu.wait_for(state="visible")
+                page.keyboard.press("Escape")
+                menu.wait_for(state="hidden")
+            phone.close()
+        finally:
+            browser.close()
+
+
 VIDEO_NAME = "обход-объекта-с-длинным-названием-видеозаписи-" + "v" * 40 + ".webm"
 MANY_CAPTION = "Тридцать вложений: видео, голос и кадры"
 # Each composer upload POST, as the page saw its own composer at that moment.
@@ -351,21 +419,31 @@ def _assert_lazy_images_load(page, bubble, where: str) -> None:
 
     The reader first turns back with the wheel, as a reader does: only a reader's gesture ends
     the feed's following of its newest message (chat_reading_position), so a programmatic scroll
-    alone can be undone by a late layout. Each photo is then brought into the feed's view by the
-    DOM's own scrollIntoView: Playwright's scroll_into_view_if_needed intermittently left WebKit's
-    nested feed unmoved (the diagnostic showed the feed exactly where the wheel had left it)."""
+    alone can be undone by a late layout. The wheel lands first (the feed has left its newest
+    message), then each photo is brought into the feed's view by the DOM's own scrollIntoView,
+    with another photo's load landing before the scroll event that move owes: the feed once
+    reflowed on that load at once and restored the anchor of the place just left (WebKit's
+    diagnostic showed the feed exactly where the wheel had left it)."""
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
     feed = page.locator("#chat-messages").bounding_box()
     page.mouse.move(feed["x"] + feed["width"] / 2, feed["y"] + feed["height"] / 2)
     page.mouse.wheel(0, -400)
-    for index in (0, 27):
+    page.wait_for_function("""() => { const feed = document.getElementById('chat-messages');
+        return feed.scrollHeight - feed.scrollTop - feed.clientHeight > 48; }""", timeout=10_000)
+    for index, other in ((0, 27), (27, 0)):
         handle = bubble.locator("img.chat-photo").nth(index).element_handle()
-        handle.evaluate("img => img.scrollIntoView({ block: 'center' })")
+        handle.evaluate("""(img, other) => {
+            img.scrollIntoView({ block: 'center' });
+            img.closest('.chat-gallery-grid').querySelectorAll('img.chat-photo')[other].dispatchEvent(new Event('load'));
+        }""", other)
         try:
             page.wait_for_function("img => img.complete && img.naturalWidth > 0", arg=handle, timeout=15_000)
         except PlaywrightTimeoutError:
             raise AssertionError(f"{where}: lazy photo {index} never decoded: {handle.evaluate(_IMAGE_STATE)}") from None
+        # Chromium's wide lazy margin decodes the photo even from where the wheel left the feed.
+        state = handle.evaluate(_IMAGE_STATE)
+        assert state["inView"], f"{where}: the feed left photo {index} after moving to it: {state}"
     bubble.evaluate("el => el.scrollIntoView({ block: 'start' })")
 
 

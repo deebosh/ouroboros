@@ -54,6 +54,17 @@ test('every attachment renders past the text tail, and its exact tail still hide
     assert.equal(attachmentCaption(`Тридцать\n\n${tail}`, attachmentViews(views), composed), 'Тридцать');
 });
 
+test('a name is bounded per code point as the server labels it: a server name stays whole, no pair is split', () => {
+    // chat_uploads.safe_upload_name('a' * 180 + '😀' * 10 + '.png'): 193 code points, 202 UTF-16 units.
+    const stored = `${'a'.repeat(180)}${'😀'.repeat(9)}.png`;
+    const [view] = attachmentViews([uploadView(stored, 'image')]);
+    assert.equal(view.name, stored, 'the whole server name, extension included');
+    assert.equal(attachmentCaption(`Look\n\n${attachmentTail([stored])}`, [view], composed), 'Look',
+        "the composer's tail (the server name) still hides");
+    const [cut] = attachmentViews([{ name: '😀'.repeat(201), kind: 'file', available: false }]);
+    assert.equal(cut.name, '😀'.repeat(200), '200 code points, never half a surrogate pair');
+});
+
 test('attachment views keep their closed shape and refuse a foreign URL', () => {
     const [ok, foreign, weird] = attachmentViews([
         uploadView('a.png', 'image'),

@@ -2,179 +2,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import { bindComposerFileTargets, createChatMedia, safeHttpUrl } from '../modules/chat_media.js';
+import { bindComposerFileTargets, safeHttpUrl } from '../modules/chat_media.js';
 import { createComposerAttachments } from '../modules/chat_attachments.js';
 import { uploadView } from './helpers/attachment_views.js';
-import { stampNodeTimestamp } from '../modules/chat_activity.js';
+import { NodeStub, fixture } from './helpers/media_dom.js';
 
 const styleCss = await readFile(new URL('../style.css', import.meta.url), 'utf8');
-
-class Classes {
-    constructor(node) { this.node = node; this.values = new Set(); }
-    set(value) { this.values = new Set(String(value || '').split(/\s+/).filter(Boolean)); }
-    add(...values) { values.forEach((value) => this.values.add(value)); }
-    contains(value) { return this.values.has(value); }
-    toggle(value, force) {
-        const enabled = force === undefined ? !this.contains(value) : Boolean(force);
-        if (enabled) this.add(value); else this.values.delete(value);
-        return enabled;
-    }
-}
-
-class NodeStub {
-    constructor(tag = 'div', tracker = null) {
-        this.tagName = tag.toUpperCase();
-        this.tracker = tracker;
-        this.children = [];
-        this.parentNode = null;
-        this.dataset = {};
-        this.attributes = new Map();
-        this.classList = new Classes(this);
-        this.style = { setProperty() {} };
-        this.value = '';
-        this.disabled = false;
-        this.paused = true;
-        this.currentTime = 0;
-        this.duration = 0;
-        this.playbackRate = 1;
-        this.loop = false;
-        this.muted = false;
-        this.pauseCalls = 0;
-        this.selectCalls = 0;
-        this.listeners = new Map();
-    }
-    set className(value) { this.classList.set(value); }
-    get className() { return [...this.classList.values].join(' '); }
-    set textContent(value) {
-        this._text = String(value ?? '');
-        this._html = this._text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-    get textContent() { return this._text || ''; }
-    set innerHTML(html) {
-        this._html = String(html || '');
-        this.children = [];
-        const stack = [this];
-        for (const token of String(html || '').matchAll(/<\/?[a-z0-9-]+(?:\s[^>]*)?>/gi)) {
-            const source = token[0];
-            if (source.startsWith('</')) {
-                if (stack.length > 1) stack.pop();
-                continue;
-            }
-            const tag = source.match(/^<([a-z0-9-]+)/i)?.[1] || 'div';
-            const node = new NodeStub(tag, this.tracker);
-            const classes = source.match(/\sclass="([^"]*)"/i)?.[1];
-            if (classes) node.className = classes;
-            for (const data of source.matchAll(/\sdata-([a-z0-9-]+)(?:="([^"]*)")?/gi)) {
-                const key = data[1].replace(/-([a-z])/g, (_all, char) => char.toUpperCase());
-                node.dataset[key] = data[2] ?? '';
-            }
-            stack.at(-1).appendChild(node);
-            if (!/\/$/.test(source) && !['IMG', 'INPUT', 'SOURCE'].includes(node.tagName)) stack.push(node);
-        }
-    }
-    get innerHTML() { return this._html || ''; }
-    appendChild(node) {
-        node.parentNode?.removeChild(node);
-        this.children.push(node);
-        node.parentNode = this;
-        return node;
-    }
-    removeChild(node) {
-        const index = this.children.indexOf(node);
-        if (index >= 0) this.children.splice(index, 1);
-        node.parentNode = null;
-    }
-    remove() { this.parentNode?.removeChild(this); }
-    contains(node) { return node === this || this.children.some((child) => child.contains(node)); }
-    matches(selector) { return selector.split(',').some((part) => part.trim().startsWith('.')
-        && this.classList.contains(part.trim().slice(1))); }
-    before(node) {
-        if (!this.parentNode) return;
-        const index = this.parentNode.children.indexOf(this);
-        this.parentNode.children.splice(index, 0, node);
-        node.parentNode = this.parentNode;
-    }
-    append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
-    setAttribute(name, value) { this.attributes.set(name, String(value)); }
-    getAttribute(name) { return this.attributes.get(name) || ''; }
-    removeAttribute(name) { this.attributes.delete(name); }
-    addEventListener(type, fn) {
-        if (!this.listeners.has(type)) this.listeners.set(type, new Set());
-        this.listeners.get(type).add(fn);
-        this.tracker.adds += 1;
-    }
-    removeEventListener(type, fn) {
-        this.listeners.get(type)?.delete(fn);
-        this.tracker.removes += 1;
-    }
-    async click() {
-        for (const listener of this.listeners.get('click') || []) await listener({ currentTarget: this });
-    }
-    querySelector(selector) {
-        return this.querySelectorAll(selector)[0] || null;
-    }
-    querySelectorAll(selector) {
-        const matches = (node) => {
-            if (selector.startsWith('.')) return node.classList.contains(selector.slice(1));
-            const data = selector.match(/^\[data-([a-z0-9-]+)(?:="([^"]*)")?\]$/i);
-            if (data) {
-                const key = data[1].replace(/-([a-z])/g, (_all, char) => char.toUpperCase());
-                return Object.hasOwn(node.dataset, key) && (data[2] === undefined || node.dataset[key] === data[2]);
-            }
-            return node.tagName === selector.toUpperCase();
-        };
-        const found = [];
-        const visit = (node) => node.children.forEach((child) => {
-            if (matches(child)) found.push(child);
-            visit(child);
-        });
-        visit(this);
-        return found;
-    }
-    async play() { this.paused = false; }
-    pause() { this.paused = true; this.pauseCalls += 1; }
-    select() { this.selectCalls += 1; }
-    load() {}
-}
-
-function fixture({ insertNode = null } = {}) {
-    const tracker = { adds: 0, removes: 0, created: [] };
-    const body = new NodeStub('body', tracker);
-    const inserted = [];
-    const prior = { document: globalThis.document, window: globalThis.window, navigator: globalThis.navigator };
-    globalThis.document = {
-        body,
-        createElement: (tag) => {
-            const node = new NodeStub(tag, tracker);
-            tracker.created.push(node);
-            return node;
-        },
-        createDocumentFragment: () => new NodeStub('#fragment', tracker),
-        execCommand: () => true,
-    };
-    globalThis.window = { open() {} };
-    Object.defineProperty(globalThis, 'navigator', {
-        configurable: true,
-        value: { clipboard: { writeText: async () => {} } },
-    });
-    const controller = createChatMedia({
-        chatSessionId: 'session',
-        durableChatMediaUrl: (value) => String(value || ''),
-        formatMsgTime: () => null,
-        insertMessageNode(node) {
-            if (insertNode) insertNode(node);
-            else body.appendChild(node);
-            inserted.push(node);
-        },
-        senderLabel: () => 'Owner',
-        stampNodeTimestamp,
-    });
-    return { controller, inserted, tracker, restore: () => {
-        globalThis.document = prior.document;
-        globalThis.window = prior.window;
-        Object.defineProperty(globalThis, 'navigator', { configurable: true, value: prior.navigator });
-    } };
-}
 
 test('safeHttpUrl accepts only absolute HTTP(S) URLs', () => {
     assert.equal(safeHttpUrl('https://example.com/a'), 'https://example.com/a');
@@ -919,6 +752,40 @@ test('an undecodable preview becomes an honest card; a missing file becomes iner
             assert.ok(block.querySelector('.chat-file-card'), 'the image became a card');
             assert.ok(fx.tracker.created.some((made) => made.innerHTML.includes(`· ${note}`)), note);
             assert.equal(block.querySelector('.chat-file-item').classList.contains('is-unavailable'), inert);
+        }
+    } finally {
+        globalThis.fetch = priorFetch;
+        fx.controller.destroy();
+        fx.restore();
+    }
+});
+
+test('a late HEAD answer for a retired message wires nothing: the fallback ends with its owner', async () => {
+    const fx = fixture();
+    const priorFetch = globalThis.fetch;
+    try {
+        for (const end of ['release', 'destroy']) {
+            let answer = null;
+            globalThis.fetch = (_url, init) => new Promise((resolve) => {
+                answer = () => resolve({ ok: true, status: 200, method: init?.method });
+            });
+            const feed = new NodeStub('div', fx.tracker);
+            const bubble = feed.appendChild(new NodeStub('div', fx.tracker));
+            bubble.innerHTML = '<div class="message">x</div>';
+            fx.controller.mountAttachments(bubble, [uploadView('clip.heic', 'image')], 'x');
+            const block = bubble.children[0];
+            for (const listener of block.querySelector('.chat-photo').listeners.get('error')) void listener({});
+            // Retired while the HEAD is in flight: the feed releases and removes the whole message
+            // (chat.js releaseMessageNode), so the block keeps its parent inside the detached bubble.
+            if (end === 'release') {
+                fx.controller.release(bubble);
+                bubble.remove();
+            } else fx.controller.destroy();
+            const adds = fx.tracker.adds;
+            answer();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            assert.equal(fx.tracker.adds, adds, `${end}: no listener comes back on the retired message`);
+            assert.equal(block.querySelectorAll('.chat-photo').length, 1, `${end}: the retired subtree is left as it was`);
         }
     } finally {
         globalThis.fetch = priorFetch;

@@ -6,7 +6,7 @@ If `OUROBOROS_NETWORK_PASSWORD` is configured, non-loopback HTTP and WebSocket a
 
 Browser/CLI routes live in `ouroboros/gateway/router.py`; file-browser routes are contributed by `gateway/files.py::file_browser_routes()`. `gateway/contracts.py` is the frozen descriptive envelope and endpoint index mirrored by `web/modules/api_types.js` and parity tests; its `TypedDict` classes perform no runtime JSON validation. The loopback Host Service is a separate token-authenticated app assembled by `gateway/host_service.py::create_host_service_app`, not another public owner API.
 
-Every `/api/files/*` operation resolves its requested path and refuses the operation when that resolution leaves the configured file root. In-root symlinks remain usable; out-of-root symlinks may be listed with `is_symlink: true` but cannot be read, written, downloaded, deleted, or traversed. Resolution is authoritative.
+Every path-addressed `/api/files/*` operation resolves its requested `path` and refuses the operation when that resolution leaves the configured file root. In-root symlinks remain usable; out-of-root symlinks may be listed with `is_symlink: true` but cannot be read, written, downloaded, deleted, or traversed. Resolution is authoritative. A chat attachment (`/api/files/download?upload=<id>`) names no path: it is a separate confined authority, independent of the Files root — only a well-formed stored upload id, opened through the confined open inside `data/uploads` (`chat_uploads.open_upload`: never a link, a directory or another name).
 
 | Method | Path | Handler |
 |---|---|---|

@@ -68,7 +68,9 @@ export function attachmentViews(value) {
         const available = view.available === true && UPLOAD_URL_RE.test(url);
         const size = Number.isFinite(Number(view.size)) && view.size !== null && view.size !== '' ? Number(view.size) : null;
         return {
-            name: String(view.name || 'attachment').replace(/[\r\n]+/g, ' ').slice(0, 200),
+            // Bounded per code point, as the server labels it (chat_uploads._label): a server
+            // name passes whole, so the composer's tail still matches, and no pair is split.
+            name: Array.from(String(view.name || 'attachment').replace(/[\r\n]+/g, ' ')).slice(0, 200).join(''),
             kind: available && KINDS.has(view.kind) ? view.kind : 'file',
             mime: String(view.mime || ''),
             size,
@@ -150,14 +152,18 @@ function wireCard(atoms, item, view) {
 }
 
 // A preview the engine cannot show (HEIC in Chromium, an unsupported codec) stays an
-// honest card with Open/Download; a file that is gone becomes the inert card.
+// honest card with Open/Download; a file that is gone becomes the inert card. The HEAD
+// answer is late, so its end is owned by `node` like the node's listeners: a message the feed
+// released (a removed subtree keeps its parentNode) or the instance's reset/destroy ends it.
 async function degrade(atoms, block, node, view) {
+    let live = true;
+    atoms.own(() => { live = false; }, node);
     let gone = false;
     try { gone = (await apiFetch(view.url, { method: 'HEAD' })).status === 404; } catch { /* unknown: keep actions */ }
-    if (!block.isConnected && !block.parentNode) return;
+    if (!live) return;
     const shown = { ...view, available: !gone };
     atoms.onDomWrite(() => {
-        if (!node.parentNode) return false;
+        if (!live || !node.parentNode) return false;
         let grid = block.querySelector('.chat-file-grid');
         if (!grid) {
             grid = document.createElement('div');

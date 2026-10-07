@@ -185,11 +185,28 @@ def test_the_windows_leg_runs_the_owner_attachment_browser_module_and_refuses_a_
         assert "!cancelled()" in step["if"] and "runner.os == 'Windows'" in step["if"]
         assert isinstance(step["timeout-minutes"], int) and "continue-on-error" not in step
     assert "steps.attachment_browser_install.outcome == 'success'" in run["if"]
-    assert install["run"] == "python -m playwright install chromium"
+    # The fixture refuses an interpreter that can import an installed ouroboros, and this job's
+    # shared env installs the checkout: both steps use their own dependency-only env, synced from
+    # the same lock as the setup action's test profile (safe_test keeps PATH, so a bare `python`
+    # would be the shared env's).
+    shared = next(step for step in job["steps"] if step.get("uses") == "./.github/actions/setup-python-env")
+    assert shared.get("with", {}).get("install-project", "true") == "true", "the shared env is left as it is"
+    action = yaml.safe_load((ROOT / ".github/actions/setup-python-env/action.yml").read_text(encoding="utf-8"))
+    sync_script = next(step["run"] for step in action["runs"]["steps"] if step.get("name") == "Sync locked dependencies")
+    profile = re.search(r'^\s*test\) (uv sync [^;]+?) "\$\{PROJECT_ARGS\[@\]\}"', sync_script, re.M).group(1)
+    env_root = install["env"]["UV_PROJECT_ENVIRONMENT"]
+    assert env_root.startswith("${{ runner.temp }}/"), "outside the checkout the fixture copies"
+    assert run["env"]["ATTACHMENT_PYTHON"] == f"{env_root}/Scripts/python.exe"
+    base, sync, playwright = install["run"].strip().splitlines()
+    # No trailing newline to capture: Git Bash keeps a Windows CR inside $(...).
+    assert base == 'base="$(python -c ' + "'import sys; print(sys._base_executable, end=\"\")'" + ')"'
+    assert sync == f'{profile} --no-install-project --python "$base"'
+    assert playwright == '"$UV_PROJECT_ENVIRONMENT/Scripts/python.exe" -m playwright install chromium'
     assert run["env"]["OUROBOROS_RUN_UI_SMOKE"] == "1"
     assert install["env"]["PLAYWRIGHT_BROWSERS_PATH"] == run["env"]["PLAYWRIGHT_BROWSERS_PATH"]
     command, check = run["run"].strip().splitlines()
-    assert command.startswith("python -I -S scripts/safe_test.py -- python -m pytest tests/test_chat_attachments_browser.py")
+    assert command.startswith('"$ATTACHMENT_PYTHON" -I -S scripts/safe_test.py -- "$ATTACHMENT_PYTHON" -m pytest '
+                              "tests/test_chat_attachments_browser.py")
     assert " -m ui_browser -k chromium " in command and "--require-ui-browser" not in command
     assert "matrix" not in json.dumps(run) and job["strategy"]["matrix"].keys() == {"os"}
     # The skip guard, run as written against a junit report of each shape.

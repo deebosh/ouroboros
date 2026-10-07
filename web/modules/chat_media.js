@@ -198,13 +198,13 @@ export function createChatMedia({
     let dialogOwner = null;  // the card's item (buildGallery may move it to an earlier group): releasing it or its holder closes the dialog
     let destroyed = false;
 
+    // A disposer owned like a listener (a late answer's end too): its owner's release, reset or destroy runs it.
+    function own(dispose, owner) { disposers.add(dispose); resourceOwners.set(dispose, owner); return dispose; }
+
     function listen(target, type, handler, options, owner = target) {
         if (!target) return () => {};
         target.addEventListener(type, handler, options);
-        const dispose = () => target.removeEventListener(type, handler, options);
-        disposers.add(dispose);
-        resourceOwners.set(dispose, owner);
-        return dispose;
+        return own(() => target.removeEventListener(type, handler, options), owner);
     }
 
     function later(handler, delay, owner = null) {
@@ -755,7 +755,7 @@ export function createChatMedia({
     // other bubble decorations are placed against).
     function mountAttachments(bubble, views, caption) {
         const block = destroyed ? null : buildAttachmentBlock({
-            listen, photoActionsHtml, wirePhotoActions, playerHtml, wirePlayer, openFileDialog,
+            listen, own, photoActionsHtml, wirePhotoActions, playerHtml, wirePlayer, openFileDialog,
             humanSize, fileExtension, release, onDomWrite,
         }, views);
         const message = block && bubble?.querySelector('.message');

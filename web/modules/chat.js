@@ -3031,7 +3031,15 @@ export function createChatInstance({
 
     // Scroll events observe position; only positive navigation changes follow intent.
     messagesDiv?.addEventListener('scroll', () => { reading.scroll(); settleHistoryViewport(); readReceipt.note(); }, { passive: true });
-    messagesDiv?.addEventListener('load', reading.reflow, true);
+    // An image's load reflows in the next frame, after that frame's scroll events: a load
+    // landing between a move (a wheel step, a scrollIntoView) and the scroll event the move
+    // still owes would otherwise restore the anchor of the place just left.
+    let loadReflowQueued = false;
+    messagesDiv?.addEventListener('load', () => {
+        if (loadReflowQueued) return;
+        loadReflowQueued = true;
+        requestAnimationFrame(() => { loadReflowQueued = false; if (!destroyed) reading.reflow(); });
+    }, true);
 
     // Navigation plus one coalesced, non-live-region remote-activity bit.
     function updateScrollButton() {
