@@ -713,6 +713,44 @@ def test_another_spelling_of_the_host_root_is_refused_before_mkdir(tmp_path, mon
     assert os.environ["OUROBOROS_DATA_DIR"] == "inherited"  # refused before selecting anything
 
 
+def test_a_default_drive_is_refused_before_allocating_inside_the_host(tmp_path, monkeypatch):
+    """No ``--drive-root`` and a temporary directory inside the host: nothing is left behind."""
+    host = _legacy_host(tmp_path, 1).resolve()
+    (host / "tmp").mkdir()
+    for key in ("OUROBOROS_DATA_DIR", SETTINGS_INTEGRITY_ENV, REVIEW_RUN_CAP_ENV, ATTACH_HOME_ENV):
+        monkeypatch.setenv(key, "inherited")
+    monkeypatch.delenv("OUROBOROS_SETTINGS_PATH", raising=False)
+    before = _tree_state(host)
+
+    config = sys.modules.pop("ouroboros.config")  # the check reads module presence only
+    try:
+        monkeypatch.setattr("tempfile.tempdir", str(host / "tmp"))
+        with pytest.raises(RuntimeError, match="host data root"):
+            isolate_review_data(host_data=host, drive_root="", run_cap="4", attach_host_engine=False)
+        assert _tree_state(host) == before and os.environ["OUROBOROS_DATA_DIR"] == "inherited"
+        monkeypatch.setattr("tempfile.tempdir", str(tmp_path))  # outside the host: a fresh default drive
+        drive = pathlib.Path(isolate_review_data(host_data=host, drive_root="", run_cap="4",
+                                                 attach_host_engine=False)["review_data_root"])
+    finally:
+        sys.modules["ouroboros.config"] = config
+    assert drive.parent == tmp_path.resolve() and drive.name.startswith("ouroboros-external-review-")
+
+    # The wrapper entrypoint on its own base (no trusted-base checkout) leaves no allocation either.
+    review = subprocess.run(
+        [sys.executable, str(REPO / "scripts" / "run_external_review.py"), "--contributor", "--base-ref=HEAD",
+         "--head-ref=HEAD", "--run-cap-usd=4", f"--output={tmp_path / 'packet'}", "--", "PR title"],
+        cwd=str(REPO), capture_output=True, text=True, timeout=300,
+        env={**{key: value for key, value in os.environ.items()
+                if key not in {SETTINGS_INTEGRITY_ENV, REVIEW_RUN_CAP_ENV, ATTACH_HOME_ENV}},
+             "OUROBOROS_DATA_DIR": str(host), "OUROBOROS_SETTINGS_PATH": str(host / "settings.json"),
+             "TMPDIR": str(host / "tmp")})
+    assert review.returncode == 3 and "host data root" in review.stderr, review.stderr[-4000:]
+    # Python's writability check may touch the directory's mtime; no path or byte is added.
+    assert {path: facts[0] for path, facts in _tree_state(host).items()} == {
+        path: facts[0] for path, facts in before.items()}
+    assert not (tmp_path / "packet").exists()
+
+
 def test_wrapper_settings_load_refuses_bytes_that_changed_under_its_pin(tmp_path, monkeypatch):
     import scripts.run_external_review as module
 
