@@ -1161,9 +1161,9 @@ def _publish_reviewed_commit(
     return _publish_post_commit_test_fact(ctx, result + ci_note, test_warning)
 
 
-def _commit_reviewed(ctx: ToolContext, *args: Any, **kwargs: Any) -> str:
+def _commit_reviewed(ctx: ToolContext, commit_message: str, *args: Any, **kwargs: Any) -> str:
     """The public commit handler: an outcome of a call that wrote a review record names it."""
-    return name_review_record(ctx, _repo_commit_push(ctx, *args, **kwargs))
+    return name_review_record(ctx, _repo_commit_push(ctx, commit_message, *args, **kwargs))
 
 
 def _repo_commit_push(ctx: ToolContext, commit_message: str,

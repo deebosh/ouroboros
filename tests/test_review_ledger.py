@@ -723,3 +723,14 @@ def test_naming_the_record_keeps_a_typed_result_paired_with_its_text(tmp_path):
         "the registry still pairs the returned text with its typed result"
     assert commit_gate.name_review_record(SimpleNamespace(_current_review_record_id=""), "plain") == "plain"
     assert commit_gate.name_review_record(ctx, named) == named, "a text that already names the record is unchanged"
+
+
+def test_the_public_handler_still_refuses_a_call_without_a_commit_message_at_binding():
+    """The registry binds arguments to the handler's signature before running it: a call
+    without ``commit_message`` stays a typed argument refusal, never a handler crash."""
+    import inspect
+
+    handler = next(entry.handler for entry in git.get_tools() if entry.name == "commit_reviewed")
+    with pytest.raises(TypeError):
+        inspect.signature(handler).bind(object())
+    inspect.signature(handler).bind(object(), commit_message="m", skip_tests=True)
