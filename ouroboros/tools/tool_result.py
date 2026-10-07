@@ -626,6 +626,18 @@ def _publish_tool_result(ctx: Any, result: ToolResult) -> str:
     return result.text
 
 
+def append_published_text(ctx: Any, text: str, suffix: str) -> str:
+    """Append ``suffix`` to a handler's returned text. A typed result this invocation
+    published for exactly that text grows the same suffix (status, code and meta stay),
+    so the registry still pairs the returned string with its typed result."""
+    if not suffix:
+        return text
+    prior = _published_tool_result(ctx, None)
+    if isinstance(prior, ToolResult) and prior.text == text:
+        return _publish_tool_result(ctx, _replace_tool_result(prior, text=text + suffix))
+    return text + suffix
+
+
 def _install_tool_result_sidecar(
     ctx: Any,
     sentinel: object,

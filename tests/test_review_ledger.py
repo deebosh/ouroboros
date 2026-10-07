@@ -315,6 +315,12 @@ def _attempt_rows(ctx):
     return [row for row in load_state(ctx.drive_root).attempts if row.tool_name == "commit_reviewed"]
 
 
+def _commit_reviewed(ctx, *args, **kwargs):
+    """The registered public handler (what the model calls), not the internal commit routine."""
+    handler = next(entry.handler for entry in git.get_tools() if entry.name == "commit_reviewed")
+    return handler(ctx, *args, **kwargs)
+
+
 def test_gate_pass_writes_a_settled_record_bound_to_the_attempt(candidate, monkeypatch):  # noqa: F811
     ctx = candidate
 
@@ -456,13 +462,13 @@ def test_pending_custody_record_settles_in_place_on_the_exact_retry(candidate, m
         return None, ScopeReviewResult(blocked=False, status="responded"), "", []
 
     _wire(ctx, monkeypatch, reviewer)
-    first = git._repo_commit_push(ctx, "Fix amount", skip_advisory_review=True)
+    first = _commit_reviewed(ctx, "Fix amount", skip_advisory_review=True)
     reference = json.loads(first.split("\n", 1)[1])["review_reference"]
     record_id = reference["review_record_id"]
     assert record_id and _attempt_rows(ctx)[-1].late_result_pending
     pending = rl.load_record(rl.ledger_root(ctx), record_id)
     assert pending["state"] == "pending" and pending["revision"] == 1 and pending["verdict"]["aggregate"] == "NOT_PERFORMED"
-    second = git._repo_commit_push(ctx, "Fix amount", skip_advisory_review=True)  # exact retry reconciles the same attempt
+    second = _commit_reviewed(ctx, "Fix amount", skip_advisory_review=True)  # exact retry reconciles the same attempt
     assert len(calls) == 2, second
     settled = rl.load_record(rl.ledger_root(ctx), record_id)
     assert settled["state"] == "settled" and settled["revision"] == 2 and settled["verdict"]["aggregate"] == "PASS", second
@@ -488,10 +494,10 @@ def test_author_continuation_notes_its_decision_on_the_answered_record(candidate
         return "Critical feedback", ScopeReviewResult(blocked=False, status="responded"), "critical_findings", []
 
     _wire(ctx, monkeypatch, reviewer)
-    first = git._repo_commit_push(ctx, "Fix amount", skip_advisory_review=True)
+    first = _commit_reviewed(ctx, "Fix amount", skip_advisory_review=True)
     reference = json.loads(first.split("\n", 1)[1])["review_reference"]
     assert reference["review_record_id"]
-    second = git._repo_commit_push(ctx, "Fix amount", review_reference=reference,
+    second = _commit_reviewed(ctx, "Fix amount", review_reference=reference,
                                    author_disposition={"disposition": "accepted", "rationale": "Known tradeoff."})
     assert len(calls) == 1 and f"review_record_id: {reference['review_record_id']}" in second
     record = rl.load_record(rl.ledger_root(ctx), reference["review_record_id"])
@@ -600,7 +606,7 @@ def test_the_public_commit_outcome_names_the_record_when_the_review_blocks(candi
     _wire(ctx, monkeypatch, reviewer)
     import subprocess
     subprocess.run(["git", "checkout", "-q", "-b", ctx.branch_dev], cwd=ctx.repo_dir, check=True, capture_output=True)
-    result = git._repo_commit_push(ctx, "Review changed candidate", skip_tests=True, skip_advisory_pre_review=True)
+    result = _commit_reviewed(ctx, "Review changed candidate", skip_tests=True, skip_advisory_pre_review=True)
     record_id = _attempt_rows(ctx)[-1].review_record_id
     assert record_id and rl.load_record(rl.ledger_root(ctx), record_id)["verdict"]["aggregate"] == "FAIL"
     assert f"review_record_id: {record_id}" in result, "the actor-facing outcome names the record the canon promises"
@@ -668,7 +674,52 @@ def test_a_post_wave_refusal_still_names_the_record_of_the_completed_wave(candid
     } if ctx._last_triad_raw_results else None)
     import subprocess
     subprocess.run(["git", "checkout", "-q", "-b", ctx.branch_dev], cwd=ctx.repo_dir, check=True, capture_output=True)
-    result = git._repo_commit_push(ctx, "Review changed candidate", skip_tests=True, skip_advisory_pre_review=True)
+    result = _commit_reviewed(ctx, "Review changed candidate", skip_tests=True, skip_advisory_pre_review=True)
     assert result.startswith("REVALIDATION FAILED")
     record_id = result.rsplit("review_record_id: ", 1)[1].strip()
     assert rl.load_record(rl.ledger_root(ctx), record_id)["verdict"]["aggregate"] == "PASS", "the completed wave's record"
+
+
+def test_a_commit_that_fails_after_a_clean_wave_still_names_its_record(candidate, monkeypatch):  # noqa: F811
+    import subprocess
+
+    ctx = candidate
+
+    def reviewer(_ctx, message, **kw):
+        ctx._last_triad_raw_results = _three()
+        ctx._last_scope_raw_result = _scope()
+        return None, ScopeReviewResult(blocked=False, status="responded"), "", []
+
+    _wire(ctx, monkeypatch, reviewer)
+    subprocess.run(["git", "checkout", "-q", "-b", ctx.branch_dev], cwd=ctx.repo_dir, check=True, capture_output=True)
+    hook = ctx.repo_dir / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho 'rejected by hook' >&2\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    result = _commit_reviewed(ctx, "Review changed candidate", skip_tests=True, skip_advisory_pre_review=True)
+    assert result.startswith("⚠️ GIT_ERROR (commit)")
+    record_id = result.rsplit("review_record_id: ", 1)[1].strip()
+    assert rl.load_record(rl.ledger_root(ctx), record_id)["verdict"]["aggregate"] == "PASS"
+    assert _attempt_rows(ctx)[-1].review_record_id == record_id
+
+
+def test_naming_the_record_keeps_a_typed_result_paired_with_its_text(tmp_path):
+    from ouroboros.tools import commit_gate
+    from ouroboros.tools.tool_result import (
+        ToolResult, _install_tool_result_sidecar, _publish_tool_result, _published_tool_result,
+        _restore_tool_result_sidecar,
+    )
+
+    ctx = SimpleNamespace(_current_review_record_id="rl-typed-1")
+    sentinel = object()
+    token = _install_tool_result_sidecar(ctx, sentinel)
+    try:
+        text = _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text="⚠️ REFUSED"))
+        named = commit_gate.name_review_record(ctx, text)
+        published = _published_tool_result(ctx, sentinel)
+    finally:
+        _restore_tool_result_sidecar(token)
+    assert named == "⚠️ REFUSED\nreview_record_id: rl-typed-1"
+    assert isinstance(published, ToolResult) and published.text == named and published.code == "TOOL_ARG_ERROR", \
+        "the registry still pairs the returned text with its typed result"
+    assert commit_gate.name_review_record(SimpleNamespace(_current_review_record_id=""), "plain") == "plain"
+    assert commit_gate.name_review_record(ctx, named) == named, "a text that already names the record is unchanged"

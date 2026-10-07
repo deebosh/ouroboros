@@ -1340,6 +1340,18 @@ def _review_ledger_facts(ctx: ToolContext, commit_message: str, *, goal: str, sc
     }
 
 
+def name_review_record(ctx: ToolContext, result: Any) -> Any:
+    """Every outcome of a commit call that wrote a review record names it (DEVELOPMENT 05):
+    passed, blocked, pending, refused after the wave, or failed at the commit itself. The id
+    is this call's own (reset at the start of every call); ID-less exits stay ID-less."""
+    record_id = str(getattr(ctx, "_current_review_record_id", "") or "")
+    if not record_id or not isinstance(result, str) or record_id in result:
+        return result
+    from ouroboros.tools.tool_result import append_published_text
+
+    return append_published_text(ctx, result, f"\nreview_record_id: {record_id}")
+
+
 def _review_tests_facts(ctx: ToolContext, tests_passed: Any) -> Dict[str, Any]:
     """``passed`` only for THIS candidate: the runner's flag is process state that outlives
     the checkout it tested, so it counts only when the process-held test proof still covers

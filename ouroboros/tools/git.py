@@ -52,7 +52,7 @@ from ouroboros.tools.commit_gate import (
     _invalidate_advisory,  # noqa: F401
     _record_commit_attempt,
     record_bound_commit_success, prepare_author_commit_request,
-    record_commit_gate_refusal,
+    record_commit_gate_refusal, name_review_record,
     check_identical_verdict_refusal,
     check_review_cycles_ceiling,
     classify_review_block,  # noqa: F401
@@ -1002,8 +1002,6 @@ def _format_commit_result(ctx, commit_message, push_status, test_warning):
     result = f"OK: committed to {ctx.branch_dev}: {commit_message}{push_status}"
     if test_warning:
         result += test_warning
-    if getattr(ctx, "_current_review_record_id", ""):
-        result += f"\nreview_record_id: {ctx._current_review_record_id}"
     if ctx._review_advisory:
         result += "\n\n⚠️ Advisory warnings:\n" + "\n".join(
             f"  - {format_review_history_entry(w)}" for w in ctx._review_advisory
@@ -1163,6 +1161,11 @@ def _publish_reviewed_commit(
     return _publish_post_commit_test_fact(ctx, result + ci_note, test_warning)
 
 
+def _commit_reviewed(ctx: ToolContext, *args: Any, **kwargs: Any) -> str:
+    """The public commit handler: an outcome of a call that wrote a review record names it."""
+    return name_review_record(ctx, _repo_commit_push(ctx, *args, **kwargs))
+
+
 def _repo_commit_push(ctx: ToolContext, commit_message: str,
                        paths: Optional[List[str]] = None,
                        skip_tests: bool = False,
@@ -1280,9 +1283,7 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
                     reestablish_merge_head(str(_managed_tx.get("target_sha") or ""))
                 except Exception:
                     log.debug("reestablish_merge_head after blocked managed review failed", exc_info=True)
-            message = str(outcome.get("message", "") or "")  # a post-wave refusal still names this call's record
-            record_id = str(outcome.get("review_record_id") or getattr(ctx, "_current_review_record_id", "") or "")
-            return message + (f"\nreview_record_id: {record_id}" if record_id and record_id not in message else "")
+            return str(outcome.get("message", "") or "")
         pre_fingerprint = outcome.get("pre_fingerprint", {}) or {}
         post_fingerprint = outcome.get("post_fingerprint", {}) or {}
 
@@ -1505,9 +1506,9 @@ def get_tools() -> List[ToolEntry]:
     }
     return [
         ToolEntry("commit_reviewed", {"name": "commit_reviewed", "description": reviewed_commit_description,
-            "parameters": {"type": "object", "properties": commit_properties, "required": ["commit_message"]}}, _repo_commit_push, is_code_tool=True),
+            "parameters": {"type": "object", "properties": commit_properties, "required": ["commit_message"]}}, _commit_reviewed, is_code_tool=True),
         ToolEntry("vcs_commit_reviewed", {"name": "vcs_commit_reviewed", "description": reviewed_commit_description,
-            "parameters": {"type": "object", "properties": commit_properties, "required": ["commit_message"]}}, _repo_commit_push, is_code_tool=True),
+            "parameters": {"type": "object", "properties": commit_properties, "required": ["commit_message"]}}, _commit_reviewed, is_code_tool=True),
         ToolEntry("vcs_status", {
             "name": "vcs_status",
             "description": "git status --porcelain for the selected repository.",

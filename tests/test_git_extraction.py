@@ -115,8 +115,9 @@ def test_git_catalog_schema_bytes_and_handler_owners_are_stable():
         entry.name: (entry.handler.__module__, entry.handler.__name__)
         for entry in entries
     } == {
-        "commit_reviewed": ("ouroboros.tools.git", "_repo_commit_push"),
-        "vcs_commit_reviewed": ("ouroboros.tools.git", "_repo_commit_push"),
+        # The public handler names the call's review record in every outcome (DEVELOPMENT 05).
+        "commit_reviewed": ("ouroboros.tools.git", "_commit_reviewed"),
+        "vcs_commit_reviewed": ("ouroboros.tools.git", "_commit_reviewed"),
         "vcs_status": ("ouroboros.tools.git_vcs_ops", "_git_status"),
         "vcs_diff": ("ouroboros.tools.git_vcs_ops", "_git_diff"),
         "vcs_pull_ff": ("ouroboros.tools.git_vcs_ops", "_pull_from_remote"),
