@@ -18,7 +18,7 @@ are ``additional_findings``.
 from __future__ import annotations
 
 import contextlib
-import copy
+import dataclasses
 import json
 import logging
 import pathlib
@@ -35,19 +35,22 @@ from ouroboros.config import (
 from ouroboros.review_body_fact import body_fact, layer_for
 from ouroboros.review_ledger import (
     PART_CHANGE, PART_COUPLING, PARTS, QUESTION_NOT_PERFORMED, build_wave_record, ledger_root, new_record_id,
-    panel_facts, reduce_verdict, row_verdict, write_record,
+    panel_facts, reduce_verdict, revise_record, row_verdict, write_record,
 )
 from ouroboros.runtime_mode_policy import runtime_mode_at_least
 from ouroboros.settings_scales import EFFORT_SCALE, effort_rank
 from ouroboros.tools.arg_feedback import argument_refusal
 from ouroboros.tools.parallel_review import run_parallel_review
 from ouroboros.tools.registry import ToolContext, ToolEntry
+from ouroboros.tools.review_change_custody import (
+    arm_rejoin, install_paid_stamp, pending_round_attempt, settle_attempt,
+)
 from ouroboros.tools.review_helpers import checklist_fingerprint
 from ouroboros.tools.review_subject import (
-    ReviewSubjectSpec, freeze_subject, is_gate_subject, isolated_checkout, reuse_or_none, review_retry_key,
-    review_reuse_key, review_round_sha,
+    ReviewSubjectSpec, checkout_token, freeze_subject, is_gate_subject, isolated_checkout, reuse_or_none,
+    review_retry_key, review_reuse_key, review_round_sha,
 )
-from ouroboros.utils import run_cmd, utc_now_iso
+from ouroboros.utils import run_cmd
 
 log = logging.getLogger(__name__)
 
@@ -379,6 +382,17 @@ class _Wave:
     root_task_id: str
     record_id: str
     label: str
+    # The open attempt row of this same round on this task that the wave collects
+    # instead of paying again (review_change_custody.pending_round_attempt); None = new.
+    rejoin: Any = None
+
+
+def _round_sha(request: ReviewChangeRequest, frozen: Any) -> str:
+    """Identity (b) of this request over this frozen subject."""
+    from ouroboros.tools.commit_gate import compute_rebuttal_sha256
+
+    return review_round_sha(frozen, rebuttal_sha=str(compute_rebuttal_sha256(request.review_rebuttal) or ""),
+                            questions=request.author_questions, goal=request.goal, scope=request.scope)
 
 
 def _wave_label(request: ReviewChangeRequest, root: pathlib.Path) -> str:
@@ -399,8 +413,7 @@ def _prepare_wave(ctx: ToolContext, request: ReviewChangeRequest, frozen: Any, p
     # Identity (b), the logical round, enters both the reuse key (a) and the custody
     # retry key (c): a new rebuttal/question/brief/revision pair is a new wave and a
     # new physical operation; a retry of the same round rejoins the old one.
-    round_sha = review_round_sha(frozen, rebuttal_sha=rebuttal_sha, questions=request.author_questions,
-                                 goal=request.goal, scope=request.scope)
+    round_sha = _round_sha(request, frozen)
     reuse_key = review_reuse_key(
         frozen, rules_sha=str((rules.get("rules_source") or {}).get("sha") or ""), layer=layer,
         assigned=panel.assigned, enforcement=enforcement, contract_fp=contract_fp, round_sha=round_sha)
@@ -424,7 +437,7 @@ _CTX_FIELDS = (
     "_current_review_rebuttal_sha256", "_current_review_contract_fingerprint", "_review_history",
     "_review_iteration_count", "_scope_review_history", "_triad_withheld_seat_records",
     "_review_paid_stamp", "_review_reserved_roster", "_review_reserved_operations",
-    "_review_pending_invocation_checkpoint", "_last_review_slot_executions",
+    "_review_pending_invocation_checkpoint", "_last_review_slot_executions", "_pending_review_attempt",
 )
 
 
@@ -452,49 +465,14 @@ def _wave_context(ctx: ToolContext, wave: _Wave) -> Iterator[None]:
                 setattr(ctx, name, value)
 
 
-def _attempt(wave: _Wave, ctx: ToolContext, **fields: Any) -> Any:
-    from ouroboros.review_state import CommitAttemptRecord, make_repo_key
-
-    return CommitAttemptRecord(
-        ts=utc_now_iso(), commit_message=wave.label, task_id=str(getattr(ctx, "task_id", "") or ""),
-        root_task_id=wave.root_task_id, repo_key=make_repo_key(wave.root), tool_name=TOOL_NAME,
-        pre_review_fingerprint=str(wave.frozen.diff_sha), review_retry_key=wave.retry_key,
-        rebuttal_sha256=wave.rebuttal_sha, review_contract_fingerprint=wave.contract_fp,
-        review_record_id=wave.record_id, **fields)
-
-
-def _install_paid_stamp(ctx: ToolContext, wave: _Wave) -> Dict[str, int]:
-    """The write-ahead paid fact, keyed by the REVIEWED root, so the shared
-    per-task-tree ceiling of (this root, ``review_change``) counts it."""
-    from ouroboros.review_dispatch import ReviewPaidStamp
-    from ouroboros.review_state import make_repo_key, update_state
-
-    holder = {"attempt": 0}
-    repo_key, task_id = make_repo_key(wave.root), str(getattr(ctx, "task_id", "") or "")
-
-    def _write() -> None:
-        reserved = getattr(ctx, "_review_reserved_roster", None)
-        reserved = reserved if isinstance(reserved, dict) else {}
-
-        def _mutate(state: Any) -> None:
-            number = state.next_attempt_number(repo_key, TOOL_NAME, task_id)
-            state.record_attempt(_attempt(
-                wave, ctx, status="reviewing", phase="review", paid=True, attempt=number,
-                triad_raw_results=copy.deepcopy(list(reserved.get("multi_model_review") or [])),
-                scope_raw_result={"raw_results": copy.deepcopy(list(reserved.get("scope_review") or []))}))
-            holder["attempt"] = number
-
-        update_state(pathlib.Path(ctx.drive_root), _mutate)
-
-    ctx._review_paid_stamp = ReviewPaidStamp(_write, fail_closed=True)
-    return holder
-
-
 def _dispatch(ctx: ToolContext, wave: _Wave) -> Dict[str, Any]:
-    """Run the one wave; the paid stamp records it at its first physical dispatch."""
+    """Run the one wave; the paid stamp records it at its first physical dispatch.
+    A rejoin runs the same wave on the gate's reconcile-only path (nothing new is
+    sent; the open operation is collected under the attempt row it opened)."""
     from ouroboros.tools import git as git_mod
 
-    holder = _install_paid_stamp(ctx, wave)
+    holder = install_paid_stamp(ctx, wave)
+    arm_rejoin(ctx, wave)
     asked = "".join(f"\n{number}. {question}" for number, question in enumerate(wave.request.author_questions, 1))
     goal = f"{wave.request.goal}\n\nAuthor questions (answer each as asked):{asked}".lstrip("\n") if asked else wave.request.goal
     try:
@@ -679,7 +657,10 @@ def _settle(ctx: ToolContext, wave: _Wave, facts: Dict[str, Any], outcome: Dict[
     _finish_record(record, wave, outcome, reuse_key=str(facts.get("reuse_key") or ""), retention=retention)
     durable = True
     try:
-        payload = write_record(drive, record)
+        # A rejoin settles the SAME record the open operation left pending: the gate's
+        # rule (commit_gate: a later settlement raises ``revision``, never a second record).
+        payload = (revise_record(drive, wave.record_id, lambda _prior: record.to_dict())
+                   if wave.rejoin is not None else None) or write_record(drive, record)
     except (OSError, ValueError) as exc:
         log.warning("review_change ledger record was not written", exc_info=True)
         payload, durable = (record.to_dict() if hasattr(record, "to_dict") else dict(record)), False
@@ -691,28 +672,10 @@ def _settle(ctx: ToolContext, wave: _Wave, facts: Dict[str, Any], outcome: Dict[
     # another surface keeps its own.
     with contextlib.suppress(Exception):
         bind_reviewer_slot_record_id(dict(facts.get("slot_executions") or {}), str(payload.get("record_id") or ""))
-    _settle_attempt(ctx, wave, outcome, payload)
+    settle_attempt(ctx, wave, outcome, payload, facts)
     result = review_result(payload, reused=False)
     result["durable"] = durable
     return result
-
-
-def _settle_attempt(ctx: ToolContext, wave: _Wave, outcome: Dict[str, Any], payload: Dict[str, Any]) -> None:
-    """Close the paid attempt row this wave opened (a review only; never a commit)."""
-    number = int((outcome.get("attempt") or {}).get("attempt") or 0)
-    if number <= 0:
-        return
-    from ouroboros.review_state import update_state
-
-    verdict = dict(payload.get("verdict") or {})
-    try:
-        update_state(pathlib.Path(ctx.drive_root), lambda state: state.record_attempt(_attempt(
-            wave, ctx, status="reviewed", phase="review", paid=True, attempt=number,
-            late_result_pending=payload.get("state") == "pending",
-            block_reason=str(outcome.get("block_reason") or ""),
-            degraded_reasons=[str(item) for item in verdict.get("degraded_reasons") or []])))
-    except Exception:
-        log.warning("review_change attempt row was not settled", exc_info=True)
 
 
 def review_result(record: Dict[str, Any], *, reused: bool) -> Dict[str, Any]:
@@ -781,11 +744,13 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
                              body_fact=str(fact.body), body_how=str(fact.how), layer=layer)
     # The gate's own subject (the body's staged index against HEAD) is read on its live
     # root exactly as the gate reads it; every other subject is materialized in an
-    # isolated checkout, where every delivery reads the frozen tree. Open custody
-    # after the wave keeps that checkout (review_subject.isolated_checkout).
+    # isolated checkout, where every delivery reads the frozen tree, at the path of its
+    # ROUND (identity c): a rerun of the round reads the checkout its open operation
+    # still may, and open custody after the wave keeps it (review_subject.isolated_checkout).
     retention: Dict[str, Any] = {}
     frozen_subject = (contextlib.nullcontext(freeze_subject(ctx, spec)) if is_gate_subject(spec)
-                      else isolated_checkout(ctx, spec, retain=lambda: retention))
+                      else isolated_checkout(ctx, spec, retain=lambda: retention, token=lambda identity: checkout_token(
+                          review_retry_key(identity, round_sha=_round_sha(request, identity)))))
     with frozen_subject as frozen, _panel_in_force(panel):
         if not str(getattr(frozen, "diff_text", "") or "").strip():
             raise ReviewChangeArgumentError(f"subject={request.subject} of {root} has no change to review")
@@ -793,9 +758,15 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
         prior = reuse_or_none(ledger_root(ctx), wave.reuse_key, questions=request.author_questions)
         if prior is not None:
             return review_result(prior["record"], reused=True)
-        exhausted = _cycles_exhausted(ctx, wave)
-        if exhausted is not None:
-            return _refuse_exhausted(ctx, wave, exhausted)
+        # An open operation of this round is collected, not paid for again: the cycle
+        # ceiling meets only a NEW paid wave, so a reached ceiling never strands an answer.
+        rejoin = pending_round_attempt(ctx, root=wave.root, retry_key=wave.retry_key)
+        if rejoin is not None:
+            wave = dataclasses.replace(wave, rejoin=rejoin, record_id=str(rejoin.review_record_id or wave.record_id))
+        else:
+            exhausted = _cycles_exhausted(ctx, wave)
+            if exhausted is not None:
+                return _refuse_exhausted(ctx, wave, exhausted)
         with _wave_context(ctx, wave):
             outcome = _dispatch(ctx, wave)
             forensic = _forensic(ctx)

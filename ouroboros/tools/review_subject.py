@@ -42,10 +42,11 @@ reviewed (root, kind ``index`` | ``worktree`` | ``base..head``, the governance
 root that is ALWAYS the installed body), ``freeze_subject`` pins its bytes and
 trees once, ``isolated_checkout`` materializes every subject but the gate's own
 (``is_gate_subject``) as a frozen tree under the install's data root where all
-deliveries read it, and the three review identities
-(``review_reuse_key``, the rebuttal round, ``review_retry_key``) are derived
-from the frozen subject — never from the live index of whatever repository the
-process happens to run in.
+deliveries read it — at the path of its round (``checkout_token``), so a rerun
+of a pending round reads the checkout its open operation still may — and the
+three review identities (``review_reuse_key``, ``review_round_sha``,
+``review_retry_key``) are derived from the frozen subject — never from the live
+index of whatever repository the process happens to run in.
 """
 
 from __future__ import annotations
@@ -827,6 +828,15 @@ def freeze_subject(ctx: Any, spec: ReviewSubjectSpec, *, checkout: str = "") -> 
     ``base..head`` is frozen only through ``isolated_checkout``: its reviewers read
     the head tree, never the live root."""
     spec = _normalized_spec(ctx, spec)
+    if spec.kind == SUBJECT_KIND_RANGE and not checkout:
+        raise ValueError("a base..head subject is frozen through isolated_checkout(): its reviewers "
+                         "read the head tree in an isolated checkout, never the live root")
+    return _frozen(ctx, spec, checkout)
+
+
+def _frozen(ctx: Any, spec: ReviewSubjectSpec, checkout: str) -> FrozenSubject:
+    """``freeze_subject`` over a normalized spec; ``isolated_checkout`` freezes here
+    FIRST, since the checkout's path derives from the subject's identity."""
     root, managed, at_head = spec.root, None, True
     if spec.kind == SUBJECT_KIND_INDEX:
         parent_sha, at_head = _tree_parent(root, spec)
@@ -856,9 +866,6 @@ def freeze_subject(ctx: Any, spec: ReviewSubjectSpec, *, checkout: str = "") -> 
         patch, diff_sha = _patch(root, parent_sha, tree_sha)
         name_status = _tree_delta_name_status(root, parent_sha, tree_sha)
     else:
-        if not checkout:
-            raise ValueError("a base..head subject is frozen through isolated_checkout(): its reviewers "
-                             "read the head tree in an isolated checkout, never the live root")
         parent_sha, head_sha = _resolve_range(root, spec.base, spec.head)
         spec = dataclasses.replace(spec, base=parent_sha, head=head_sha)
         tree_sha = _rev_parse(root, f"{head_sha}^{{tree}}")
@@ -872,12 +879,19 @@ def freeze_subject(ctx: Any, spec: ReviewSubjectSpec, *, checkout: str = "") -> 
 
 @contextlib.contextmanager
 def isolated_checkout(ctx: Any, spec: ReviewSubjectSpec, *,
-                      retain: Optional[Callable[[], Mapping[str, Any]]] = None) -> Iterator[FrozenSubject]:
+                      retain: Optional[Callable[[], Mapping[str, Any]]] = None,
+                      token: Optional[Callable[[FrozenSubject], str]] = None) -> Iterator[FrozenSubject]:
     """A detached worktree at the subject's parent with its patch applied to the
     index, under the install's data root (``state/review_checkouts/<token>/repo``);
     the yielded subject reads there, so edits in the primary worktree during the
     run cannot change what the reviewers see. The checkout's ``write-tree`` must
     equal the frozen ``tree_sha`` or the subject is refused.
+
+    ``token(frozen)`` names the checkout from the frozen subject's identity (the
+    operation's ``checkout_token``: one path per round), else the name is random.
+    A checkout already at that path with the frozen tree — one an earlier wave's
+    open custody retained — is read as it is, never rebuilt; any other content
+    there is replaced.
 
     Removed on exit unless ``retain()`` names open custody then (a reviewer seat
     whose answer is still owed, an open preflight run): a checkout a paid worker
@@ -886,34 +900,14 @@ def isolated_checkout(ctx: Any, spec: ReviewSubjectSpec, *,
     from ouroboros.tool_access_paths import canonical_data_root
 
     spec = _normalized_spec(ctx, spec)
-    if spec.kind == SUBJECT_KIND_RANGE:
-        parent_sha, _head = _resolve_range(spec.root, spec.base, spec.head)
-    else:
-        parent_sha, _at_head = _tree_parent(spec.root, spec)
-    checkout_root = canonical_data_root(ctx) / "state" / CHECKOUT_SUBDIR / uuid.uuid4().hex[:12]
+    identity = _frozen(ctx, spec, "")
+    name = str(token(identity) if token is not None else uuid.uuid4().hex[:12])
+    checkout_root = canonical_data_root(ctx) / "state" / CHECKOUT_SUBDIR / name
     checkout = checkout_root / "repo"
-    checkout_root.mkdir(parents=True, exist_ok=True)
+    frozen = dataclasses.replace(identity, checkout=str(checkout))
     try:
-        rc, _raw, err = _git_bytes(spec.root, ["worktree", "add", "--detach", str(checkout), parent_sha])
-        if rc != 0:
-            raise StagedDiffUnavailable(f"isolated checkout could not be created: {err or 'no detail'}")
-        frozen = freeze_subject(ctx, spec, checkout=str(checkout))
-        if frozen.patch.strip():
-            # Capture and apply stay byte-paired (bytes in, bytes out): a text
-            # round trip could normalize line endings the patch describes.
-            try:
-                applied = subprocess.run(
-                    ["git", "apply", "--index", "--whitespace=nowarn", "--binary"], cwd=str(checkout),
-                    input=frozen.patch, capture_output=True, timeout=300)
-            except (OSError, subprocess.SubprocessError) as exc:
-                raise StagedDiffUnavailable(f"patch did not apply to the isolated checkout: {exc!r}") from exc
-            if applied.returncode != 0:
-                raise StagedDiffUnavailable("patch did not apply to the isolated checkout: "
-                                            + (applied.stderr or b"").decode("utf-8", "replace").strip())
-        applied_tree = _real_index_tree(checkout)
-        if applied_tree != frozen.tree_sha:
-            raise StagedDiffUnavailable(f"isolated checkout tree {applied_tree[:12]} is not the frozen "
-                                        f"subject tree {frozen.tree_sha[:12]}")
+        if not _retained_checkout_at(checkout, frozen.tree_sha):
+            _materialize_checkout(spec.root, checkout_root, checkout, frozen)
         yield frozen
     finally:
         if checkout_retention(retain):
@@ -921,6 +915,52 @@ def isolated_checkout(ctx: Any, spec: ReviewSubjectSpec, *,
         else:
             _git_bytes(spec.root, ["worktree", "remove", "--force", str(checkout)])
             shutil.rmtree(checkout_root, ignore_errors=True)
+
+
+def _retained_checkout_at(checkout: pathlib.Path, tree_sha: str) -> bool:
+    """A checkout at this path whose index IS the frozen tree: what an earlier wave
+    of the same round left for its open custody, and what its rerun reads."""
+    if not checkout.is_dir():
+        return False
+    try:
+        return _real_index_tree(checkout) == tree_sha
+    except Exception:
+        return False
+
+
+def _materialize_checkout(root: str, checkout_root: pathlib.Path, checkout: pathlib.Path,
+                          frozen: FrozenSubject) -> None:
+    if checkout_root.exists():  # stale content under the round's name: replaced, never read
+        _git_bytes(root, ["worktree", "remove", "--force", str(checkout)])
+        shutil.rmtree(checkout_root, ignore_errors=True)
+    checkout_root.mkdir(parents=True, exist_ok=True)
+    rc, _raw, err = _git_bytes(root, ["worktree", "add", "--detach", str(checkout), frozen.parent_sha])
+    if rc != 0:
+        raise StagedDiffUnavailable(f"isolated checkout could not be created: {err or 'no detail'}")
+    if frozen.patch.strip():
+        # Capture and apply stay byte-paired (bytes in, bytes out): a text
+        # round trip could normalize line endings the patch describes.
+        try:
+            applied = subprocess.run(
+                ["git", "apply", "--index", "--whitespace=nowarn", "--binary"], cwd=str(checkout),
+                input=frozen.patch, capture_output=True, timeout=300)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise StagedDiffUnavailable(f"patch did not apply to the isolated checkout: {exc!r}") from exc
+        if applied.returncode != 0:
+            raise StagedDiffUnavailable("patch did not apply to the isolated checkout: "
+                                        + (applied.stderr or b"").decode("utf-8", "replace").strip())
+    applied_tree = _real_index_tree(checkout)
+    if applied_tree != frozen.tree_sha:
+        raise StagedDiffUnavailable(f"isolated checkout tree {applied_tree[:12]} is not the frozen "
+                                    f"subject tree {frozen.tree_sha[:12]}")
+
+
+def checkout_token(retry_key: str) -> str:
+    """The isolated checkout's name for one custody retry key (identity c,
+    ``review_retry_key``): the same round of the same subject materializes at the
+    same path, so a rerun's ``session_root`` — part of the custody attempt key and of
+    every operation's recovery binding — is the path of the operation it rejoins."""
+    return hashlib.sha256(str(retry_key or "").encode("utf-8")).hexdigest()[:16]
 
 
 def checkout_retention(retain: Optional[Callable[[], Mapping[str, Any]]]) -> Dict[str, Any]:

@@ -183,11 +183,14 @@ def _install_seams(monkeypatch: pytest.MonkeyPatch, h: Harness) -> None:
         return frozen_of(spec)
 
     @contextlib.contextmanager
-    def checkout(ctx: Any, spec: ReviewSubjectSpec, *, retain=None):
+    def checkout(ctx: Any, spec: ReviewSubjectSpec, *, retain=None, token=None):
         """``review_subject.isolated_checkout``'s contract for every subject kind: the
-        frozen subject reads in a checkout under the data root."""
+        frozen subject reads in a checkout under the data root, named by ``token`` from
+        the frozen identity (one path per round) when the caller gives one."""
         h.calls.append(("checkout", spec))
-        yield frozen_of(spec, checkout=str(h.drive / "checkouts" / spec.kind.replace("..", "-")))
+        identity = frozen_of(spec)
+        name = token(identity) if token is not None else spec.kind.replace("..", "-")
+        yield frozen_of(spec, checkout=str(h.drive / "checkouts" / name))
         # The runtime's exit question (review_subject.checkout_retention): kept or removed.
         from ouroboros.tools.review_subject import checkout_retention
 

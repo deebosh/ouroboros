@@ -243,22 +243,62 @@ def golden_physical_seam(sends: list[dict], *, answer=None):
     the REAL custody layer (``review_custody``: attempt keys, settled replays, pending
     rejoins, the paid stamp). Every send is appended to ``sends`` with the identity the
     custody layer keyed it by; the seat answers with the golden actor unless ``answer``
-    (``answer(request, slot, actor) -> actor``) says otherwise."""
-    from ouroboros.review_dispatch import invoke_review_paid_stamp
+    (``answer(request, slot, actor, retry_state=..., pending_invocation_checkpoint=...)
+    -> actor``) says otherwise — e.g. a delegated seat whose start outcome is unknown
+    answers an error actor carrying ``usage["pending_invocation_id"]`` after
+    checkpointing that token, as the session executor does. The seam leaves the real
+    ``_run_slot``'s durable producer trail (the operation's prompt, then its completed
+    outcome under the operation binding), so a later process can recover the seat
+    (``review_operation.recover_review_producer``) exactly as in production."""
+    from dataclasses import asdict
+
+    from ouroboros.observability import persist_call
+    from ouroboros.review_custody import finalize_review_actor
+    from ouroboros.review_dispatch import invoke_review_paid_stamp, review_operation_binding
 
     rows = _golden_rows()
 
     def run_slot(self, request, slot, *, operation_id="", retry_state=None, logical_deadline_monotonic=None,
                  pending_invocation_checkpoint=None):
         invoke_review_paid_stamp(self._review_paid_stamp)  # what a route executor does before its transport
+        call_id, call_type = str(operation_id), request.call_type or f"{request.surface}_review"
+        binding = review_operation_binding(request, slot, call_id)
         row = rows(self.drive_root)[slot.slot_id]
-        sends.append({"slot_id": slot.slot_id, "surface": request.surface, "operation_id": str(operation_id),
+        sends.append({"slot_id": slot.slot_id, "surface": request.surface, "operation_id": call_id,
                       "retry_key": str(request.retry_key or ""), "session_root": str(request.session_root or ""),
                       "retry_state": dict(retry_state or {}), "reconcile_only": bool(request.reconcile_only)})
-        actor = self._error_actor(request, slot, "unused", operation_id=operation_id)
+        actor = self._error_actor(request, slot, "unused", operation_id=call_id)
         actor.status, actor.error, actor.raw_text = "ok", "", row["raw_text"]
         actor.usage, actor.prompt_ref, actor.response_ref = dict(GOLDEN_USAGE[slot.slot_id]), row["prompt_ref"], row["response_ref"]
-        return answer(request, slot, actor) if answer is not None else actor
+        invocation = {"id": str((retry_state or {}).get("pending_invocation_id") or "")}
+
+        def checkpoint(invocation_id):
+            # The session executor's order: the durable START_REQUESTED row that names
+            # the resources the start binds (what a rejoin after a restart finds), then
+            # the reserved seat's checkpoint of the same token.
+            from ouroboros import delegate_custody as custody
+
+            invocation["id"] = str(invocation_id)
+            assert custody.record_start_requested(
+                self._custody_drive_root(), run_id="", task_id=request.task_id, invocation_id=str(invocation_id),
+                idempotency_key=str(invocation_id), operation_id=call_id, max_seconds=300,
+                request={"prompt": "golden review session"}, project_id="", project_owned=False, route="golden",
+                surface=request.surface, slot_id=slot.slot_id,
+                root_task_id=str(binding.get("root_task_id") or request.task_id), parent_task_id="")
+            if callable(pending_invocation_checkpoint):
+                pending_invocation_checkpoint(invocation_id)
+
+        if answer is not None:
+            actor = answer(request, slot, actor, retry_state=dict(retry_state or {}), pending_invocation_checkpoint=checkpoint)
+        persist_call(self._custody_drive_root(), task_id=request.task_id or "review", call_id=f"{call_id}_prompt",
+                     call_type=f"{call_type}_prompt", payload={"request": asdict(request), "slot": asdict(slot)},
+                     manifest={"surface": request.surface, "slot_id": slot.slot_id, "model": slot.model,
+                               "review_operation_binding": binding})
+        actor.recovery_binding = {**binding, "pending_invocation_id": invocation["id"]}
+        finalize_review_actor(actor, operation_id=call_id)
+        actor.response_ref = self._persist_producer_outcome(
+            request, actor, call_id, call_type, {"message": {"content": actor.raw_text}, "usage": actor.usage})
+        return actor
 
     return run_slot
 

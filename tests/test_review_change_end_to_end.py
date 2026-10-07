@@ -308,6 +308,114 @@ def test_two_revisions_of_one_tree_are_two_rounds(tmp_path, monkeypatch):
     assert run_review_change(ctx, **ask, head=moved)["reused"] is True and len(sends) == 6
 
 
+def _pending_then_answering_seat(seat_id: str, token: str):
+    """A delegated seat whose first start outcome is unknown: the executor checkpoints
+    the start token and reports the seat in flight (``usage["pending_invocation_id"]``,
+    the gate's late-session shape). The rejoin of that exact invocation answers."""
+    starts: list[dict] = []
+
+    def answer(request, slot, actor, *, retry_state, pending_invocation_checkpoint):
+        if slot.slot_id != seat_id or retry_state.get("pending_invocation_id") == token:
+            return actor
+        starts.append({"session_root": str(request.session_root or ""), "retry_state": dict(retry_state)})
+        pending_invocation_checkpoint(token)
+        actor.status, actor.error, actor.raw_text = "error", "delegated start outcome unknown", ""
+        actor.usage = {"pending_invocation_id": token}
+        return actor
+
+    return answer, starts
+
+
+def _paid_rows(drive: Path, project: Path) -> list:
+    from ouroboros.review_state import load_state, make_repo_key
+
+    return [row for row in load_state(drive).filter_attempts(repo_key=make_repo_key(project), tool_name="review_change")
+            if row.paid]
+
+
+def test_a_rerun_of_a_pending_round_rejoins_its_operation_and_passes_a_reached_ceiling(tmp_path, monkeypatch):
+    """S2-2, in one process. A wave whose delegated seat is still running settles
+    ``pending`` and keeps its checkout. The identical request then COLLECTS that
+    operation: the checkout is the same path (the round's), the custody attempt key
+    matches, the settled seats replay, the pending seat is rejoined by its exact
+    invocation, the SAME record is revised to its verdict, the one paid attempt row
+    closes — and all of it with the per-task cycle ceiling already reached, which
+    meets only a NEW paid wave. Nothing is paid for twice."""
+    ctx, project = _foreign_project(tmp_path, monkeypatch)
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")  # the first wave reaches it
+    (project / "app.py").write_text("VALUE = 2  # staged\n", encoding="utf-8")
+    shared.git(project, "add", "app.py")
+    sends: list[dict] = []
+    answer, starts = _pending_then_answering_seat("t2", "invocation-t2-round-1")
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", shared.golden_physical_seam(sends, answer=answer))
+    ask = dict(subject="index", goal="Bump", scope="app.py")
+
+    first = run_review_change(ctx, **ask)
+    assert first["state"] == "pending" and first["reused"] is False, first
+    checkout = Path(first["subject"]["checkout"])
+    assert first["subject"]["retained_checkout"] == str(checkout) and checkout.is_dir()
+    assert first["subject"]["retention"].get("seats") == ["t2"], first["subject"]["retention"]
+    assert sorted(send["slot_id"] for send in sends) == ["s1", "t1", "t2"] and len(starts) == 1
+    rows = _paid_rows(ctx.drive_root, project)
+    assert len(rows) == 1 and rows[0].late_result_pending and rows[0].review_record_id == first["record_id"]
+    pending_rows = [row for row in rows[0].triad_raw_results if row.get("slot_id") == "t2"]
+    assert pending_rows and pending_rows[0].get("pending_invocation_id") == "invocation-t2-round-1"  # checkpointed
+
+    rerun = run_review_change(ctx, **ask)
+    assert (rerun["state"], rerun["aggregate"], rerun["reused"]) == ("settled", "PASS", False), rerun
+    assert rerun["record_id"] == first["record_id"]
+    record = review_ledger.load_record(ctx.drive_root, rerun["record_id"])
+    assert record["revision"] == 2 and record["dispatch_refusal"] is None
+    assert rerun["subject"]["checkout"] == str(checkout)  # the round's path, not a new one
+    # One more physical act only: the exact rejoin of the pending invocation, in the
+    # retained checkout; the settled seats were not sent again.
+    assert len(sends) == 4 and sends[3]["slot_id"] == "t2" and sends[3]["reconcile_only"] is True
+    assert sends[3]["retry_state"] == {"pending_invocation_id": "invocation-t2-round-1"}
+    assert sends[3]["session_root"] == sends[1 if sends[1]["slot_id"] == "t2" else 2]["session_root"] == str(checkout)
+    assert sends[3]["retry_key"] == sends[0]["retry_key"]
+    rows = _paid_rows(ctx.drive_root, project)
+    assert len(rows) == 1 and not rows[0].late_result_pending and rows[0].review_record_id == rerun["record_id"]
+    assert not checkout.exists() and not rerun["subject"].get("retained_checkout")  # custody closed
+    # The ceiling stands for a NEW paid wave of this task tree.
+    other = run_review_change(ctx, **{**ask, "goal": "Another brief"})
+    assert other["aggregate"] == "NOT_DISPATCHED" and other["dispatch_refusal"]["kind"] == "review_cycles_exhausted"
+    assert len(sends) == 4
+
+
+def test_a_rerun_after_a_restart_rejoins_the_pending_round_from_durable_state(tmp_path, monkeypatch):
+    """S2-2 after a restart: a FRESH context (no process-local custody) rerunning the
+    same round finds the pending attempt row, its checkpointed invocation and the
+    settled seats' durable producer outcomes, at the same checkout path — and settles
+    the same record. A random checkout path would be a different attempt key: the
+    bindings would not match and the paid operation would be lost, not collected."""
+    ctx, project = _foreign_project(tmp_path, monkeypatch)
+    (project / "app.py").write_text("VALUE = 2  # staged\n", encoding="utf-8")
+    shared.git(project, "add", "app.py")
+    sends: list[dict] = []
+    answer, starts = _pending_then_answering_seat("t2", "invocation-t2-restart")
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", shared.golden_physical_seam(sends, answer=answer))
+    ask = dict(subject="index", goal="Bump", scope="app.py")
+
+    first = run_review_change(ctx, **ask)
+    assert first["state"] == "pending", first
+    checkout = Path(first["subject"]["checkout"])
+    assert checkout.is_dir() and len(sends) == 3
+
+    restarted = ToolContext(repo_dir=ctx.repo_dir, system_repo_dir=ctx.system_repo_dir, drive_root=ctx.drive_root,
+                            workspace_root=project, workspace_mode="external", task_id=ctx.task_id)
+    rerun = run_review_change(restarted, **ask)
+    assert (rerun["state"], rerun["aggregate"], rerun["reused"]) == ("settled", "PASS", False), rerun
+    assert rerun["record_id"] == first["record_id"] and rerun["subject"]["checkout"] == str(checkout)
+    assert review_ledger.load_record(ctx.drive_root, rerun["record_id"])["revision"] == 2
+    assert len(sends) == 4 and sends[3]["slot_id"] == "t2" and sends[3]["session_root"] == str(checkout)
+    assert sends[3]["retry_state"] == {"pending_invocation_id": "invocation-t2-restart"} and len(starts) == 1
+    rows = _paid_rows(ctx.drive_root, project)
+    assert len(rows) == 1 and not rows[0].late_result_pending
+    assert {row["slot_id"]: (row["operation_state"], bool(row.get("late_result_pending")))
+            for row in rows[0].triad_raw_results} == {"t1": ("settled", False), "t2": ("settled", False)}
+    assert not checkout.exists()
+
+
 SERVING_RULE = "SERVING-CONSTITUTION-MARKER: the rule that is running."
 CANDIDATE_RULE = "CANDIDATE-CONSTITUTION-MARKER: the candidate rewrote its own rule."
 
