@@ -1,4 +1,4 @@
-1601
+1587
 The "Late completion and typed refusals" section gains the delegated-seat custody paragraph for
 #1547: a rejoin after process loss runs for the remainder of the run's ORIGINAL window computed from
 saved facts (durable START_REQUESTED/STARTED rows, else the frozen row's awaiting_since) floored at

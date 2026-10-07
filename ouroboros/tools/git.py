@@ -203,11 +203,9 @@ def _free_cycle_gate(
         pass
     if _authorized_managed_update_resolver(ctx):
         _repair_managed_merge_head(ctx)
-    # The free refusal is still a review outcome the owner must be able to read:
-    # a NOT_DISPATCHED ledger record names why nothing was reviewed.
-    record_id = record_commit_gate_refusal(
-        ctx, commit_message, goal=goal, scope=scope, pre_fingerprint=pre_fingerprint, kind=reason, message=message,
-    )
+    # A free refusal is still a review outcome: its NOT_DISPATCHED ledger record names why nothing was reviewed.
+    record_id = record_commit_gate_refusal(ctx, commit_message, goal=goal, scope=scope, pre_fingerprint=pre_fingerprint,
+                                           kind=reason, message=message)
     _record_commit_attempt(
         ctx,
         commit_message,
@@ -1282,11 +1280,8 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
                     reestablish_merge_head(str(_managed_tx.get("target_sha") or ""))
                 except Exception:
                     log.debug("reestablish_merge_head after blocked managed review failed", exc_info=True)
-            message = str(outcome.get("message", "") or "")
-            record_id = str(outcome.get("review_record_id") or "")
-            if record_id and record_id not in message:  # a blocked, pending or refused wave still names its record
-                message += f"\nreview_record_id: {record_id}"
-            return message
+            message, record_id = str(outcome.get("message", "") or ""), str(outcome.get("review_record_id") or "")
+            return message + (f"\nreview_record_id: {record_id}" if record_id and record_id not in message else "")
         pre_fingerprint = outcome.get("pre_fingerprint", {}) or {}
         post_fingerprint = outcome.get("post_fingerprint", {}) or {}
 
