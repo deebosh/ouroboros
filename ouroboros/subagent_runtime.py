@@ -613,8 +613,9 @@ def prepare_delegate_start_actor(
     invocation_id: str,
     work_order_fingerprint: str,
     authority_fingerprint: str,
+    continuing: str = "",
 ) -> tuple[dict[str, Any], Optional["ToolResult"]]:
-    """Resolve the exact actor/start fence without growing the transport facade."""
+    """Resolve the exact actor/start fence; ``continuing`` names the run a continuation takes over."""
 
     from ouroboros import delegate_custody as custody
     from ouroboros.delegate_recovery import unsettled_start_ids
@@ -657,7 +658,7 @@ def prepare_delegate_start_actor(
             "canonical custody record before starting a replacement.",
         )
     blockers = unsettled_start_ids(
-        drive_root, str(getattr(ctx, "task_id", "") or "")
+        drive_root, str(getattr(ctx, "task_id", "") or ""), continuing=str(continuing or "")
     )
     if any(blockers.values()):
         live_ids = [str(v) for key in ("open_run_ids", "pending_invocation_ids",
@@ -809,8 +810,8 @@ def exact_start(ctx: Any, prompt: str, spec: Optional[dict[str, Any]] = None) ->
             _canonical_work_order_fingerprint=canonical_work_order_fingerprint,
             _work_order_source_request=work_order_source_request,
             _coordination_context=coordination_context,
-            **{key: options.pop(key) for key in ("directory_strategy", "scope_paths", "continue_from")
-               if key in options},
+            **{key: options.pop(key) for key in (
+                "directory_strategy", "scope_paths", "continue_from", "continue_carrier") if key in options},
         )
         # Every configured-session start lands here — the host's pre-start
         # (charter, owner 2026-08-28/29) and any model-issued retry/replacement

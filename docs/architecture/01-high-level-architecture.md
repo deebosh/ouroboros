@@ -268,7 +268,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── delegate_start_instructions.py ← Stable host start instructions + a complete separately-hashed coordination appendix; host pre-start sends no appendix
       ├── delegate_target_drift.py ← Read-only authority-tree drift evidence for delegated capture; records changed paths without attributing them to the child or blocking a normal no-change disposition (§6 Delegated subagents)
       ├── delegate_recovery.py ← Narrow exact-leaf recovery for proven crash + planned self-restart; vetoes every no-resume cause
-      ├── delegate_continuation.py ← Custody-gated continuation of disposed finite-timeout leaves; no crash recovery (§6 Delegated subagents)
+      ├── delegate_continuation.py ← continue_from after any stop: four custody floors, same-snapshot hand-over (§6 Delegated subagents)
       ├── delegate_registration_policy.py, delegate_readonly_inputs.py ← Readonly lineage inputs; `persistent_registration` + the STARTED-row field tables
       ├── delegate_pending.py  ← Durable pending-invocation replay preserving the original idempotency key + canonical start body
       ├── delegate_custody_memo.py ← custody_rows process memo: rotated-prefix/consumed-byte hash, append folds, exact fallback, unreadable bypass; legacy bodies via delegate_pending.request_body (§6 Delegated subagents)
