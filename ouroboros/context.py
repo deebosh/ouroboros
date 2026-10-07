@@ -1161,6 +1161,12 @@ def _capture_context_core(
             )
     except Exception:
         log.debug("Failed to build Available subagents catalog", exc_info=True)
+    try:
+        from ouroboros.subagent_runtime import review_facts_block
+
+        semi_stable_parts.append(review_facts_block(drive_root=canonical_root, task_id=str(task.get("id") or "")))
+    except Exception:
+        log.warning("Failed to build the Review block", exc_info=True)
     semi_stable_parts.extend(build_memory_sections(context_memory, partition="stable"))
     # Knowledge leads the changing block (its edits never cost the cached story) and
     # rides only where the view holds it: a child or nanny reads it by knowledge_read.
