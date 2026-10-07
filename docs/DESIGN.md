@@ -65,7 +65,8 @@ Rules:
   20px) for `#` and `##`, `--md-heading-minor` (1.125em, 18px) for `###`,
   the reading size for deeper levels; its tables read at that size too. The
   steps are relative to the reading text, not UI sizes, and only the rich
-  answer's heading rules read the two tokens (§5). Nothing else changes
+  answer's heading rules read the two tokens (§5) — they and a delivered
+  document in the reader (§5 "Document reading"). Nothing else changes
   size: controls, labels, cards and page chrome keep the four sizes, and so
   do the compact surfaces (a Skill Review report, a task timeline) and the
   other rich-content cards (the question card, the update letter).
@@ -728,6 +729,41 @@ are compared as instants, and two that read alike on the local clock (a repeated
 daylight-saving hour) carry zone names. Lines saved before the host recorded end
 times stay as they were. Delivery keeps its present place in Main; an older
 Failed remains that task's result even after a different task succeeds.
+
+### Document reading
+
+A Markdown or plain-text file Ouroboros delivers in chat can be read inside the
+app. Its card says `Read`; pressing it opens a reading dialog over the
+conversation — on a phone a full sheet — and Close or Escape returns to the same
+place in the chat with focus back on the card. Leaving that chat's screen (another
+page, a Project room over Main, a notification) closes the reader; files staged in
+the composer stay. Other files keep the card's Open / Download dialog; the reader
+keeps Open and Download as well.
+
+- It shows the delivered copy, never what a file path holds now. A copy that is
+  missing, failed its integrity check, changed after delivery or cannot be read
+  on this device says so in the reader, with Retry only where retrying can
+  help; nothing else is shown in its place.
+- Name, type and size are the reader's header, not Ouroboros's words: a
+  document is not a chat message and adds none. Like model text, the name and
+  the document are never translated; the reader's own controls are.
+- Markdown reads as a document: a single line break inside a paragraph is soft
+  (an explicit hard break stays), at the reading size and heading ladder of a
+  rich answer (§1). Everything else follows "Rendered Markdown keeps its
+  author's structure and text": raw HTML and SVG stay literal, images stay
+  references and never load, and a relative link, which would point into a
+  folder the reader does not open, reads as its words. `Source` shows the
+  decoded text unformatted — a leading byte-order mark is dropped and invalid
+  bytes read as �, so it is not a byte view. Nothing is editable; all text is
+  selectable.
+- Plain text reads monospaced and wraps; only a table or code block scrolls
+  sideways, inside itself.
+- The reader reads at most the first 1 MiB. A longer file shows that prefix
+  with a note saying how much is shown and that Download has the whole; a
+  character cut by the limit is withheld, not reported as damage. Bytes that are
+  not UTF-8 show as � with a note; a file with NUL bytes is not shown as text.
+  A read that has not finished within 30 seconds stops and says so with Retry;
+  nothing retries by itself.
 
 ### History edges
 
