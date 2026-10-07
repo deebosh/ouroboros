@@ -4,7 +4,7 @@ Shared pages, frontend contracts and runtime truth serve desktop, browser, Docke
 
 The Web UI is a build-free vanilla-JavaScript SPA (`web/index.html`, shared CSS, `web/modules/*`) — no TypeScript or bundler step, so the running interface stays inspectable and editable by Ouroboros without regenerating opaque artifacts. `web/app.js` owns top-level page, Project-panel and mobile-navigation state; feature modules own their presentation; every long-lived UI acquisition carries a disposer bound to the lifecycle that created it (DEVELOPMENT "UI resources carry a disposer"). The same SPA serves every surface: the Linux browser fallback changes presentation only — no second API, onboarding contract, runtime identity or state owner — and the browser stays the owner's application outside process custody (§1). One shared WebSocket serves the whole application; Projects open no independent sockets, and REST remains the recovery and durable-read path (protocol and connection order: the WebSocket protocol subsection of §4).
 
-The desktop shell exposes a small `MainApi` JS bridge (`window.pywebview.api`, `launcher.py`): three native confirmation methods (runtime mode, reviewed-skill auto-grant, skill key grant), `request_attention`, also named `notify_owner` for pages that pass the alert's title and text (raise a visible window and request one platform system sound, returning explicit `native_sound`/`window_only`/`unsupported`/`unavailable` facts; a window hidden in background mode is never raised: a banner or Dock cue answers `background`; a page about to show its own browser banner asks first with a last `false`, and a visible window answers `visible` with no cue), `download_file_to_downloads`, `open_file_with_default_app`, `open_external_url` (absolute http(s)/mailto) and `save_bytes_to_downloads` for live base64 payloads; the loopback-file methods share one guard — loopback host, exact server port, and a path allowlist of `/api/files/download`, `/api/extensions/...` and `/api/tasks/...`. For consistent native link and download handling, `ui_helpers.js` installs a shell-only link interceptor in BOTH top-level documents (SPA and framed onboarding wizard) when the bridge is present, routing each URL class to the matching bridge method; methods are feature-detected per call, because the packaged launcher updates only on reinstall while the served frontend updates with the managed repo, and a missing method degrades to copy-link-plus-toast or the file-helper fallback chain. The separate first-run `OnboardingHostApi` exposes window completion and the same external opener, injected by `launcher.py`. Subscription sign-in cards call `openExternalViaHostBridge` during an ordinary click or keyboard activation; handled clicks are not opened again by the document interceptor, while browser modifier clicks remain native. The helper resolves desktop and Telegram capabilities from a same-origin parent for the framed wizard. The authenticated Telegram proxy's `X-Ouroboros-Telegram-MiniApp: 1` presentation marker makes `server_web.make_index_page` include the asynchronous Telegram SDK and host hint in the main document; an unavailable SDK reports a click failure and never replays it after loading, and the marker grants no authentication authority.
+The desktop shell exposes a small `MainApi` JS bridge (`window.pywebview.api`, `launcher.py`): three native confirmation methods (runtime mode, reviewed-skill auto-grant, skill key grant); the alert half inherited from `launcher_background.DesktopApi` — `request_attention`, also named `notify_owner` for pages that pass the alert's title and text (raise a visible window and request one platform system sound, returning explicit `native_sound`/`window_only`/`unsupported`/`unavailable` facts; a window hidden in background mode is never raised: a banner or Dock cue answers `background`; a page about to show its own browser banner asks first with a last `false`, and a visible window answers `visible` with no cue), `shell_info` (the app's own version, persistent storage and system-notification permission), `request_native_notifications` and `show_native_notification` (one `desktop_notifications.py` notification: `submitted`, `unknown` — handed over, unanswered — or a typed `not_determined`/`denied`/`unavailable`/`failed`; its click shows the window and calls `window.ouroNotifications.activate(token)`) — `download_file_to_downloads`, `open_file_with_default_app`, `open_external_url` (absolute http(s)/mailto) and `save_bytes_to_downloads` for live base64 payloads; the loopback-file methods share one guard — loopback host, exact server port, and a path allowlist of `/api/files/download`, `/api/extensions/...` and `/api/tasks/...`. For consistent native link and download handling, `ui_helpers.js` installs a shell-only link interceptor in BOTH top-level documents (SPA and framed onboarding wizard) when the bridge is present, routing each URL class to the matching bridge method; methods are feature-detected per call, because the packaged launcher updates only on reinstall while the served frontend updates with the managed repo, and a missing method degrades to copy-link-plus-toast or the file-helper fallback chain. The separate first-run `OnboardingHostApi` exposes window completion and the same external opener, injected by `launcher.py`. Subscription sign-in cards call `openExternalViaHostBridge` during an ordinary click or keyboard activation; handled clicks are not opened again by the document interceptor, while browser modifier clicks remain native. The helper resolves desktop and Telegram capabilities from a same-origin parent for the framed wizard. The authenticated Telegram proxy's `X-Ouroboros-Telegram-MiniApp: 1` presentation marker makes `server_web.make_index_page` include the asynchronous Telegram SDK and host hint in the main document; an unavailable SDK reports a click failure and never replays it after loading, and the marker grants no authentication authority.
 
 ### Navigation and shared UI contracts
 
@@ -52,13 +52,18 @@ finished — or the authored summary, which with the turn's ordinary reply share
 one key per task), lineage comes from the delegation facts frames carry (the
 terminal log frame has none), importance rides the existing `system_type`
 discriminator (`proactive_message`, `main_notice`; a `reminder` or `skill_notice` row is titled by its `source` author, body below the signature line) plus optional questions, and
-ordinary Main replies are a separate off-by-default toggle. Where the
+ordinary Main replies are a separate off-by-default toggle. A desktop app with
+`show_native_notification` is asked first: `submitted` is the whole delivery (no
+tone, toast or browser banner), `unknown` adds nothing either and keeps the click
+target, a refusal takes the fallback. Without it, a legacy `notify_owner` bridge
+is not asked for a Sound-off alert: its hidden-window balloon cannot be silenced. Where the
 Notification API is missing or denied, delivery degrades to the in-app toast
 plus one tone; where it is granted, a launcher that can hide its window answers
 before any browser banner, and a window hidden on purpose gets that launcher's cue
 instead of the banner; with the optional desktop bridge the shell also requests one
-native attention cue and reports its capability in Settings, the bridge claiming
-neither Notification Center/toast delivery nor work after the app closes.
+native attention cue, claiming no delivery and no work after the app closes.
+Settings names the surface in use from the app's `shell_info`
+(`desktop_shell.js`).
 No OS permission, Do Not Disturb or platform limit is bypassed. Policy and its disclosed limits: DESIGN
 §9; engineering rules: DEVELOPMENT "notifications ring for live events only".
 
@@ -70,7 +75,12 @@ author, and `fixed` names a stable visual world; the field is advisory. Desktop
 `webview.start(private_mode=False)` requests persistent website storage in
 `launcher.py` and `launcher_onboarding.py`, including
 cookies, not just appearance. Existing packaged launchers must be rebuilt and
-installed to change that flag. Profile identity, origin and platform storage
+installed to change that flag: pywebview 5.4's default private mode erases the
+WebView's website data whenever a window opens (macOS: every data type of the
+bundle's default store; Windows: a temporary profile; GTK: local storage off),
+and in-app updates replace only the core. `desktop_shell.js` therefore discloses
+an app before 7.2.0 in Settings → Appearance, from `shell_info()` or, for an app
+without it, the launcher-stamped `/api/health` `app_version`. Profile identity, origin and platform storage
 still govern retention: source tests do not certify a cold-launch result. When
 migrating from a private session, explicitly select the owner's Light in the new
 persistent client before testing full quit/relaunch; no private-to-persistent
@@ -89,6 +99,7 @@ Shared primitives keep pages from acquiring competing contracts — frontend wor
 - `api_client.js` / `api_types.js` ← browser API calls with typed error propagation; mirrors of the browser-facing contract shapes.
 - `ui_primitives.js` ← self-contained `renderSafeField`, `collectSafeFieldValues`, `escapeHtmlAttr`, `normalizeTone` and `setInlineStatus` with no shell/API or document-global initialization; `ui_helpers.js` / `utils.js` re-export them, so author pages need no second field renderer.
 - `ui_helpers.js` ← host-bridge, shared row/badge helpers and keyboard menu-lock behavior; the wrapping action-row composition under system chat and routing rows (`createSystemMessageActions`); installs its Alt guard on both top-level documents.
+- `desktop_shell.js` ← the desktop app's own facts for Settings: `shell_info()` (app version, storage, system-notification permission) or an older app's `/api/health` `app_version`; discloses an app before 7.2.0.
 - `skill_card_renderer.js` ← installed-skill cards.
 - `hub_sync.js` ← the one catalog×listing verdict (install/installed/update/adopt/none plus badges) for Hub cards and My-skills badges, joined to `/api/extensions` by canonical name; receipts are history, never gates; catalog rows prove no PR merge or ownership.
 - `client_surface.js` ← the send-time sending-surface snapshot (raw observables, no device taxonomy) that `chat.js` spreads into each chat frame.
