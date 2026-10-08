@@ -1491,6 +1491,10 @@ def retire_settled_registrations(drive_root: Any, gateway: Any, *, live_task_ids
         owned = [row for row in rows if row.project_owned]
         if not owned or any(not row.settled for row in rows):
             continue  # nothing registered here, or a live sharer defers
+        from ouroboros.delegate_continuation import still_continuable
+        if (not any(row.project_persistent for row in rows)
+                and any(still_continuable(drive_root, row, live_task_ids) for row in rows)):
+            continue  # still continuable: skip the locked full-chain re-read until it is not
         try:
             retire_project(drive_root, gateway, min(owned, key=lambda row: row.run_id), live_task_ids=live_task_ids)
         except Exception:

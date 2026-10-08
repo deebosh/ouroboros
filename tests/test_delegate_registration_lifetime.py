@@ -85,6 +85,24 @@ def test_retry_successor_keeps_predecessor_registration(tmp_path):
     assert gateway.removed == ['project']
 
 
+def test_timeout_retried_owner_releases_once_its_retry_finishes(tmp_path):
+    # The production shape of a timeout retry (task_reaper): the predecessor row is
+    # rewritten `interrupted` naming its retry, and only the retry settles later.
+    gateway = Gateway()
+    row = seed(tmp_path)
+    result(tmp_path, 'owner', status='interrupted', reason_code='timeout_retry',
+           superseded_by='retry', retry_task_id='retry')
+    result(tmp_path, 'retry', status='running', supersedes_task_id='owner',
+           original_task_id='owner', timeout_retry_from='owner')
+    settle(tmp_path, gateway, row)
+    sweep(tmp_path, gateway, {'retry'})
+    assert gateway.removed == []
+    result(tmp_path, 'retry', supersedes_task_id='owner', original_task_id='owner',
+           timeout_retry_from='owner')
+    sweep(tmp_path, gateway, set())
+    assert gateway.removed == ['project']
+
+
 def test_root_offer_and_recorded_continue_chain_keep_child_run(tmp_path):
     gateway = Gateway()
     row = seed(tmp_path, task_id='child', root_task_id='root')

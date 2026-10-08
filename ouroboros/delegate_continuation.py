@@ -145,6 +145,13 @@ def still_continuable(drive: Any, entry: Any, live_task_ids=None) -> bool:
     from supervisor.queue_transitions import _live_retry_target_locked
     from supervisor.task_ownership import TaskOwnershipRead, prepare_retry_chain
 
+    def resolved(row: Any) -> bool:
+        # A timeout-retried task is rewritten `interrupted` naming its retry
+        # (task_reaper); its line continues in that retry, followed below.
+        return bool(row) and (row.get('status') in SETTLED_STATUSES or (
+            row.get('status') == 'interrupted' and bool(row.get('superseded_by'))
+            and row.get('superseded_by') == row.get('retry_task_id')))
+
     live = set(live_task_ids)
     reads = TaskOwnershipRead(drive)
     root = entry.root_task_id or entry.task_id
@@ -163,7 +170,7 @@ def still_continuable(drive: Any, entry: Any, live_task_ids=None) -> bool:
             if task_id in live:
                 return True
             current = reads.load(task_id)
-            if not current or current.get('status') not in SETTLED_STATUSES:
+            if not resolved(current):
                 return True
             if local_queue and queue.task_has_live_ownership(task_id, ownership=reads):
                 return True
@@ -175,8 +182,7 @@ def still_continuable(drive: Any, entry: Any, live_task_ids=None) -> bool:
                                      QUEUE_MAX_RETRIES=queue.QUEUE_MAX_RETRIES)
             with queue._queue_lock:
                 leaf, _ = _live_retry_target_locked(census, task_id, results=reads)
-            if leaf in live or any(not row or row.get('status') not in SETTLED_STATUSES
-                                   for row in reads.rows.values()):
+            if leaf in live or any(not resolved(row) for row in reads.rows.values()):
                 return True
             if leaf != task_id:
                 pending.append(leaf)
