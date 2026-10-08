@@ -32,7 +32,22 @@ class _InheritedRequest(_InheritedBase, total=False):
     pinned: Required[int]
 
 
+class _OptionalBase(TypedDict, total=False):
+    optional: str
+    pinned: Required[int]
+
+
+class _TotalRequest(_OptionalBase):
+    needed: str
+    extra: NotRequired[str]
+
+
 class TestDerivation:
+    def test_optional_base_keys_stay_optional_in_a_total_subclass(self):
+        assert json_schema_for(_TotalRequest)["required"] == ["needed", "pinned"]
+        assert validate_ingress({"needed": "x", "pinned": 1}, _TotalRequest) == []
+        assert validate_ingress({"needed": "x"}, _TotalRequest) == ["pinned is required"]
+
     def test_chat_inbound_schema_shape(self):
         from ouroboros.gateway.contracts import ChatInbound
 
@@ -115,6 +130,21 @@ class TestValidator:
 
 
 class TestHttpIngress:
+    def test_tasks_create_reports_inherited_required_field_as_schema_error(self):
+        import asyncio
+        import json
+        from types import SimpleNamespace
+
+        from ouroboros.gateway.tasks import api_tasks_create
+
+        async def body():
+            return {"text": "legacy"}
+
+        response = asyncio.run(api_tasks_create(SimpleNamespace(json=body)))
+        assert response.status_code == 400
+        payload = json.loads(response.body)
+        assert payload["schema_errors"] == ["description is required"]
+
     def test_tasks_create_rejects_wrong_types_before_processing(self):
         import asyncio
         import json as _json
