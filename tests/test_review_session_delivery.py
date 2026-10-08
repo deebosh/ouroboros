@@ -272,7 +272,7 @@ def _seed_started_review_invocation(
     )
     entry = custody.RunCustody(
         run_id=run_id, task_id=custody_task_id, route_id=route_id,
-        model="stored-model", project_id="proj-owned", project_owned=True,
+        model="stored-model", project_id="proj-owned", project_owned=True, source="review_substrate",
         root_task_id="stored-root", parent_task_id="stored-parent",
         ledger_root=str(drive_root), idempotency_key="stored-logical-key",
         invocation_id=invocation_id,

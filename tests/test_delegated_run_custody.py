@@ -839,7 +839,7 @@ def test_shared_project_retirement_defers_quietly_for_non_canonical_sharers(tmp_
     gateway = _RefusingGateway()
     for rid, tid in (("run-aa", "t-1"), ("run-bb", "t-2")):
         dc.record_started(tmp_path, dc.RunCustody(
-            run_id=rid, task_id=tid, route_id="r", model="m",
+            run_id=rid, task_id=tid, route_id="r", model="m", source="review_substrate",
             project_id="prj-shared", project_owned=True, ledger_root=str(tmp_path)))
     dc._CUSTODY.clear()
 

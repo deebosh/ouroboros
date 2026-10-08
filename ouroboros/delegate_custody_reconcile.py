@@ -83,7 +83,7 @@ def release_task_runs(drive_root: Any, task_id: str, *,
 @timed_phase("custody_reconcile", within="release_task_runs")
 def reconcile_task_runs(drive_root: Any, task_id: str, *,
                         gateway_factory: Optional[Callable[[], Any]] = None,
-                        deliberate_terminal: str = "") -> List[Dict[str, Any]]:
+                        deliberate_terminal: str = "", live_task_ids=None) -> List[Dict[str, Any]]:
     """Settle or cancel ONE task's open runs from the DURABLE rows (kill path).
 
     The supervisor-side twin of ``release_task_runs`` for a task whose worker was
@@ -157,13 +157,13 @@ def reconcile_orphaned_runs(
     orphans = [c for c in candidates if c.task_id and c.task_id not in live_or_reserved]
     stray = [record for record in unbound
              if record["task_id"] and record["task_id"] not in live_or_reserved]
-    return _reconcile_each(drive_root, orphans, gateway_factory, pending=stray)
+    return _reconcile_each(drive_root, orphans, gateway_factory, pending=stray, live_task_ids=live_or_reserved)
 
 
 def _reconcile_each(drive_root: Any, runs: List[RunCustody],
                     gateway_factory: Optional[Callable[[], Any]],
                     pending: Optional[List[Dict[str, Any]]] = None,
-                    deliberate_terminal: str = "") -> List[Dict[str, Any]]:
+                    deliberate_terminal: str = "", live_task_ids=None) -> List[Dict[str, Any]]:
     """One transport, one settle-or-cancel pass. Shared by both release surfaces.
 
     ``pending`` is the durable sweep's extra duty: START_REQUESTED-only invocations
@@ -176,9 +176,12 @@ def _reconcile_each(drive_root: Any, runs: List[RunCustody],
     """
     # Registration duty is real work only for a retire-ELIGIBLE project:
     # a deferred one must not spin the daemon up.
-    snapshot = _custody().replay(drive_root).values()
+    from ouroboros.delegate_continuation import still_continuable
+
+    snapshot = list(_custody().replay(drive_root).values())
     unsettled_projects = {row.project_id for row in snapshot
-                          if row.project_id and row.run_id and not row.settled}
+                          if row.project_id and row.run_id and (not row.settled
+                          or still_continuable(drive_root, row, live_task_ids))}
     registrations = [row for row in snapshot
                      if row.project_owned and row.project_id
                      and row.project_id not in unsettled_projects]
@@ -214,7 +217,7 @@ def _reconcile_each(drive_root: Any, runs: List[RunCustody],
         # Recomputed inside: a run settled this very pass may have made its
         # project eligible - the pre-pass gate is not the last word.
         if registrations or runs:
-            _custody().retire_settled_registrations(drive_root, gateway)
+            _custody().retire_settled_registrations(drive_root, gateway, live_task_ids=live_task_ids)
     finally:
         try:
             gateway.close()
