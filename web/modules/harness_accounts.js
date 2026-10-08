@@ -407,7 +407,7 @@ function engineFactsPhrase(payload) {
             : exit.exit_code != null ? ` (exit code ${exit.exit_code})` : '';
         const phase = exit.phase === 'startup' ? ' during startup' : exit.phase ? ` while ${exit.phase}` : '';
         const seen = typeof exit.observed_at === 'string' && exit.observed_at.length >= 16
-            ? `, seen ${exit.observed_at.slice(0, 16).replace('T', ' ')}${exit.observed_at.endsWith('Z') ? ' UTC' : ''}` : '';
+            ? `, seen ${exit.observed_at.slice(0, 16).replace('T', ' ')}${/(Z|[+-]00:?00)$/.test(exit.observed_at) ? ' UTC' : ''}` : '';
         const when = exit.engine_version || seen ? ` · engine ${exit.engine_version || 'unknown'}${seen}` : '';
         facts.push(`Last stop: ${cause}${phase}${ending}${when}`);
     }

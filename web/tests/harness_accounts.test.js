@@ -2190,4 +2190,7 @@ test('daemon status appends observed stop and measured heap without changing rea
         engine_version: '3.22.0', observed_at: '2026-10-07T19:34:11Z' };
     assert.match(daemonStatusLine(payload).text,
         /Last stop: heap exhausted while serving \(signal 6\) · engine 3\.22\.0, seen 2026-10-07 19:34 UTC/);
+    // The host writes utc_now_iso(), i.e. an explicit +00:00 offset.
+    payload.daemon.last_exit.observed_at = '2026-10-08T13:55:07.625130+00:00';
+    assert.match(daemonStatusLine(payload).text, /seen 2026-10-08 13:55 UTC/);
 });
