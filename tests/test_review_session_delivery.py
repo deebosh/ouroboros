@@ -601,21 +601,23 @@ def test_definite_refusal_retires_the_registration_it_orphaned(tmp_path, fake_ro
     assert "pending_invocation_id" not in state
 
 
-def test_unknown_outcome_retains_the_registration_and_says_why(tmp_path, fake_route):
+@pytest.mark.parametrize("code,status", [("daemon_unreachable", 0), ("daemon_busy", 503),
+                                       ("daemon_unavailable", 503)])
+def test_unknown_outcome_retains_the_registration_and_says_why(tmp_path, fake_route, code, status):
     """A transport error leaves the POST's fate UNKNOWN: a run may be live against
     this registration, so it is RETAINED and the durable row names the reason."""
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
 
     fake_route.project_unregistered = True
-    fake_route.start_error = ClaudexorUnavailable("daemon_unreachable", "boom", status_code=0)
+    fake_route.start_error = ClaudexorUnavailable(code, "RPC unavailable", status_code=status)
     state: dict = {}
     with pytest.raises(ClaudexorUnavailable):
         _run_session_directly(tmp_path, retry_state=state)
 
     assert fake_route.instances[-1].removals == []
-    assert state["pending_invocation_id"]
+    assert [row["invocation_id"] for row in custody.pending_invocations(tmp_path)] == [state["pending_invocation_id"]]
     rows = [json.loads(ln) for ln in
-            custody.event_log_path(tmp_path).read_text().splitlines() if ln.strip()]
+            custody.event_log_path(tmp_path).read_text(encoding="utf-8").splitlines() if ln.strip()]
     failed = [r for r in rows if r.get("type") == custody.START_FAILED]
     assert failed and failed[-1]["project_retention_reason"] == (
         "start_outcome_unknown_run_may_exist"), failed[-1]
