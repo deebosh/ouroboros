@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros import task_pacing
 from ouroboros.config import adaptive_quorum
+from ouroboros.observability import timed_phase
 from ouroboros.acceptance_preparation import (
     STAGE_APPLICATION, STAGE_DISPATCH, STAGE_PREPARATION, STAGE_RECONCILE,
 )
@@ -390,10 +391,11 @@ def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
         task_id=ctx.task_id,
         retry_key=f"task_acceptance:{ctx.review_binding.get('paid_identity') or task_acceptance_evidence_revision(evidence)}",
         deadline_at=_owner_deadline_at(ctx.tools._ctx),  # R23: the owner window bounds every row
-        # Managed Main actors have the existing mailbox continuation owner.
-        # Standalone callers without it retain their bounded synchronous call.
+        # Managed Main actors have the existing mailbox continuation owner and a Presence
+        # author its narrow review-wait owner. Standalone callers retain their bounded call.
         drain_deadline=(time.monotonic()
                         if callable(getattr(ctx.tools._ctx, "owner_wait_callback", None))
+                        or callable(getattr(ctx.tools._ctx, "review_wait_callback", None))
                         or not review_enforcement_blocks("blocking") else None),
     )
     if not slots:
@@ -462,7 +464,7 @@ def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
     # Route/candidate refusals remain free; one strict stamp gates every slot.
     started = time.monotonic()
     try:
-        with bind_task_acceptance_paid_dispatch(ctx) as usage_ctx:
+        with timed_phase("acceptance"), bind_task_acceptance_paid_dispatch(ctx) as usage_ctx:
             # The bound packet and admission were local. From this handoff on,
             # transport may exist even if it raises before returning its record.
             ctx.stage = STAGE_DISPATCH
@@ -595,6 +597,10 @@ def _finish_cyber_acceptance(ctx: _TaskAcceptanceContext, result: Any) -> bool:
     if _loop()._task_acceptance_owner_generation_changed(ctx.tools._ctx):
         _loop()._supersede_task_acceptance_for_owner_followup(ctx.tools._ctx, ctx.llm_trace)
         return True
+    from ouroboros.presence_continuation import keep_author_for_criticism
+
+    if pending and keep_author_for_criticism(ctx):
+        return True  # a Presence early release keeps its author for this criticism (#1536)
     released = _loop()._end_task_acceptance_fence(ctx.tools._ctx, outcome="revision")
     ctx.tools._ctx._task_acceptance_pending = ""  # only the wait; original actors remain custodied
     ctx.tools._ctx._task_acceptance_reviewed = False  # final ingress, not review, owns delivery sealing

@@ -126,10 +126,12 @@ def _stop_owned_work(ctx: Any) -> list:
     owner-only ``hold_never_started`` (the never-started queue is held under
     the same ids, not cancelled) and the typed ``owner_restart`` cause every
     task it settles records (an earlier Stop keeps its own), delegated-run cancellation
-    through the public owner-gone seam over the attach-only gateway, and the
-    attested owned-daemon stop exactly as Panic makes it. Between the cancel
-    intents and that stop nothing may call ``ensure_owned_gateway`` — it would
-    start a dead daemon — which is what the two flags above guarantee.
+    through the public owner-gone seam over the attach-only gateway, the
+    attested owned-daemon stop exactly as Panic makes it, and finally the
+    generation's one bounded stop of its owned processes (``stop_owned_work``),
+    which the teardown and the restart watcher later join. Between the cancel
+    intents and the daemon stop nothing may call ``ensure_owned_gateway`` — it
+    would start a dead daemon — which is what the two flags above guarantee.
 
     Returns the owned live task ids it addressed — captured ONCE, before the
     stop makes them unreadable — so the caller can tell the owner what was
@@ -138,7 +140,9 @@ def _stop_owned_work(ctx: Any) -> list:
     from ouroboros.cancel_intents import request_cancel
     from ouroboros.claudexor_daemon import read_owned_gateway
     from ouroboros.delegate_custody import reconcile_orphaned_runs
+    from ouroboros.owned_shutdown import begin_owned_stop
 
+    begin_owned_stop(DATA_DIR)  # the grace starts here; every pending stop is recorded before any wait
     stopped = _owned_live_task_ids(ctx)
     for task_id in stopped:
         try:
@@ -167,6 +171,9 @@ def _stop_owned_work(ctx: Any) -> list:
         log.warning("Owner restart: delegated-run cancellation did not complete; custody retained",
                     exc_info=True)
     _stop_owned_daemon("Owner restart")
+    from ouroboros.owned_shutdown import stop_owned_work
+
+    stop_owned_work(DATA_DIR)  # unconfirmed records stay stamped for the next start; never a veto
     return stopped
 
 
@@ -215,12 +222,11 @@ def _stop_owned_daemon_for_new_pin() -> None:
     startup sweep and resumed parents close them as absent (no invented spend).
     """
     from ouroboros.claudexor_daemon import owned_daemon_provisioned, read_owned_gateway
-    from ouroboros.claudexor_runtime import load_runtime_pin
 
     if not owned_daemon_provisioned():
         return
     try:
-        pin = load_runtime_pin()
+        pin = _next_generation_pin()
         if pin is None:
             return
         with read_owned_gateway() as gateway:
@@ -236,6 +242,28 @@ def _stop_owned_daemon_for_new_pin() -> None:
                 "in flight end with this one", serving[0] or "unknown", serving[1][:12] or "unknown",
                 pin.version, pin.build_sha[:12])
     _stop_owned_daemon("Planned restart")
+
+
+def _next_generation_pin():
+    """The engine pin the NEXT generation selects.
+
+    Ordinarily the landed checkout's own tracked pin file. When this restart carries
+    a bound body adoption whose switch changes that file, the next generation boots
+    the candidate commit: its pin is read from that commit
+    (``body_adoption.bound_candidate_file``), through the same validating parser.
+    """
+    import tempfile
+
+    from ouroboros import body_adoption
+    from ouroboros.claudexor_runtime import _PIN_FILENAME, load_runtime_pin
+
+    raw = body_adoption.bound_candidate_file(DATA_DIR, "ouroboros/" + _PIN_FILENAME)
+    if raw is None:
+        return load_runtime_pin()
+    with tempfile.TemporaryDirectory(prefix="ouroboros-next-pin-") as scratch:
+        pin_file = pathlib.Path(scratch) / _PIN_FILENAME
+        pin_file.write_bytes(raw)
+        return load_runtime_pin(pin_file)
 
 
 def _live_running_task_ids(ctx: Any) -> list:
@@ -310,6 +338,12 @@ def _safe_restart_serialized(safe_restart_fn, *, reason: str, unsynced_policy: s
             return False, "Managed update state is unreadable; restart was deferred."
         if status == "future":
             return False, "Managed update state was recorded by a newer version; restart was deferred."
+        if status == "valid" and tx.get("stash_restore"):
+            return False, (
+                "Local changes are still being recovered. Quit and reopen the desktop app, "
+                "or restart the server process for a web deployment. Restart was deferred "
+                "to preserve the current files."
+            )
         if status == "absent" and not git_ops._clear_update_intent():
             return False, (
                 "An update intent marker with no update transaction could not be removed; "

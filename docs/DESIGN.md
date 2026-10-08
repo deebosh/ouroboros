@@ -26,9 +26,13 @@ server setting. Existing saved Light/Dark choices keep their meaning. Storage
 failures are visible; clearing site data returns the choice to System. Switching
 repaints mounted charts and diagrams without rebuilding views or losing drafts.
 Independent iframe interiors remain author-owned, not automatically recoloured.
-Desktop persistence requires a launcher built with persistent WebView storage;
-server restart alone cannot verify survival across full quit/relaunch. Mechanism
-and deployment limits: ARCHITECTURE §3 “Navigation and shared UI contracts”.
+Desktop persistence requires a desktop app (launcher) built with persistent
+WebView storage, 7.2.0 or later; in-app updates replace the core, never that app.
+An older app opens its WebView in private mode, which erases website data each
+time its window opens, so Settings → Appearance names that app by its own version
+and says the choices reset at restart, instead of presenting them as kept. Server
+restart alone cannot verify survival across full quit/relaunch. Mechanism and
+deployment limits: ARCHITECTURE §3 “Navigation and shared UI contracts”.
 
 ---
 
@@ -65,7 +69,8 @@ Rules:
   20px) for `#` and `##`, `--md-heading-minor` (1.125em, 18px) for `###`,
   the reading size for deeper levels; its tables read at that size too. The
   steps are relative to the reading text, not UI sizes, and only the rich
-  answer's heading rules read the two tokens (§5). Nothing else changes
+  answer's heading rules read the two tokens (§5) — they and a delivered
+  document in the reader (§5 "Document reading"). Nothing else changes
   size: controls, labels, cards and page chrome keep the four sizes, and so
   do the compact surfaces (a Skill Review report, a task timeline) and the
   other rich-content cards (the question card, the update letter).
@@ -179,6 +184,17 @@ family; `.ui-checkbox` keeps native checkbox behavior. `.ui-field` groups a
 label, control and optional `.ui-field-help`. A placeholder is an example,
 never the field's only name. Help and validation belong to that field without
 changing the alignment of neighboring controls and their actions.
+
+**Secret visibility has one meaning across Settings.** Show reveals the complete
+current value as selectable, read-only text below the unchanged editing field;
+long values wrap within the column. An edited value is shown from the local
+draft; an untouched saved value is read only when requested. A prefix or a
+configured-value placeholder is never a successful reveal. Hide removes that
+text and retains the draft. Viewing changes neither the dirty state nor the
+values submitted by Save or Test. Editing, clearing, reloading or leaving the
+page closes the reveal, and a late read cannot reopen it. Built-in, custom,
+skill-requested and MCP token fields use the same interaction; loading Settings
+keeps saved secrets masked. Pending reads and failures are shown at the field.
 
 Short fixed choices keep native selects, including the platform's own popup.
 A control never widens its column: a select shows its chosen label on one
@@ -545,6 +561,27 @@ completion mirror). New host producers stamp both fields. Relays
 preserve them through live delivery, persistence and history. Model narration,
 proactive replies and questions remain model-authored even when typed.
 
+Language follows the same line. The install's interface language
+(`OUROBOROS_UI_LANGUAGE`, Settings → Appearance → Language) translates chrome and
+System voice at render — status words, cause sentences and question status by their
+stable code (`tr`), labels and help copy by their rendered English (the overlay), a
+relayed host sentence by its exact text (`tx`) — from a translation memory the install
+generated or imported, never from a dictionary in the repository. Model-authored text,
+owner-supplied names, logs and code are never translated, and durable rows keep the
+English with their typed codes; a string the memory lacks stays English rather than
+blank or guessed.
+
+Authorship also has a time axis. Ouroboros's voice means *the model, now*. Words
+the mind wrote earlier for a later moment — a note left with
+`schedule_followup(notify=true)` — reach the owner at that moment as a System row
+(`system_type="reminder"`), never as a live reply: the host prepends one signature
+line, `Reminder · Ouroboros · written <when> · for <when>` (plus `· delivered
+<when>` when downtime held it back), and keeps the words verbatim. The host does
+not rewrite, summarize or re-time them; the next turn reads the row as a host fact
+(`📋 [reminder]`), so Ouroboros knows what the owner was shown. A skill holding the
+owner's `notify_owner` grant speaks the same way in its own name: a
+`skill_notice` System row signed `Notice · <skill>`.
+
 Formatting is asymmetric: assistant text always uses the sanitized chat markdown
 renderer regardless of `markdown`; ordinary System text is escaped unless
 `markdown: true`. The typed `skill_review` row keeps its dedicated renderer.
@@ -697,58 +734,93 @@ daylight-saving hour) carry zone names. Lines saved before the host recorded end
 times stay as they were. Delivery keeps its present place in Main; an older
 Failed remains that task's result even after a different task succeeds.
 
+### Document reading
+
+A Markdown or plain-text file Ouroboros delivers in chat can be read inside the
+app. Its card says `Read`; pressing it opens a reading dialog over the
+conversation — on a phone a full sheet — and Close or Escape returns to the same
+place in the chat with focus back on the card. Leaving that chat's screen (another
+page, a Project room over Main, a notification) closes the reader; files staged in
+the composer stay. Other files keep the card's Open / Download dialog; the reader
+keeps Open and Download as well.
+
+- It shows the delivered copy, never what a file path holds now. A copy that is
+  missing, failed its integrity check, changed after delivery or cannot be read
+  on this device says so in the reader, with Retry only where retrying can
+  help; nothing else is shown in its place.
+- Name, type and size are the reader's header, not Ouroboros's words: a
+  document is not a chat message and adds none. Like model text, the name and
+  the document are never translated; the reader's own controls are.
+- Markdown reads as a document: a single line break inside a paragraph is soft
+  (an explicit hard break stays), at the reading size and heading ladder of a
+  rich answer (§1). Everything else follows "Rendered Markdown keeps its
+  author's structure and text": raw HTML and SVG stay literal, images stay
+  references and never load, and a relative link, which would point into a
+  folder the reader does not open, reads as its words. `Source` shows the
+  decoded text unformatted — a leading byte-order mark is dropped and invalid
+  bytes read as �, so it is not a byte view. Nothing is editable; all text is
+  selectable.
+- Plain text reads monospaced and wraps; only a table or code block scrolls
+  sideways, inside itself.
+- The reader reads at most the first 1 MiB. A longer file shows that prefix
+  with a note saying how much is shown and that Download has the whole; a
+  character cut by the limit is withheld, not reported as damage. Bytes that are
+  not UTF-8 show as � with a note; a file with NUL bytes is not shown as text.
+  A read that has not finished within 30 seconds stops and says so with Retry;
+  nothing retries by itself.
+
 ### History edges
 
-Within one app session a room reopens at the passage being read after its data
-arrives, even on a slow connection; the place is kept in page memory, so a reload
-opens the room at the present. The passage includes how far a bounded full output,
-Review detail or card timeline around it was scrolled. A failed history read
-keeps that destination and offers Retry; a failed read of the present by ↓
-leaves the view in place with the same Retry. A room kept for an unsent file
-reopens where it was left without another read, even after a partial one. A
-failed full-output read keeps the line's capped preview and offers no Retry of
-its own; collapsing and expanding the line asks again. Scrolling, revealing a
-question, sending a message or choosing the existing ↓ supersedes the saved
-destination; a Send that fails keeps it with the draft and files. Reading on,
-even inside a bounded box, supersedes a ↓ or question still loading. A wheel,
-swipe or key over a bounded box moves that box, not the conversation, until the
-box reaches its edge.
-A scrollbar drag follows new replies only when released at the live edge; a
-wheel, swipe or key reading down follows once its scrolling ends there.
-Expanding a line or receiving its full output leaves it in place; only a newer
-line moves a card timeline to its end.
+A room always opens at its newest message: Main and every Project, however long
+ago its last message was and however much other rooms wrote since. Returning to
+a room in the same app session opens it at its newest message too, Main after a
+closed Project included (owner decisions 2026-07-10 and 2026-10-05). Only an explicit navigation to one place
+lands elsewhere: a question opened from its Main mirror, or the Project work
+pointer. A window merely shown again keeps the reader where they were.
+
+A room's history is its own. A page is counted in the room's messages, never in
+bytes of other rooms' traffic: the newest page holds the room's newest messages,
+and `Load more history` reads the next older messages of the same room, only
+ever older ones (owner decisions 2026-09-14 and 2026-10-05). It shows only while
+older history exists, and one press keeps reading until messages land or the
+room's beginning is reached, so no press is empty. A positive scroll gesture at
+the reading edge loads the same way. Messages arriving while the reader is in
+older history never move where the next press goes on: it reads above what is
+being read, and anything a long absence left unloaded below is read by the
+return to the present. Narration (task progress) keeps loading
+alongside the conversation, but only the conversation keeps the control: once the
+room's beginning is reached it leaves, even if older narration of the oldest
+cards remains unread.
+The floating `Scroll to latest message` is the one return to the present; when
+the present is already loaded it moves there and follows without a read.
+
+A failed history read offers Retry; a failed read of the present by ↓ leaves the
+view in place with the same Retry. A failed full-output read keeps the line's
+capped preview and offers no Retry of its own; collapsing and expanding the line
+asks again. Reading on, even inside a bounded box, supersedes a ↓ or question
+still loading. A wheel, swipe or key over a bounded box moves that box, not the
+conversation, until the box reaches its edge. A scrollbar drag follows new
+replies only when released at the live edge; a wheel, swipe or key reading down
+follows once its scrolling ends there. Expanding a line or receiving its full
+output leaves it in place; only a newer line moves a card timeline to its end.
 New replies remain below in the same live conversation without moving the passage.
 
-The common `Load more history` control retries a failed read, fills a known
-missing continuation toward the present, then reads older portions. A positive
-scroll gesture at an unambiguous reading edge may load a bounded continuation;
-a short portion, resize or media layout alone starts no archive read. Empty
-physical pages are traversable and never mean EOF. The existing floating
-`Scroll to latest message` remains the explicit return to the present; when the
-present is already loaded it moves there and follows without a read, and a gap
-note stays. A clean read of the present supersedes an earlier failed one and its
-note.
-
-When loaded fragments are disconnected or their coverage is uncertain, the
+When loaded fragments are disconnected or their coverage is uncertain (reading
+far back releases the newest pages from memory while replies keep arriving), the
 same readable note stays in Main and Project header chrome: `Some saved history
 is not loaded. Shown messages may have gaps.` A failed read says so distinctly.
-Bytes written after a read found a source empty count as missing until a
-later read delivers them from its start.
-Mixed task cards
-keep one node and use this general note: dates, common
-row IDs and an exhausted cursor cannot establish a separator or full coverage.
-`Beginning of saved history` requires complete delivered physical coverage.
-Retained origins say `Saved project context`; a matching canonical source row
-adopts that node and removes the label. The context itself certifies no archive
-coverage. A missing exact bookmark falls back to its card, then a row on the
-same loaded page, then the previous clamped position. The same persistent note
-explains the approximation until explicit navigation clears it.
-Visible rows and card lines, selection, focus and expanded Reviews keep their
-actual nodes during reconciliation.
-Reopening a nested line reads that line's supplying physical page before using a
-card-wide fallback, and restores expansion and full-output hydration. Its logical
-reading identity and physical source survive replay even when equal or older
-content is rejected; neither source adoption nor reopening rolls back revisions.
+Bytes written after a read found a source empty count as missing until a later
+read delivers them from its start. Mixed task cards keep one node and use this
+general note: dates, common row IDs and an exhausted cursor cannot establish a
+separator or full coverage. `Beginning of saved history` requires the room's
+conversation to be delivered completely. Retained origins say `Saved project
+context`; a matching canonical source row adopts that node and removes the label.
+The context itself certifies no archive coverage. When a window is shown again
+and the reader's exact place is gone, the view falls back to its card, then the
+previous clamped position, and the same persistent note explains the
+approximation until explicit navigation clears it. Visible rows and card lines,
+selection, focus and expanded Reviews keep their actual nodes during
+reconciliation.
 
 ### Project work pointer
 
@@ -972,6 +1044,68 @@ Details and Logs name the recorded failure reasons, grouping repeated reasons wi
 counts. Logs Raw retains the complete source/failure facts; a missing recorded reason is
 stated explicitly. Existing task-detail hydration and replay refresh this projection.
 
+### Chat attachments
+
+The owner's photos and files are part of the owner's message, shown the way
+Ouroboros's own deliveries are: one message, one bubble, never one bubble per
+file (owner choice 1C/2A/3A/4A/5A/6A with mobile first-class).
+
+- **Order:** attachments sit above the caption inside the owner's bubble; a
+  message with no words shows its attachments alone, never an empty text row.
+- **Photos are whole on both sides.** One photo keeps its own ratio up to
+  `--chat-photo-max-height`, never enlarged; a tiny, very narrow or very short
+  one sits inside a `--chat-photo-min-box` box so its `•••` is never clipped
+  (either side); several share the existing two-column grid with
+  letterboxed (`contain`) tiles, one column in a narrow chat column. Ouroboros's
+  own photo tiles letterbox the same way — no side crops an image.
+- **Video and audio** play in the existing inline players; every other file is
+  the existing file card (no PDF viewer). A preview the engine cannot show (HEIC
+  in Chromium, an unsupported codec) becomes an ordinary card with Open/Download
+  and "Preview unavailable"; a file deleted since it was sent, or whose size or
+  mtime no longer matches the recorded stat witness (a replace or rewrite that
+  changed either), is the inert card "Unavailable". The witness is not a hash and
+  nothing rehashes per view: a same-size replacement that restores the mtime is
+  not detected and shows as the original.
+- **Actions never depend on hover:** the photo `•••` and file cards are always
+  visible and finger-sized under a coarse pointer; a long name wraps to two lines
+  and the card's dialog shows it whole. Open/Save succeed only when the desktop
+  bridge says so; a copied link is a fallback, never reported as opened.
+- **The same view everywhere:** the sender's bubble, another tab and the replay
+  after reload or restart render the one server view of each attachment. The
+  stored text still names the files for the model; only the exact tail the web
+  composer generated, on its own row (or text the row marks as host-written,
+  `text_placeholder`, such as "(image attached)" — the echo carries the same
+  mark), is hidden from the caption — the owner's words, even those same ones,
+  and a Telegram or skill caption are never rewritten. Every attachment renders, however many; only the text tail is
+  bounded. A Project's start message copied from Main shows the attachments its
+  row recorded when that row is outside the window. History without recorded
+  attachments stays as it was; nothing is guessed from a file name.
+- **Composer:** each staged image shows a small thumbnail beside its name; the
+  field stays focusable (read-only, not disabled) while files upload, so a phone
+  keeps its keyboard. `/restart` typed with staged files stays the Restart
+  command (the files ride its row); any other words are a message. A sent
+  attachment message is not yet saved: if the socket
+  closes, or the host refuses the frame, before its "Input saved" echo, the
+  bubble says "Not confirmed as saved" with "Send again", which resends the same
+  frame and id (the host rejoins it if it was saved after all — never a second
+  message), and "Discard", which forgets this tab's copy (never an upload).
+  Nothing resends by itself. The frame is kept, with no count bound, until that
+  id's saved echo or history row settles it (a row the running host has not
+  yet dispatched keeps it until the host says which): a bubble the feed released or
+  rebuilt keeps its frame, and a Project room holding one is hidden, not
+  destroyed. The tab's sessionStorage keeps its words, id, routing and upload
+  references (never file bytes) across a reload — the asset reload a reconnect
+  forces included — and a room's teardown; after a reload the first history
+  read settles it or shows the same doubt. A browser that refuses to keep it
+  says so, and Send again then lasts until a reload; a kept copy it cannot read
+  back is said too, never silently dropped. A saved row the host knows never
+  reached the agent (its write failed before dispatch, in the running host)
+  says "Saved, not delivered." and keeps Send again: the host hands that row
+  over once. A kept message whose saved row a host process before a restart
+  took says "Saved; delivery not confirmed." without Send
+  again: nothing is known, so nothing is replayed. Rows nobody kept stay plain
+  history ("Input saved").
+
 ### Conversation activity block
 
 A task's activity block is in the transcript exactly when the record already
@@ -1175,6 +1309,67 @@ and post-task checkpoint, not the presence of answer text or a cost estimate.
 Failed main work stays visibly failed after history reload while post-work
 controls remain live; the unfinished checkpoint never erases the outcome.
 
+### Widgets board
+
+The Widgets page is a board of live cards. The owner arranges the board; each
+widget's content belongs to its author.
+
+- **A masonry in the owner's order.** Cards are packed into columns the way a
+  Pinterest board is: in the order the owner set with each card's move handle,
+  every card goes to the lowest free place its width fits, so cards of
+  different heights stack without the voids of a row layout. The board decides
+  how many columns it has from the list's width and from the widths its cards
+  ask for. A board where the owner has set no width is exactly the board
+  before owner widths existed. A new widget joins the end of the order; the
+  order is stored when the owner moves a card, so after a window reload the
+  widgets added since the last move follow the stored ones alphabetically. A
+  widget whose skill is off is not drawn; its place in the order (moving the
+  other cards keeps its slot) and its width stay stored for its return, and
+  nothing is reserved meanwhile.
+- **Width is a column span, the owner's over the author's.** A card spans 1,
+  2 or 3 columns, or Full width. Until the owner picks one, the author's `span`
+  decides (`1` one column, `2` two), and the board may widen a lone one-column
+  card beside wide ones to fill its lane. The board never widens or narrows a
+  width the owner chose, except that no card is wider than the board: 3
+  columns on a board of 2 is the whole row. Full width is always the whole
+  row. Because the column count follows the widths the cards ask for, a
+  card's width can make the other cards' columns wider or narrower. The
+  owner's choice holds for that card on every screen of the installation
+  until Reset size returns the author's default.
+- **Widths that do not tile leave gaps; the board does not backfill.** A
+  card that cannot fit beside the cards above it starts below them: a
+  3-column card after a 2-column one on a 4-column board leaves the column
+  beside the first card empty above it. The board never repacks cards out of
+  the owner's order to hide such a gap; the owner closes it by changing a
+  width or the order.
+- **Height follows content.** A card is as tall as its widget: a table shows
+  every row, a framed widget its declared or reported frame height
+  (`docs/CREATING_SKILLS.md`). No card is pinned to a height. When a card
+  grows or shrinks, the masonry packs again, so cards after it can move,
+  even to another column.
+- **A narrow list is one column.** When the list is too narrow for two
+  columns of 280px — a phone, the Telegram mini app, a narrow window — the
+  cards stack at full width in the same order and widths do not apply; the
+  board returns when the list is wide again. The list's own width decides,
+  not the viewport.
+- **The card menu works on every surface.** Every card's ⋮ menu carries Size
+  (1, 2, 3 columns, Full width and Reset size) beside a framed card's launch
+  policy, so a touch screen, a keyboard or the mini app — no hover there, and
+  a vertical drag collapses it — can size any card; on a narrow list the menu
+  says that widths apply when the list is wide. Wherever a step would change a
+  card's width, its right edge can also be dragged between the widths the
+  steps give it (Escape cancels) or stepped with its arrow keys; the only card
+  on a board, which every step leaves the whole row, offers no edge.
+- **Arranging never restarts a widget.** Reordering, resizing or a change of
+  the column count changes only where a card is painted; a running widget
+  keeps its frame and its state. Keyboard focus keeps the card's original
+  position until the window reloads.
+- **One arrangement per installation.** Order and widths are owner UI state
+  stored on the server, the same for every window and device of the
+  installation; when two windows arrange at once the last change wins. A
+  width that failed to save stays on screen and says so under the list until
+  a later width change saves it; nothing retries on its own.
+
 ## 6. Account group / row anatomy
 
 For a repeated identity row (a connected agent account, a reviewer slot,
@@ -1357,10 +1552,12 @@ engineering rules; no second policy list may exist.
 never *look, I am still working*. It exists so the owner can leave the window
 and still be reached by a question or a finished task.
 
-**When the client runs.** Notifications are a property of a running client. This
-version adds no tray agent, no background process and no push channel, so
-closing Ouroboros ends them. The existing Telegram bridge remains the separate
-path that reaches the owner while nothing is open.
+**Startup & background.** Settings → Behavior owns host lifecycle choices, separate from the client-local Appearance controls. Sign-in startup is off until the owner opts in and always names the computer running Ouroboros, even in a remote client. OS registration is the truth: another copy, an OS-disabled entry and an unavailable app build remain visible rather than becoming a saved-settings guess. Automatic startup preserves Panic stops and saved pauses; an explicit owner start releases Panic. The second control, *keep Ouroboros running in the background when the window is closed*, is also off until chosen and lives in the host's settings. Until the owner decides, the first close of the desktop window asks once — Ouroboros will keep working in the background (tasks, schedules, Telegram): keep it running, or quit? — and the answer becomes that checkbox; dismissing the question quits. macOS labels its two buttons Keep running and Quit; Windows keeps its standard OK and Cancel, with a line saying that OK keeps it running and Cancel quits. While it is on, closing hides the window behind a live indicator (the Windows notification-area icon; the macOS menu-bar item and Dock) whose menu shows the server's real state (work only from confirmed phases; starting, an error, unconfirmed activity or no answer said as such) and offers Open, Panic and Quit; if no indicator appears the close quits, so a hidden process always has a visible way back. Quit, Cmd+Q and signing out always quit, unasked. A sign-in start stays hidden only when both checkboxes are on and the indicator actually appeared, and opening the app while it is still starting shows the window; there is no third "start minimized" setting. Linux shows the background control as not available yet and closing quits there. Android deliberately keeps its existing automatic boot entry by default, with the same Panic-preservation contract.
+
+**When the client runs.** Notifications are a property of a running client, and
+there is no push channel. On the desktop the Telegram bridge runs inside the same
+server, so it reaches the owner while the window is closed only in background
+mode; quitting ends it together with the server.
 
 **Focus does not suppress, and neither does a closed room.** While a category is
 on, its event notifies whether or not the window has focus and whether or not
@@ -1377,6 +1574,7 @@ exceptions.
 | A question or decision is waiting | required | a confirmed lifecycle fact: the question carries a positive wait |
 | A task finished or stopped | required | a positive typed terminal fact on a ROOT task |
 | Messages Ouroboros sends while working | LLM-first | Ouroboros chose to speak outside the turn's answer (a proactive message in its room or as a Main notice, or an optional question) |
+| A note Ouroboros left for this moment, or a granted skill's notice (same toggle) | LLM-first; owner grant | when it wrote the note, Ouroboros chose to leave these words for this time; a skill speaks only under the owner's `notify_owner` grant; the host only shows the signed `reminder`/`skill_notice` row |
 | Ordinary replies in Main | separate toggle | an ordinary finished reply in the Main thread |
 
 *Required* means the application asks for delivery from its own state rather
@@ -1409,10 +1607,41 @@ not notify, so the task's real completion still can.
 task are one event, not two: whichever arrives first rings, and the other is
 collapsed. The same holds for the several wire shapes a finished task has.
 
-**One sound.** At most one sound per event. Where the system shows a banner, the
-system owns the sound; where a desktop bridge is available, the launcher owns
-one system sound (or reports that it could not play one); otherwise the app
-plays one short tone. Never both, and the Sound choice remains authoritative.
+**System notifications first.** Where the desktop app offers them, an alert is
+handed to the operating system's own notifications: sent even while the window
+is in front, titled with the kind of event, sounding with the system's own sound,
+and kept where that system keeps notifications. The system taking it is not a
+promise that anyone saw a banner: its notification settings, Focus and Do Not
+Disturb still decide. macOS uses `UNUserNotificationCenter`, whose one permission
+question is asked only from the owner's gesture — switching notifications on, or
+Test — never by an alert, which falls back while the question is unasked; Windows
+shows a notification-area balloon, which Windows 10/11 present as a system
+notification, on an icon of its own per notification so that each click opens
+its own source; Linux uses the freedesktop notification service when
+the desktop runs one. Not yet allowed, denied, unavailable or failed is a typed
+answer, never silence (an error the system returns instead of asking is that
+error, not a denial): that alert falls back to the browser banner or the in-app
+toast. One the system took without answering in time may still appear, so
+nothing else is shown for it and its click still opens its source. In-app
+updates do not replace the desktop app, so an app built before this capability
+falls back and Settings says that system notifications need the current app.
+Android's host keeps its own channel for its own service; its page has no system
+notifications and says so.
+
+**One sound.** At most one sound per event. A system notification owns its
+sound: the operating system plays it under its own volume and Do Not Disturb,
+and nothing else plays one beside it. Without one, where the browser shows a
+banner, the banner owns the sound; where a desktop bridge is available, the
+launcher owns one system sound (or reports that it could not play one);
+otherwise the app plays one short tone. Never both, and the Sound choice remains
+authoritative: Sound off sends a system notification silently, a Windows balloon
+included (the shell's own balloon call with `NIIF_NOSOUND`). If that call is
+unavailable, a silent request falls back to the page without a balloon; the
+WinForms fallback is used only when sound was requested, and since it answers
+nothing, its balloon counts as unconfirmed. An app built before system
+notifications cannot silence the balloon it shows while its window is hidden,
+so with Sound off the page does not ask that app at all: the alert is a silent
+browser banner or in-app toast, without its balloon, Dock mark or window raise.
 
 **Each open window is its own client.** Settings, permission and the
 duplicate-collapsing that keeps one event to one notification all belong to one
@@ -1422,25 +1651,40 @@ honest consequence of per-client settings, not a bug we have hidden.
 
 **Click goes to the source.** A notification opens the question or the result it
 is about — the Project room and the exact question when it has one, otherwise
-the conversation. No reply is composed from the banner.
+the conversation. A system notification first opens the window, hidden or not,
+then the same source. No reply is composed from the banner. The one exception is
+the fallback banner the desktop indicator shows while the window is hidden in
+background mode (Windows, when no system notification was shown): its click
+opens the window as it was left and does not navigate.
 
 **Content is private by default.** Only the kind of event is shown until the
 owner turns message text on, because a banner can appear on a shared screen.
 
 **Deliberately absent.** No numeric badge, no repeated reminder, no inline
-reply, no tray icon, no Telegram escalation, and no promise of a native
-Notification Center/toast banner or attention after the application closes.
-When the packaged desktop launcher exposes its optional `request_attention`
-bridge, a live notification may raise that window and ask the operating system
-for one standard sound. This is a native attention cue, not proof that a
-system banner was delivered; unsupported or older launchers fall back to the
-browser banner or in-app toast and report that capability honestly.
+reply, no Telegram escalation, and no notification or attention after the
+application quits. When no system notification was shown and the packaged
+desktop launcher exposes its optional `request_attention` bridge, a live
+notification may raise a visible window and ask the operating system for one
+standard sound. A window the owner hid in background mode is never raised by an
+alert: Windows shows a banner from its notification-area icon, macOS marks and
+bounces the Dock icon with the system sound, and the window opens from that
+banner, the indicator or the Dock. That holds with browser notifications allowed
+too: the page asks the launcher before showing a browser banner, whose click
+could not bring a hidden window back; a visible window keeps the browser banner,
+which owns the sound. These are native attention cues, not proof
+that a system banner was delivered; unsupported or older launchers fall back to
+the browser banner or in-app toast and report that capability honestly.
 
 **Settings.** The controls live on **Settings → Appearance**, under the theme
 block, and are stored per client exactly like the appearance choice: the desktop
 window and each browser keep their own, nothing reaches the server. A test
 button is the honest way to see what this system actually does with a
-notification, including a denied permission.
+notification, including a denied permission, and in the desktop app it is the
+gesture that lets the system ask. The status line names the surface this client
+is using — the system's notifications, a browser banner or the in-app toast —
+keeps the system's permission apart from what became of the last alert (taken,
+unconfirmed or fallen back), and, in an older desktop app, says that system
+notifications need the current app.
 
 **Known limits of this version**, stated rather than discovered later:
 
@@ -1457,3 +1701,17 @@ notification, including a denied permission.
   first observed frame is its terminal — it would notify once.
 - An event that happens while the socket is down never rings: reconnect replays
   history, and history is deliberately silent.
+- A Windows balloon stays in Windows' notification list only while its icon is
+  in the notification area: until it is clicked, until a fourth retires the
+  oldest of three, or until the app quits. One that timed out or was dismissed
+  keeps its icon; nothing is shown again.
+- An alert the system took without confirming in time can stay unseen: it is
+  not repeated in the app, and Settings says so. On Linux its click cannot open
+  the source, because the server's id for it never came back.
+- A system notification clicked after its page reloaded only opens the window:
+  click targets live as long as the page that sent them, with no stored ledger.
+- What a system notification looks like is the system's choice: macOS's style
+  for Ouroboros (banners, alerts or none), Focus and Do Not Disturb, Windows'
+  notification settings, and a Linux server's optional actions (without them a
+  click cannot open the source) and sound (without it the alert is silent);
+  Settings names what that server lacks.

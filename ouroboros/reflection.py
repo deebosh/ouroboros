@@ -491,7 +491,7 @@ def _verbatim_trace_pointer(knowledge_context: Any, llm_trace: Dict[str, Any]) -
     if not any(_cut(tc, count) for _, tc, count, _, _ in _fold_identical_calls(tool_calls)):
         return ""
     try:
-        from ouroboros.consolidator import retain_memory_source
+        from ouroboros.chat_chain import retain_memory_source
         from ouroboros.observability import redact_projection
 
         def _exact_ref(tc: Dict[str, Any]) -> str:
@@ -553,9 +553,19 @@ def generate_reflection(
         panels = compact_review_projection(llm_trace.get("review_runs") or []).get("panels")
     except Exception:
         log.debug("Acceptance panel projection unavailable for reflection", exc_info=True)
+    plan_facts = None
+    try:  # D15 -> D06 is a lazy-only edge; the facts are bounded by their builder and never score
+        from ouroboros.config import DATA_DIR as _data_dir
+        from ouroboros.plan_review_facts import plan_review_reflection_slice
+        plan_facts = plan_review_reflection_slice(
+            pathlib.Path(task.get("budget_drive_root") or task.get("drive_root") or _data_dir),
+            str(task.get("id") or task.get("task_id") or ""), task=task)
+    except Exception:
+        log.debug("Plan-review facts unavailable for reflection", exc_info=True)
     try:
         from ouroboros.review_evidence import format_review_evidence_for_prompt
-        review_evidence_text = format_review_evidence_for_prompt(review_evidence or {}, max_chars=8000, acceptance_panels=panels)
+        review_evidence_text = format_review_evidence_for_prompt(
+            review_evidence or {}, max_chars=8000, acceptance_panels=panels, plan_review=plan_facts)
     except Exception:
         review_evidence_text = "(review evidence unavailable)"
 
@@ -592,7 +602,7 @@ def generate_reflection(
         from ouroboros.settings_scales import resolve_effort
 
         knowledge = KnowledgeReadContext(knowledge_context, "task_reflection")
-        from ouroboros.consolidator import retain_memory_source
+        from ouroboros.chat_chain import retain_memory_source
         complete_prompt = KNOWLEDGE_MAINTENANCE_PROMPT + prompt
         source_ref = retain_memory_source(knowledge_context, "task_input_reflection", complete_prompt.encode("utf-8"))
         raw_reflection_text, refl_usage = _call_consolidation_llm(
@@ -929,7 +939,7 @@ def _bind_reflection_action_source(canonical: pathlib.Path, entry: Dict[str, Any
     try:
         from types import SimpleNamespace
 
-        from ouroboros.consolidator import retain_memory_source
+        from ouroboros.chat_chain import retain_memory_source
 
         ref = retain_memory_source(
             SimpleNamespace(drive_root=canonical, task_id=str(entry.get("task_id") or "reflection")),

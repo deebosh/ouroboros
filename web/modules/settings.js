@@ -1,8 +1,10 @@
 import { refreshModelCatalog, watchAccountModelCatalog } from './settings_catalog.js';
 export { accountCatalogRefreshKey } from './settings_catalog.js';
 import { getNotifier } from './notifications.js';
+import { mountDesktopShell } from './desktop_shell.js';
 import { bindEffortSegments, syncEffortSegments, readCustomSecretDraft, collectCustomSecretDraft, paintSettingsFieldErrors, settingsWriteFailure } from './settings_controls.js';
 import { bindLocalModelControls } from './settings_local_model.js';
+import { bindAutostartControl } from './settings_autostart.js';
 import { applyMcpSettings, collectMcpSettings, initMcpSettings, validateMcpSettings } from './mcp_settings.js';
 import { adoptSubagentRoster, collectReviewerSlots, initReviewerSlots, reloadReviewerSlots, validateReviewerSlots, noteReviewerSlotsSaveAttempt, discardReviewerSlotsDraft, setReviewerProcessingPreference, setReviewerSourceContext } from './reviewer_slots.js';
 import {
@@ -29,6 +31,8 @@ import { createModelRolesEditor, modelRoleMap } from './model_roles.js';
 import { PROCESSING_PREFERENCE_KEY, MODEL_PROCESSING_PREFERENCES_KEY } from './route_editor_primitives.js';
 import { collectSafeFieldValues, normalizeTone, renderSafeField, setInlineStatus, revealNewRow } from './ui_helpers.js';
 import { extensionActionStatus } from './extension_status_text.js';
+import { bindLanguageSettings } from './settings_language.js';
+import { resetSecretReveals } from './settings_secrets.js';
 
 let markSettingsDirty = () => {};
 const BASE_SECRET_KEYS = new Set(SECRET_KEYS.map(([key]) => key));
@@ -166,6 +170,7 @@ function readInt(id, fallback) {
 }
 
 function resetSecretClearFlags(root) {
+    resetSecretReveals(root);
     root.querySelectorAll('.secret-input').forEach((input) => {
         delete input.dataset.forceClear;
         input.type = 'password';
@@ -203,6 +208,7 @@ function customSecretRow(key = '', value = '') {
         row.querySelector(`label[for="${id}"]`).textContent = `Value for ${event.target.value.trim() || `custom key ${ordinal}`}`;
     });
     row.querySelector('[data-custom-secret-remove]')?.addEventListener('click', () => {
+        resetSecretReveals(row);
         if (row.dataset.originalKey) { row.dataset.removeCustomSecret = '1'; row.hidden = true; }
         else row.remove();
         markSettingsDirty();
@@ -213,6 +219,7 @@ function customSecretRow(key = '', value = '') {
 function renderCustomSecrets(root, settings) {
     const host = root.querySelector('#custom-secrets-list');
     if (!host) return;
+    resetSecretReveals(host);
     host.innerHTML = '';
     const keys = Array.isArray(settings?._meta?.custom_secret_keys) ? settings._meta.custom_secret_keys : [];
     keys.forEach((key) => host.appendChild(customSecretRow(key, settings[key] || '')));
@@ -222,6 +229,7 @@ function renderCustomSecrets(root, settings) {
 function renderRequestedSkillSecrets(root, skills, settings) {
     const host = root.querySelector('#skill-requested-secrets');
     if (!host) return;
+    resetSecretReveals(host);
     const keys = [];
     (Array.isArray(skills) ? skills : []).forEach((skill) => {
         (skill?.grants?.requested_keys || []).forEach((key) => {
@@ -457,7 +465,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             page.activateSettingsTab(tabName);
         }
     };
-    const disposeSettingsTabs = bindSettingsTabs(page, { state });
+    const disposeSettingsTabs = bindSettingsTabs(page, { state, onActivate: () => resetSecretReveals(page) });
     bindSecretInputs(page);
     bindEffortSegments(page);
     // Appearance is client-local and injected after boot; never a server setting.
@@ -465,6 +473,12 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     // Notification preferences are client-local for the same reason; the module
     // owns delegated handlers, so mounting only paints current state.
     getNotifier().mountSettings(page);
+    // The desktop app's own facts (storage, system notifications): the app is not updated with the core.
+    const disposeShell = mountDesktopShell(page, (shell) => getNotifier().configure({ shell }));
+    // The interface language is an install-wide setting with its own endpoint; the block
+    // saves on change and never marks the Settings draft dirty.
+    const disposeLanguage = bindLanguageSettings(page);
+    bindAutostartControl(page); // host OS entry applied on click, never in the draft; self-disposing
     const disposeLocalModel = bindLocalModelControls({ state,
         onApplication: (local) => syncRestartState({ ...restartState, local_model: local }) });
     // Best-effort About version from /api/health.
@@ -789,28 +803,28 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         }
     }
 
-    async function loadSettings() {
+    // Skill-requested keys and extension settings sections come from the
+    // installed-skill list, a read the settings document never waits for; a
+    // hidden page skips it altogether, since every page show reloads.
+    const settingsPageActive = () => state?.activePage === 'settings';
+
+    async function loadSettings({ awaitEnrichment = true } = {}) {
+        resetSecretReveals(page);
         const sequence = ++loadSequence;
         const restartSequence = ++restartReadSequence;
         const revision = draftRevision;
-        const [data, extData] = await Promise.all([
-            apiClient.settings(),
-            apiClient.extensions().catch(() => ({})),
-        ]);
+        const extensionsRead = settingsPageActive() ? apiClient.extensions().catch(() => ({})) : null;
+        const data = await apiClient.settings();
         if (!data || typeof data !== 'object' || Array.isArray(data) || data.error) {
             throw new Error(data?.error || 'The server did not return a settings document.');
         }
         if (restartSequence === restartReadSequence) syncRestartState(data._meta?.restart_state);
-        const sections = Array.isArray(extData?.live?.settings_sections)
-            ? extData.live.settings_sections
-            : [];
         if (sequence !== loadSequence || revision !== draftRevision) return false;
         currentSettings = data;
         applySettings(data);
-        renderRequestedSkillSecrets(page, extData.skills || [], data);
         renderCustomSecrets(page, data);
         // This confirmed document can already be edited and saved. Optional
-        // reviewer/status reads must not hold its baseline or Save capability.
+        // reviewer/status/skill reads must not hold its baseline or Save capability.
         settingsLoaded = true;
         saveOutcomeUnknown = false;
         validationAttempted = false;
@@ -819,19 +833,35 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         armCleanBaselineOnStatusSettle(revision);
         _renderNetworkHint(data._meta);
         syncSettingsLoadState();
-        // Extension settings forms read their stored values before rendering:
-        // that is optional enrichment too, and it must not delay the clean
-        // baseline above or absorb an owner edit made while it was pending.
+        // The skill-requested rows and the extension settings forms (which read
+        // their stored values before rendering) are optional enrichment: it must
+        // not delay the clean baseline above or absorb an owner edit made while
+        // it was pending, so it lands only on an unchanged draft.
         const isCurrent = () => sequence === loadSequence && revision === draftRevision;
-        await Promise.all([renderExtensionSettingsSections(page, sections, { isCurrent }), reloadReviewerSlots({ isCurrent }), reloadSubagentsSection()]);
-        if (sequence !== loadSequence || revision !== draftRevision) {
-            updateSettingsDirtyState();
-            return false;
+        const enriched = (async () => {
+            const enrichment = [reloadReviewerSlots({ isCurrent }), reloadSubagentsSection()];
+            const extData = await extensionsRead;
+            if (extData && isCurrent()) {
+                renderRequestedSkillSecrets(page, extData.skills || [], data);
+                const sections = Array.isArray(extData.live?.settings_sections) ? extData.live.settings_sections : [];
+                enrichment.push(renderExtensionSettingsSections(page, sections, { isCurrent }));
+            }
+            await Promise.all(enrichment);
+            if (!isCurrent()) {
+                updateSettingsDirtyState();
+                return false;
+            }
+            // Optional enrichment belongs in a still-clean baseline, never in an
+            // owner edit made while one of those reads was pending.
+            setSettingsCleanBaseline();
+            return true;
+        })();
+        // A confirmed Save waits for the document only; its enrichment lands behind the same guards.
+        if (!awaitEnrichment) {
+            enriched.catch(() => {});
+            return true;
         }
-        // Optional enrichment belongs in a still-clean baseline, never in an
-        // owner edit made while one of those reads was pending.
-        setSettingsCleanBaseline();
-        return true;
+        return enriched;
     }
 
     async function reloadSettingsWithFeedback() {
@@ -1114,19 +1144,20 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         setBeforePageLeave(async ({ from }) => {
             if (from !== 'settings') return true;
             if (settingsSaving) return false;
-            if (!settingsDirty) return true;
+            if (!settingsDirty) { resetSecretReveals(page); return true; }
             const leave = await confirmDiscardSettings('leave Settings');
-            if (leave) discardUnsavedSettingsDraft();
+            if (leave) { resetSecretReveals(page); discardUnsavedSettingsDraft(); }
             return leave;
         });
     }
 
-    // Client-local blocks (appearance, notifications) live on the Appearance
-    // tab but never enter the /api/settings payload, so their controls must not
-    // make the server draft dirty — otherwise toggling one would ask the owner
-    // to discard "unsaved settings" that do not exist.
+    // Blocks outside the server draft (theme, notifications on Appearance; host
+    // sign-in startup on Behavior) never enter the /api/settings payload, so their
+    // controls must not make the server draft dirty — otherwise toggling one would
+    // ask the owner to discard "unsaved settings" that do not exist.
     const onServerSettingEdited = (event) => {
-        if (event?.target?.closest?.('[data-notify-settings]')) return;
+        if (event?.target?.closest?.('[data-notify-settings], [data-autostart-settings]')) return;
+        if (event?.target?.closest?.('[data-i18n-settings]')) return;   // the interface language saves through its own endpoint
         onSettingsEdited();
     };
     page.addEventListener('input', onServerSettingEdited);
@@ -1149,7 +1180,10 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         markSettingsDirty();
     });
 
+    // Skill lifecycle events reload only a visible page; the page-show
+    // handler below reloads on entry, so a hidden page reads nothing.
     window.addEventListener('ouro:skill-lifecycle', (event) => {
+        if (!settingsPageActive()) return;
         const action = String(event.detail?.action || 'skills changed');
         refreshSettingsAfterExtensionChange(action);
     });
@@ -1160,6 +1194,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     });
     if (ws && typeof ws.on === 'function') {
         ws.on('extension_lifecycle', (event) => {
+            if (!settingsPageActive()) return;
             const action = String(event?.action || 'extension lifecycle');
             refreshSettingsAfterExtensionChange(action);
         });
@@ -1187,10 +1222,13 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     window.addEventListener('beforeunload', beforeUnload);
     document.addEventListener('settings-model-catalog:updated', onModelCatalog);
     window.addEventListener('pagehide', (event) => {
+        resetSecretReveals(page);
         if (event.persisted) return;
         disposeSettingsTabs();
         window.removeEventListener('beforeunload', beforeUnload);
         disposeLocalModel();
+        disposeLanguage();
+        disposeShell();
         disposeRestartReconnect?.();
         accountModelCatalog.dispose();
         restartReadSequence += 1;
@@ -1361,7 +1399,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
                 saveOutcomeUnknown ||= failure.unknown;
             }
             const ownerError = runtimeModeError || autoGrantError || contextModeError || safetyModeError;
-            const draftKept = ownerError || sentRevision !== draftRevision || !(await loadSettings());
+            const draftKept = ownerError || sentRevision !== draftRevision || !(await loadSettings({ awaitEnrichment: false }));
             syncAutoGrantBridgeState();
             let statusMsg;
             let statusType = 'ok';

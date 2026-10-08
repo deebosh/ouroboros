@@ -17,30 +17,30 @@ def _image_block(tag: str = "x", caption: str = "") -> dict:
 
 
 class TestSupportsVision:
-    def test_static_map(self):
+    def test_names_are_not_evidence(self, tmp_path, monkeypatch):
+        """Without a route's own catalog statement every API route is unknown, the
+        names a former prefix table listed included; our local lane's limit is the
+        send policy's transport fact, not a model verdict."""
         from ouroboros.provider_models import supports_vision
 
-        assert supports_vision("openai/gpt-5.5") is True
-        assert supports_vision("google/gemini-3.5-flash") is True
-        assert supports_vision("anthropic::claude-opus-4-8") is True
-        # The v6.82.0 direct Anthropic defaults stay vision-capable.
-        assert supports_vision("anthropic::claude-sonnet-5") is True
-        assert supports_vision("anthropic::claude-opus-5") is True
-        assert supports_vision("deepseek/deepseek-chat") is False
-        assert supports_vision("") is False
-        assert supports_vision("some-model (local)") is False
+        monkeypatch.setenv("OUROBOROS_DATA_DIR", str(tmp_path))
+        for model in ("openai/gpt-5.5", "google/gemini-3.5-flash", "anthropic::claude-opus-5",
+                      "deepseek/deepseek-chat", "openai::o3-mini", "", "some-model (local)"):
+            assert supports_vision(model) is None, model
 
-    def test_overlay_wins(self):
-        from ouroboros import provider_models
+    def test_a_recorded_catalog_statement_answers_only_for_its_route(self, tmp_path, monkeypatch):
+        from ouroboros.provider_models import supports_vision
+        from ouroboros.vision_routing import record_catalog_image_input
 
-        provider_models.update_vision_overlay("deepseek/deepseek-vl", True)
-        assert provider_models.supports_vision("deepseek/deepseek-vl") is True
-        provider_models.update_vision_overlay("openai/gpt-5.5", False)
-        try:
-            assert provider_models.supports_vision("openai/gpt-5.5") is False
-        finally:
-            provider_models._VISION_OVERLAY.pop("openai/gpt-5.5", None)
-            provider_models._VISION_OVERLAY.pop("deepseek/deepseek-vl", None)
+        monkeypatch.setenv("OUROBOROS_DATA_DIR", str(tmp_path))
+        record_catalog_image_input("openrouter", "https://openrouter.ai/api/v1", [
+            {"id": "deepseek/deepseek-vl", "architecture": {"input_modalities": ["text", "image"]}},
+            {"id": "openai/gpt-5.5", "architecture": {"input_modalities": ["text"]}},
+        ], source="OpenRouter /models")
+        assert supports_vision("deepseek/deepseek-vl") is True
+        assert supports_vision("openai/gpt-5.5") is False
+        # The same slug on the direct OpenAI route is another route: still unknown.
+        assert supports_vision("openai::gpt-5.5") is None
 
 
 class TestWebAttachmentBlocks:
@@ -49,15 +49,32 @@ class TestWebAttachmentBlocks:
 
         uploads = tmp_path / "uploads"
         uploads.mkdir(parents=True)
-        (uploads / "abc_cat.png").write_bytes(b"\x89PNG fake")
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+        (uploads / ("a" * 32 + "_cat.png")).write_bytes(png)
         monkeypatch.setattr(ws_mod, "DATA_DIR", tmp_path)
 
         b64, mime, caption = ws_mod._first_image_attachment([
-            {"filename": "abc_cat.png", "mime": "image/png", "display_name": "cat.png"},
+            {"filename": "a" * 32 + "_cat.png", "mime": "image/png", "display_name": "cat.png"},
         ])
-        assert base64.b64decode(b64) == b"\x89PNG fake"
+        assert base64.b64decode(b64) == png
         assert mime == "image/png"
         assert "cat.png" in caption
+
+    def test_the_bytes_not_the_frame_decide_what_is_an_image(self, tmp_path, monkeypatch):
+        import ouroboros.gateway.ws as ws_mod
+
+        uploads = tmp_path / "uploads"
+        uploads.mkdir(parents=True)
+        (uploads / ("b" * 32 + "_page.png")).write_bytes(b"<html><script>x</script></html>")
+        jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 28
+        (uploads / ("c" * 32 + "_clip.mp4")).write_bytes(jpeg)
+        monkeypatch.setattr(ws_mod, "DATA_DIR", tmp_path)
+
+        assert ws_mod._first_image_attachment(
+            [{"filename": "b" * 32 + "_page.png", "mime": "image/png"}]) == ("", "", ""), "HTML is no image"
+        b64, mime, _caption = ws_mod._first_image_attachment(
+            [{"filename": "c" * 32 + "_clip.mp4", "mime": "video/mp4"}])
+        assert base64.b64decode(b64) == jpeg and mime == "image/jpeg", "a JPEG is one, whatever its name"
 
     def test_traversal_and_non_image_rejected(self, tmp_path, monkeypatch):
         import ouroboros.gateway.ws as ws_mod
@@ -190,7 +207,9 @@ class TestCompactionAndLanes:
             _image_block("a"),
         ])
         assert "hello" in text
-        assert "[image omitted: model has no vision" in text
+        # The marker names our lane, never the model.
+        assert "[image omitted: our GigaChat transport lane cannot carry images" in text
+        assert "model has no vision" not in text
 
     def test_provider_payload_strips_internal_metadata(self):
         from ouroboros.llm import LLMClient
@@ -243,32 +262,27 @@ class TestCompactionAndLanes:
 
 
 class TestNativeScreenshotInjection:
-    def test_injects_for_vision_model(self, tmp_path, monkeypatch):
+    def _inject(self, tmp_path, monkeypatch, model):
         import ouroboros.tools.browser as browser_mod
 
-        monkeypatch.setenv("OUROBOROS_MODEL", "openai/gpt-5.5")
+        monkeypatch.setenv("OUROBOROS_MODEL", model)
 
         class Ctx:
             drive_root = tmp_path
             messages = [{"role": "user", "content": "start"}]
 
         note = browser_mod._inject_native_screenshot(Ctx(), base64.b64encode(b"png").decode())
-        assert "natively" in note
-        content = Ctx.messages[-1]["content"]
-        assert isinstance(content, list)
-        assert any(b.get("type") == "image_url" for b in content if isinstance(b, dict))
-        shots = list((tmp_path / "uploads" / "screenshots").glob("*.png"))
-        assert shots, "screenshot must be persisted for re-view"
+        return Ctx, note
 
-    def test_skipped_for_non_vision_model(self, tmp_path, monkeypatch):
-        import ouroboros.tools.browser as browser_mod
-
-        monkeypatch.setenv("OUROBOROS_MODEL", "deepseek/deepseek-chat")
-
-        class Ctx:
-            drive_root = tmp_path
-            messages = [{"role": "user", "content": "start"}]
-
-        note = browser_mod._inject_native_screenshot(Ctx(), base64.b64encode(b"png").decode())
-        assert note == ""
-        assert Ctx.messages[-1]["content"] == "start"
+    def test_injects_into_canonical_context_whatever_the_model(self, tmp_path, monkeypatch):
+        """The screenshot is canonical input for every route; the send policy decides
+        what a route receives, so the attach step never judges the model."""
+        for index, model in enumerate(("openai/gpt-5.5", "deepseek/deepseek-chat")):
+            ctx, note = self._inject(tmp_path / str(index), monkeypatch, model)
+            # Stored in context is not the same as seen by the model: the note says so.
+            assert "in your context as an image" in note and "natively" not in note
+            content = ctx.messages[-1]["content"]
+            assert isinstance(content, list)
+            assert any(b.get("type") == "image_url" for b in content if isinstance(b, dict))
+            shots = list((tmp_path / str(index) / "uploads" / "screenshots").glob("*.png"))
+            assert shots, "screenshot must be persisted for re-view"

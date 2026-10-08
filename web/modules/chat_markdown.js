@@ -1,6 +1,7 @@
 /** Rich, sanitized markdown rendering for assistant and system chat messages. */
 
 import { safeExternalUrl } from './utils.js';
+import { tr } from './i18n.js';
 import { applyChartTheme, onThemeChange } from './theme_palette.js';
 
 const CHART_TYPES = new Set([
@@ -16,7 +17,9 @@ const CHART_AUTHORED = new WeakMap();
 const CHART_THEMED = new WeakMap();
 const writeDirectly = (mutate) => mutate();
 
-let markdownParser = null;
+// One parser per line-break reading: chat keeps every newline (`breaks: true`),
+// a delivered document reads a single newline as a soft break.
+const markdownParsers = new Map();
 let mermaidLoadPromise = null;
 let mermaidInitialized = false;
 
@@ -75,12 +78,13 @@ function renderImageReference({ href, title, tokens, text }) {
         + `Image${alt ? `: ${alt}` : ''}</span>`;
 }
 
-function getMarkdownParser() {
-    if (markdownParser) return markdownParser;
+function getMarkdownParser(breaks = true) {
+    if (markdownParsers.has(breaks)) return markdownParsers.get(breaks);
     const Marked = globalThis.marked?.Marked;
     if (typeof Marked !== 'function') return null;
-    markdownParser = new Marked({ gfm: true, breaks: true, renderer: { image: renderImageReference } });
-    return markdownParser;
+    const parser = new Marked({ gfm: true, breaks, renderer: { image: renderImageReference } });
+    markdownParsers.set(breaks, parser);
+    return parser;
 }
 
 // Inside a block marked did not read as code, its one code construct: marked's own
@@ -321,9 +325,9 @@ function createCodeBlock(source, language = '') {
     copy.type = 'button';
     copy.className = 'md-code-copy';
     copy.dataset.codeCopy = '';
-    copy.setAttribute('aria-label', 'Copy code');
-    copy.title = 'Copy code';
-    copy.textContent = 'Copy';
+    copy.setAttribute('aria-label', tr('code.copy_code', 'Copy code'));
+    copy.title = tr('code.copy_code', 'Copy code');
+    copy.textContent = tr('code.copy', 'Copy');
     const pre = document.createElement('pre');
     const code = document.createElement('code');
     code.className = `language-${language || 'plain'}`;
@@ -396,11 +400,12 @@ function transformRenderedMarkdown(fragment, literal) {
     });
 }
 
-/** Return sanitized, presentation-ready HTML for a chat message. */
-export function renderChatMarkdown(text) {
+/** Return sanitized, presentation-ready HTML for a chat message, or with
+ * `softBreaks` for a delivered document (DESIGN "Document reading"). */
+export function renderChatMarkdown(text, { softBreaks = false } = {}) {
     // Without the parser the message reads as the author's exact text.
     const plain = () => escapeText(text).replace(/\n/g, '<br>');
-    const parser = getMarkdownParser();
+    const parser = getMarkdownParser(!softBreaks);
     if (!parser || !globalThis.DOMPurify || typeof document === 'undefined') return plain();
     try {
         const { source, lessThan, escapedLessThan } = prepareMarkdownSource(text);
@@ -427,14 +432,17 @@ export function renderChatMarkdown(text) {
 
 /** Mount blocks with their CSS contract. Enhancement stays with the owning
  * bubble/card so replacing content does not create another resource owner. */
-export function mountChatMarkdown(host, text) {
+export function mountChatMarkdown(host, text, options = {}) {
     host.classList.add('ui-rich-content');
-    host.innerHTML = renderChatMarkdown(text);
+    host.innerHTML = renderChatMarkdown(text, options);
 }
 
 function highlightCodeIn(root) {
     root.querySelectorAll?.('.md-code-block pre > code').forEach((code) => {
         const source = code.textContent || '';
+        // A block past the rich-block bound stays plain text: highlighting it would
+        // hold the main thread; it still reads and copies exactly.
+        if (source.length > MAX_RICH_BLOCK_SOURCE_LENGTH) return;
         const language = codeLanguage(code);
         const api = globalThis.hljs;
         if (!api) return;
@@ -704,13 +712,19 @@ async function copyCode(code) {
     const textarea = document.createElement('textarea');
     textarea.value = text;
     textarea.setAttribute('readonly', '');
+    // Inside a modal dialog (the document reader) the rest of the page is inert:
+    // the selection is made within that dialog, and focus returns after.
+    const dialog = code.closest?.('dialog[open]') || null;
+    const focused = document.activeElement;
     let copied = false;
     try {
-        document.body.appendChild(textarea);
+        (dialog || document.body).appendChild(textarea);
+        if (dialog) textarea.focus({ preventScroll: true });
         textarea.select();
         copied = typeof document.execCommand === 'function' && document.execCommand('copy') === true;
     } finally {
         textarea.remove();
+        if (dialog && focused?.isConnected) focused.focus({ preventScroll: true });
     }
     if (!copied) throw new Error('copy command failed');
 }
@@ -729,7 +743,7 @@ function markTableOverflow(wrap) {
     if (scrolls === wrap.hasAttribute('tabindex')) return;
     if (scrolls) {
         wrap.setAttribute('role', 'region');
-        wrap.setAttribute('aria-label', 'Scrollable table');
+        wrap.setAttribute('aria-label', tr('code.scrollable_table', 'Scrollable table'));
         wrap.tabIndex = 0;
     } else {
         wrap.removeAttribute('role');
@@ -851,16 +865,16 @@ export function enhanceChatMarkdown(rootEl, { onDomWrite = writeDirectly, onThem
             await copyCode(code);
             if (state.destroyed) return;
             button.classList.add('is-copied');
-            button.textContent = 'Copied';
+            button.textContent = tr('code.copied', 'Copied');
             const timer = setTimeout(() => {
                 state.timers.delete(timer);
                 if (state.destroyed || button.isConnected === false) return;
                 button.classList.remove('is-copied');
-                button.textContent = 'Copy';
+                button.textContent = tr('code.copy', 'Copy');
             }, 1200);
             state.timers.add(timer);
         } catch {
-            if (!state.destroyed) button.textContent = 'Copy failed';
+            if (!state.destroyed) button.textContent = tr('code.copy_failed', 'Copy failed');
         }
     };
     ROOT_STATE.set(rootEl, state);

@@ -272,10 +272,35 @@ export const apiClient = {
     health: () => fetchJson('/api/health', { cache: 'no-store' }),
     /** @returns {Promise<import('./api_types.js').StateResponse>} */
     state: () => fetchJson('/api/state', { cache: 'no-store' }),
+    /** One composer file into the upload store. @returns {Promise<import('./api_types.js').UploadResponse>} */
+    uploadChatAttachment: (file) => {
+        const body = new FormData();
+        body.append('file', file);
+        return fetchJson('/api/chat/upload', { method: 'POST', body }, { rejectOkFalse: true });
+    },
     settings: () => fetchJson('/api/settings', { cache: 'no-store' }),
+    /** @param {{key: string}|{mcp_server_id: string}} selector @returns {Promise<{value: string}>} */
+    revealSettingsSecret: (selector) => jsonPost('/api/settings/secret', selector),
     /** @returns {Promise<import('./api_types.js').UiPreferencesResponse>} */
     uiPreferences: (init = {}) => fetchJson('/api/ui/preferences', { cache: 'no-store', ...init }),
     saveUiPreferences: (payload) => jsonPost('/api/ui/preferences', payload),
+    /** @returns {Promise<import('./ui_i18n_types.js').UiI18nResponse>} */
+    uiI18n: () => fetchJson('/api/ui/i18n', { cache: 'no-store' }),
+    /** @param {string|import('./ui_i18n_types.js').UiI18nLanguageRequest} payload */
+    saveUiLanguage: (payload) => jsonPost('/api/ui/i18n/language', typeof payload === 'string' ? { language: payload } : payload),
+    /** @param {import('./ui_i18n_types.js').UiI18nMissingRequest} payload */
+    reportI18nMissing: (payload) => jsonPost('/api/ui/i18n/missing', payload),
+    importI18n: (memoryDocument) => jsonPost('/api/ui/i18n/import', memoryDocument),
+    exportI18nUrl: (language = '') => `/api/ui/i18n/export${language ? `?language=${encodeURIComponent(language)}` : ''}`,
+    regenerateI18n: (payload = {}) => jsonPost('/api/ui/i18n/regenerate', payload),
+    /** @returns {Promise<import('./api_types.js').DesktopAutostartResponse>} */
+    desktopAutostart: () => fetchJson('/api/desktop/autostart', { cache: 'no-store' }),
+    /** @returns {Promise<import('./api_types.js').DesktopAutostartResponse>} */
+    setDesktopAutostart: (enabled) => jsonPost('/api/desktop/autostart', { enabled: Boolean(enabled) }),
+    /** @returns {Promise<import('./api_types.js').DesktopAutostartResponse>} */
+    desktopBackground: () => fetchJson('/api/desktop/background', { cache: 'no-store' }),
+    /** @returns {Promise<import('./api_types.js').DesktopAutostartResponse>} */
+    setDesktopBackground: (enabled) => jsonPost('/api/desktop/background', { enabled: Boolean(enabled) }),
     saveSettings: (payload) => fetchJson('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

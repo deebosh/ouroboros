@@ -1,7 +1,7 @@
 """Process-local record of each task's last observed prompt-cache split.
 
-Extracted from ``ouroboros.usage_accounting`` (at its module size ceiling) as a
-seam beside ``_usage_rows_memo`` and re-exported from there. Nothing here is
+Extracted from ``ouroboros.usage_accounting`` (at its module size ceiling) and
+re-exported from there. Nothing here is
 durable and nothing is locked: a lost, evicted or stale entry only makes the
 money reservation price the whole prompt as a fresh cache write again, which is
 the conservative direction, so a torn read can never under-reserve.
@@ -22,7 +22,8 @@ def _surface() -> str:
     the review attribution. Plan, acceptance and skill reviewer sends settle
     under the task id too (ordinary reviews carry their surface only in
     ``category``), and their prefixes must never pose as the transcript's own
-    split or as each other's."""
+    split or as each other's. Only a caller-named wave (``cache_wave``) splits
+    it further; a derived review round is attribution only (#1544, owner A)."""
     from ouroboros.usage_accounting import current_usage_scope
 
     scope = current_usage_scope()
@@ -31,7 +32,7 @@ def _surface() -> str:
     category = "" if str(scope.category or "task") == "task" else str(scope.category)
     return "|".join(
         part for part in (
-            category, scope.review_skill, scope.review_wave_id, scope.review_slot_id,
+            category, scope.review_skill, scope.cache_wave, scope.review_slot_id,
         ) if part
     )
 

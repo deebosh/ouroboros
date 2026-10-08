@@ -37,6 +37,9 @@ def registry(tmp_path, monkeypatch):
         "review_notes": "PREVIOUS_CASE_REVIEW", "disabled_tools": ["web_search"],
         "predecessor_authority": {
             "task_id": "previous", "result": "PREVIOUS_CASE_RESULT", "authority_sha256": "a" * 64,
+            "task_contract": {"context": "never use native/API fallback",
+                              "constraints": "L1 asks L2 to spawn L3"},
+            "verification_receipts": [{"evidence": "PREVIOUS_CASE_RECEIPT"}],
             "source": {"kind": "task_result", "task_id": "previous", "projection": "authority",
                        "read": {"tool": "get_task_result", "arguments": {
                            "task_id": "previous", "include_authority": True}}},
@@ -89,7 +92,9 @@ def test_declared_child_excludes_prior_carriers_keeps_authority_and_restarts(
     assert predecessor["source"] == before["predecessor_authority"]["source"]
     assert predecessor["task_id"] == "previous"
     assert predecessor["authority_sha256"] == "a" * 64
-    assert predecessor["omitted_fields"] == ["result"]
+    assert set(predecessor["omitted_fields"]) == {"result", "task_contract", "verification_receipts"}
+    assert predecessor["omitted_fields"]["result"] == len("PREVIOUS_CASE_RESULT")
+    assert predecessor["omitted_fields"]["verification_receipts"] > 0
     from ouroboros.tool_access import lineage_task_ids
 
     lineage = {"parent_task_id": "parent", "root_task_id": "root"}
@@ -136,6 +141,9 @@ def test_ordinary_child_keeps_parent_context_notes_and_attachment_route(registry
     assert contract["notes"] == "PREVIOUS_CASE_NOTES"
     assert contract["review_notes"] == "PREVIOUS_CASE_REVIEW"
     assert "PREVIOUS_CASE_RESULT" in json.dumps(contract["predecessor_authority"])
+    assert contract["predecessor_authority"]["task_contract"] == registry._ctx.task_contract[
+        "predecessor_authority"]["task_contract"]
+    assert "PREVIOUS_CASE_RECEIPT" not in json.dumps(contract)
     assert event["context"] == "CHILD_REFERENCE"
     assert ("input_sources" in contract) == bool(options)
 
@@ -191,20 +199,25 @@ def test_declared_parent_cannot_request_shared_descendant(registry):
     assert registry._ctx.pending_events == []
 
 
-def test_session_route_refused_before_child_or_attachment_side_effects(registry, monkeypatch):
+def test_session_route_accepts_declared_with_the_same_selected_contract(registry, monkeypatch):
+    """A configured-session child (nanny plus leaf) takes the same selection an API child
+    does: the selected contract is stored, inherited inputs are not materialized, and the
+    child dispatches to the harness executor. No route is refused for its kind."""
     import ouroboros.tools.control_scheduling as scheduling
 
     monkeypatch.setattr(control, "load_settings", lambda: _settings("agent_session"))
-    monkeypatch.setattr(scheduling, "_prepare_child_drive",
-                        lambda *_args, **_kwargs: pytest.fail("drive prepared before route refusal"))
     monkeypatch.setattr(scheduling, "_materialize_child_attachment_manifest",
-                        lambda *_args, **_kwargs: pytest.fail("attachments prepared before route refusal"))
-    result = _schedule(registry, input_sources="declared")
-    assert (result.status, result.code) == ("error", "TOOL_ARG_ERROR"), result.text
-    assert result.meta["reason"] == "INPUT_SOURCE_SELECTION_UNSUPPORTED"
-    assert registry._ctx.pending_events == []
-    # The launch fence may create its lock parent; a refusal creates no child result.
-    assert not list((registry._ctx.drive_root / "task_results").glob("*.json"))
+                        lambda *_args, **_kwargs: pytest.fail("inherited inputs were materialized"))
+    result = _schedule(registry, input_sources="declared", context="COMMON_FACTS")
+    assert (result.status, result.code) == ("ok", "OK"), result.text
+    event = registry._ctx.pending_events[-1]
+    assert event["requested_executor"] == "harness"
+    assert event["configured_subagent"]["route"]["kind"] == "agent_session"
+    selected = event["task_contract"]
+    assert selected["input_sources"] == "declared" and selected["context"] == "COMMON_FACTS"
+    assert selected["attachment_manifest"] == []
+    assert "PREVIOUS_CASE" not in json.dumps(selected)
+    assert "INPUT_SOURCE_SELECTION_UNSUPPORTED" not in result.text
 
 
 def test_contract_selection_is_additive_strict_and_has_consistent_precedence():

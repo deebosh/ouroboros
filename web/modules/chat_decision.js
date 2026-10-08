@@ -6,6 +6,7 @@ import { renderRoutingAnnotation, routingOptionLabel } from './chat_activity.js'
 import { nameProjectReference, projectReference } from './project_reference.js';
 import { ANSWERABLE_QUIZ_STATES, QUIZ_LIFECYCLE, questionPresentation, waitFacts } from './question_presentation.js';
 import { bindEnterSubmit } from './ui_interactions.js';
+import { fmt, tr, tx } from './i18n.js';
 
 const WAIT_FIELDS = ['wait_for_answer', 'wait_ended_at', 'owner_wait_state', 'owner_wait_resume_reason'];
 // What one observation of a question carries: its identity, lifecycle, recorded answer and wait facts.
@@ -18,8 +19,8 @@ const OBSERVATION_LIMIT = 2000;
 // does (DESIGN "Quiz card"): the default path the task took, and that silence was not
 // read as consent. The card stays answerable either way.
 const waitEndedText = (assumption) => (assumption
-    ? `The wait ended; the task continued under its assumption (${assumption}) — you can still answer.`
-    : 'The wait ended without an answer; the task continued and did not take silence as consent — you can still answer.');
+    ? fmt('The wait ended; the task continued under its assumption ({assumption}) — you can still answer.', { assumption })
+    : tr('quiz.wait_ended_no_answer', 'The wait ended without an answer; the task continued and did not take silence as consent — you can still answer.'));
 
 // Neutral, factual statuses (owner decision 15~A): the card never scolds the
 // router — it states what the click does and what happened.
@@ -399,7 +400,7 @@ export function createChatDecision({
     function hostFactsLine(text) {
         const line = document.createElement('div');
         line.className = 'chat-quiz-host-facts';
-        line.textContent = text;
+        line.textContent = text;  // ids, times and counts of one question: a sentence, not a translation key
         return line;
     }
 
@@ -408,7 +409,7 @@ export function createChatDecision({
         if (button.querySelector('.chat-quiz-option-recommended')) return;
         const badge = document.createElement('span');
         badge.className = 'chat-quiz-option-recommended';
-        badge.textContent = 'recommended';
+        badge.textContent = tr('quiz.recommended', 'recommended');
         button.append(badge);
     }
 
@@ -639,7 +640,7 @@ export function createChatDecision({
         head.className = 'chat-quiz-head';
         const chip = document.createElement('span');
         chip.className = 'chat-quiz-chip';
-        chip.textContent = 'Question';
+        chip.textContent = tr('quiz.chip_question', 'Question');
         const status = document.createElement('span');
         status.className = 'chat-quiz-status';
         const dot = document.createElement('span');
@@ -666,8 +667,9 @@ export function createChatDecision({
         if (quiz.stake) {
             const stake = document.createElement('div');
             stake.className = 'chat-quiz-stake';
-            if (mountMarkdown) mountMarkdown(stake, `At stake: ${quiz.stake}`);
-            else stake.textContent = `At stake: ${quiz.stake}`;
+            const stakeText = `${tr('quiz.at_stake', 'At stake:')} ${quiz.stake}`;
+            if (mountMarkdown) mountMarkdown(stake, stakeText);
+            else stake.textContent = stakeText;
             card.append(stake);
         }
 
@@ -707,7 +709,7 @@ export function createChatDecision({
         if (complete && quiz.options.length && quiz.detailsUnavailable) {
             const note = document.createElement('div');
             note.className = 'chat-quiz-stake chat-quiz-details-unavailable';
-            note.textContent = 'Option details were not retained for this older question.';
+            note.textContent = tr('quiz.details_not_retained', 'Option details were not retained for this older question.');
             card.append(note);
         }
 
@@ -722,11 +724,11 @@ export function createChatDecision({
             commentField.className = 'chat-quiz-comment';
             commentField.rows = 2;
             commentField.maxLength = MAX_DECISION_COMMENT;
-            commentField.placeholder = 'Your answer or comment…';
+            commentField.placeholder = tr('quiz.answer_placeholder', 'Your answer or comment…');
             const send = document.createElement('button');
             send.type = 'button';
             send.className = 'chat-quiz-send';
-            send.textContent = 'Send my answer';
+            send.textContent = tr('quiz.send_answer', 'Send my answer');
             send.disabled = true;
             const syncSend = () => {
                 const enabled = commentPresent() && commentText().length <= MAX_DECISION_COMMENT;
@@ -763,8 +765,8 @@ export function createChatDecision({
             if (wait.waiting) assumption.classList.add('chat-quiz-wait');
             else if (waitEnded) assumption.classList.add('chat-quiz-wait-ended');
             assumption.textContent = wait.waiting
-                ? 'Waiting for your answer; Stop and the task deadline still apply.'
-                : (waitEnded ? waitEndedText(quiz.assumption) : `Continuing meanwhile: ${quiz.assumption}`);
+                ? tr('quiz.waiting_clause', 'Waiting for your answer; Stop and the task deadline still apply.')
+                : (waitEnded ? waitEndedText(quiz.assumption) : fmt('Continuing meanwhile: {assumption}', { assumption: quiz.assumption }));
             card.append(assumption);
         }
 
@@ -836,16 +838,15 @@ export function createChatDecision({
                 setRoutingCardState(card,
                     body.state === 'open' ? 'open' : body.state,
                     Number.isInteger(body.answered_index) ? body.answered_index : null);
-                showToast(body.state === 'open'
-                    ? `Not routed: ${body.cause || body.reason || 'the destination refused this message'} — pick again.`
-                    : body.state === 'pending'
-                        ? 'Another choice is already being routed.'
-                        : 'This message was already routed.', 'error');
+                const cause = tx(body.cause || body.reason || tr('routing.refused_generic', 'the destination refused this message'));
+                showToast(body.state === 'open' ? fmt('Not routed: {cause} — pick again.', { cause })
+                    : body.state === 'pending' ? tr('routing.another_choice_in_flight', 'Another choice is already being routed.')
+                        : tr('routing.already_routed', 'This message was already routed.'), 'error');
                 return;
             }
-            showToast(`Could not route the message (${status || 'network error'}) — try again.`, 'error');
+            showToast(fmt('Could not route the message ({status}) — try again.', { status: status || tr('routing.network_error', 'network error') }), 'error');
         } catch (err) {
-            showToast('Could not route the message (network error) — try again.', 'error');
+            showToast(fmt('Could not route the message ({status}) — try again.', { status: tr('routing.network_error', 'network error') }), 'error');
         } finally {
             delete card.dataset.pending;
         }
@@ -860,7 +861,7 @@ export function createChatDecision({
         head.className = 'chat-quiz-head';
         const chip = document.createElement('span');
         chip.className = 'chat-quiz-chip';
-        chip.textContent = 'Route';
+        chip.textContent = tr('routing.chip_route', 'Route');
         const status = document.createElement('span');
         status.className = 'chat-quiz-status';
         const dot = document.createElement('span');
@@ -881,7 +882,7 @@ export function createChatDecision({
             if (overflow && index >= ROUTING_TOP_OPTIONS) btn.hidden = true;
             const label = document.createElement('span');
             label.className = 'chat-quiz-option-label';
-            label.textContent = routingOptionLabel(option) || `Option ${index + 1}`;
+            label.textContent = routingOptionLabel(option) || fmt('Option {n}', { n: index + 1 });
             btn.append(label);
             btn.addEventListener('click', () => {
                 if (card.dataset.state !== 'open') return;
@@ -894,7 +895,7 @@ export function createChatDecision({
             const more = document.createElement('button');
             more.type = 'button';
             more.className = 'chat-quiz-more';
-            more.textContent = `Show all ${options.length}`;
+            more.textContent = fmt('Show all {n}', { n: options.length });
             more.addEventListener('click', () => onDomWrite(() => {
                 optionsBox.querySelectorAll('.chat-quiz-option')
                     .forEach((btn) => { btn.hidden = false; });

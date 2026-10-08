@@ -3,7 +3,9 @@ import { PAGE_ICONS } from './page_icons.js';
 import { renderAgentAccountsSection, renderAgentsServiceBanner } from './harness_accounts.js';
 import { renderReviewerSlotsSection } from './reviewer_slots.js';
 import { renderSubagentsSection } from './subagents_settings.js';
+import { languageBlockHtml } from './settings_language.js';
 import { modelRolesHost } from './model_roles.js';
+import { bindSecretReveal } from './settings_secrets.js';
 
 // Reads as a sequence: keys → secrets → which API models → who among the agents
 // does what → behavior → technical. "Agents", not "Coding agents" (D-10): the
@@ -408,6 +410,30 @@ export function renderSettingsPage() {
                 </section>
 
                 <section class="settings-panel" data-settings-panel="behavior">
+                    <div class="form-section" data-autostart-settings hidden>
+                        <h3>Startup &amp; background</h3>
+                        <div class="settings-section-copy">
+                            Applies immediately to the host computer running Ouroboros, including when you
+                            connect from another device. Signing in preserves Panic stops and saved pauses.
+                            In the background, tasks, schedules and Telegram keep working; an icon reopens
+                            the window or quits.
+                        </div>
+                        <div class="settings-effort-card">
+                            <label class="local-toggle ui-field ui-field-inline">
+                                <input type="checkbox" class="ui-checkbox" data-autostart-toggle>
+                                Start Ouroboros on the host computer when you sign in
+                            </label>
+                            <div class="settings-inline-status" data-autostart-status role="status" aria-live="polite"></div>
+                            <div data-background-row hidden>
+                                <label class="local-toggle ui-field ui-field-inline">
+                                    <input type="checkbox" class="ui-checkbox" data-background-toggle>
+                                    When the window is closed, keep Ouroboros running in the background
+                                </label>
+                                <div class="settings-inline-status" data-background-status role="status" aria-live="polite"></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="form-section">
                         <h3>Reasoning Effort</h3>
                         <div class="settings-section-copy">Preferred reasoning effort per task type. Unsupported levels adapt to the route; native mappings, required minimums or provider defaults may apply. Requested, sent and reported effort are recorded in Logs.</div>
@@ -474,7 +500,7 @@ export function renderSettingsPage() {
 
                     <div class="form-section">
                         <h3>Image Input</h3>
-                        <div class="settings-section-copy">Auto sends images inline to vision-capable models and captions them for blind models. Caption always uses text captions; Inline refuses caption fallback; Off emits placeholders.</div>
+                        <div class="settings-section-copy">Auto sends images unless the model's own metadata says it cannot see them; then a model that can see writes a caption, or a short note takes the image's place. Inline always sends images, even when metadata says no; if the provider refuses one, you see the refusal and that image becomes a note. Caption always replaces images with text captions. Off replaces images with a note and starts no caption work. The local model and GigaChat cannot carry images in any mode: they get a caption or a note that says so.</div>
                         <div class="settings-effort-card">
                             <label>Image Input Mode</label>
                             <input id="s-image-input-mode" type="hidden" value="auto">
@@ -508,7 +534,7 @@ export function renderSettingsPage() {
                         <div class="settings-section-copy">
                             Working-context size profile (separate axis from Runtime Mode and Review Enforcement).
                             <code>Max</code> inlines ARCHITECTURE and DEVELOPMENT in full &mdash; for ~1M-context models (today's behavior).
-                            <code>Nano</code> is the compact owner window. <code>Low</code> fits ~200K / local models: ARCHITECTURE becomes a navigation map (read full sections on demand), DEVELOPMENT stays full for normal runnable tasks unless a structured non-development caller opts out, and memory compacts sooner. It governs Ouroboros's own working window: it never changes the model or reasoning effort, and scope review runs in every mode.
+                            <code>Nano</code> is the compact owner window. <code>Low</code> fits ~250K / local models: ARCHITECTURE becomes a navigation map (read full sections on demand), DEVELOPMENT stays full for normal runnable tasks unless a structured non-development caller opts out, and memory compacts sooner. It governs Ouroboros's own working window: it never changes the model or reasoning effort, and scope review runs in every mode.
                             <br><strong>Human controlled:</strong> saved via the owner endpoint; saves immediately (no restart), and lowering requires Ouroboros to be idle.
                         </div>
                         <div class="settings-effort-card">
@@ -737,6 +763,8 @@ export function renderSettingsPage() {
                 </section>
 
                 <section class="settings-panel" data-settings-panel="appearance">
+                    ${languageBlockHtml()}
+
                     <div class="form-section">
                         <h3>Theme</h3>
                         <div class="settings-section-copy">
@@ -750,6 +778,7 @@ export function renderSettingsPage() {
                             <label class="theme-choice-label" id="s-appearance-theme-label">Theme</label>
                             <div data-theme-control aria-labelledby="s-appearance-theme-label"></div>
                             <div class="settings-inline-note theme-status" data-theme-status role="status" aria-live="polite"></div>
+                            <div class="settings-inline-note" data-shell-storage-status role="status" aria-live="polite"></div>
                         </div>
                     </div>
 
@@ -758,11 +787,15 @@ export function renderSettingsPage() {
                         <div class="settings-section-copy">
                             While this client is running, Ouroboros can pull you back to a question or a
                             finished task. Notifications arrive whether or not this window has focus, and
-                            clicking one opens its source.
+                            clicking one opens its source where the system supports it. The desktop app hands
+                            them to the system's own notifications where the system allows it, and that system
+                            decides their sound; otherwise a browser banner or an alert inside the app. Sound off
+                            asks for them silently. Test asks the system for permission when it has not been asked yet.
                             <br><strong>Per device, not per account:</strong> like the theme above, these choices
                             are stored by this client alone and never sent to the server.
-                            Where this system exposes no notifications, or permission is denied, alerts appear
-                            inside the app instead. Do Not Disturb and OS permissions still decide what you see.
+                            Where this system exposes no notifications, or permission is denied, alerts fall back
+                            to a browser banner this client allows, or to the app. Do Not Disturb and OS
+                            permissions still decide what you see.
                         </div>
                         <div class="settings-effort-card">
                             <label class="local-toggle ui-field ui-field-inline">
@@ -779,7 +812,7 @@ export function renderSettingsPage() {
                             </label>
                             <label class="local-toggle ui-field ui-field-inline">
                                 <input type="checkbox" class="ui-checkbox" data-notify-pref="important">
-                                Messages Ouroboros sends you while it works
+                                Messages Ouroboros sends you while it works, its reminders, and skill notices
                             </label>
                             <label class="local-toggle ui-field ui-field-inline">
                                 <input type="checkbox" class="ui-checkbox" data-notify-pref="main_reply">
@@ -1069,12 +1102,18 @@ export function bindSecretInputs(root) {
     });
 
     root.querySelectorAll('.secret-toggle').forEach((button) => {
-        button.addEventListener('click', () => {
-            const target = root.querySelector(`#${button.dataset.target}`);
-            if (!target) return;
-            const nextType = target.type === 'password' ? 'text' : 'password';
-            target.type = nextType;
-            button.textContent = nextType === 'password' ? 'Show' : 'Hide';
+        const input = root.querySelector(`#${button.dataset.target}`);
+        if (!input) return;
+        const customRow = input.closest('[data-custom-secret-row]');
+        const keyInput = customRow?.querySelector('[data-custom-secret-key]');
+        bindSecretReveal(input, button, {
+            savedSelector: () => {
+                const key = customRow?.dataset.originalKey || input.dataset.secretSetting;
+                return key ? { key } : null;
+            },
+            savedLabel: () => keyInput && keyInput.value.trim().toUpperCase() !== customRow.dataset.originalKey
+                ? `Saved value for ${customRow.dataset.originalKey}` : '',
+            identityInputs: keyInput ? [keyInput] : [],
         });
     });
 

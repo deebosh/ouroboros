@@ -4,7 +4,7 @@ This chapter owns the settings surface: where the document lives, which function
 
 `ouroboros/config.py` is the one IMPORT surface: paths (HOME, APP_ROOT, REPO_DIR, DATA_DIR, SETTINGS_PATH, PID_FILE, PORT_FILE), constants (RESTART_EXIT_CODE 42, AGENT_SERVER_PORT 8765; from `runtime_limits.py` the supervisor loop's events bound SUPERVISOR_EVENT_BATCH_MAX_EVENTS 100 / SUPERVISOR_EVENT_BATCH_MAX_SEC 2.0 and the budget-projection retry interval BUDGET_PROJECTION_RETRY_SEC 30, structural constants rather than settings keys), `load_settings()`/`save_settings()`, `apply_settings_to_env()` (hot-reloadable keys into `os.environ`), `normalize_runtime_mode()` (one clamp for the save path, the read coercion and onboarding validation), `get_runtime_mode()`/`get_skills_repo_path()`, `acquire_pid_lock()`/`release_pid_lock()`. The vocabularies live in leaves it re-exports — `settings_defaults.py`, `settings_scales.py` (whose `IMMEDIATE_SETTINGS` and `RESTART_REQUIRED_SETTINGS` name the keys that bite the running process at once or wait for a restart; a key in neither applies to the next task), `model_slots.py`, `review_model_routes.py`, `runtime_limits.py`, `settings_integrity.py` — so a new key and default belong to a leaf, never the facade (§10 invariant 3). `update_channels.py` owns `get_update_channel()`/`get_update_branch()` and the update-network defaults.
 
-Settings file: `data/settings.json` under the data root (`~/Ouroboros/data/settings.json` by default; `APP_ROOT`, `DATA_DIR` and `SETTINGS_PATH` independently env-overridable), accessed under a file lock. `secret_masking.py` owns the Settings/MCP placeholder emitters and recognizers for known and owner-defined top-level secrets and the token/PEM patterns used by stored diagnostic redaction: `load_settings()` repairs only recognized DISK placeholders before environment precedence resolves, so a real environment credential is never read as a mask, and `prepare_settings_for_persist()` repeats that repair at the writer boundary; nested MCP values are never silently migrated. While `OUROBOROS_SETTINGS_SHA256` is set (`settings_integrity.py`) the seeded snapshot is an owner-authored trust root: every read verifies the whole byte stream and every writer refuses.
+Settings file: `data/settings.json` under the data root (`~/Ouroboros/data/settings.json` by default; `APP_ROOT`, `DATA_DIR` and `SETTINGS_PATH` independently env-overridable), accessed under a file lock. `secret_masking.py` owns the Settings/MCP placeholder emitters and recognizers for known and owner-defined top-level secrets and the token/PEM patterns used by stored diagnostic redaction: `load_settings()` repairs only recognized DISK placeholders before environment precedence resolves, so a real environment credential is never read as a mask, and `prepare_settings_for_persist()` repeats that repair at the writer boundary; nested MCP values are never silently migrated. While `OUROBOROS_SETTINGS_SHA256` is set (`settings_integrity.py`) the seeded snapshot is an owner-authored trust root: every read verifies the whole byte stream, takes no settings lock (nothing is created beside a pinned file this process does not own) and every writer refuses.
 
 `ouroboros/openrouter_attribution.py` is the application-identity SSOT for every first-party paid OpenRouter request (canonical URL + `X-OpenRouter-Title`); a fork must use its own URL rather than competing to rename one app record.
 
@@ -32,7 +32,7 @@ Providers name the same output budget differently: OpenRouter/Anthropic-compatib
 | Main task loop (`loop_llm_call.MAIN_LOOP_MAX_TOKENS`) | 65,536 |
 | `LLMClient.vision_query()` and VLM tools (`analyze_screenshot`, `vlm_query`) | 32,768 |
 | Review synthesis dedup | 16,384 |
-| Chat block consolidation, era compression, scratchpad consolidation | 16,384 |
+| Scratchpad consolidation, Light memory drafts (`memory_fallback`) | 16,384 |
 | Execution reflection and pattern-register update | 16,384 |
 | Post-task summary (`agent_task_pipeline`) | 16,384 |
 | Improvement-backlog grooming (`improvement_backlog.groom_backlog`) | 8,192 |
@@ -94,6 +94,8 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults canonical in `settings_
 | OUROBOROS_PROJECT_NAMING_TIMEOUT_SEC | 60 | Project-naming call ceiling |
 | OUROBOROS_PROJECT_NAMING_ASYNC_TIMEOUT_SEC | 8 | Inline naming bound when a card becomes a project (`gateway/projects.py`); a direct Main turn is named in the background once it starts working (`spawn_turn_namer`, bounded by `OUROBOROS_PROJECT_NAMING_TIMEOUT_SEC` + 30 s) |
 | OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC | 120 | Update-letter LIGHT one-shot ceiling, slot wait and provider call together (`update_letter.py`) |
+| OUROBOROS_UI_TRANSLATION_TIMEOUT_SEC | 120 | One translation-generator batch call, slot wait and provider call together (`ui_translation.py`); the output budget per batch is the module constant `UI_TRANSLATION_MAX_TOKENS` |
+| OUROBOROS_UI_LANGUAGE | "" | The owner's interface language for this install: a BCP-47 tag (`ru`, `pt-BR`, `art-x-<slug>` for an invented language), an open set; `""` = not chosen (the English source renders), `en` = chosen English. Written only by `POST /api/ui/i18n/language` through the locked owner writer (`ENDPOINT_WRITTEN_SETTINGS`: the generic settings save skips it and names the writer in `ignored_keys`), yet exported to the environment like any other setting, so a restart, the worker and the Telegram skill read the choice; read live by the gateway and the Telegram skill, by the mind's runtime block at its next attempt (`ui_language.py`, `i18n_memory.py`, §3 Settings and onboarding) |
 | OUROBOROS_FALLBACK_COOLDOWN_ENABLED | true | 429-aware per-process model cooldown |
 | OUROBOROS_FALLBACK_COOLDOWN_SEC | 120 | Cooldown window |
 | OUROBOROS_FALLBACK_ATTEMPTS_PER_MODEL | 1 | Attempts per model in the fallback walk |
@@ -129,6 +131,7 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults canonical in `settings_
 | OUROBOROS_OR_PROVIDER | "" | OpenRouter provider-routing preference merged into requests |
 | OUROBOROS_SEARCH_CODE_WALL_SEC | 45 | search_code wall-clock budget |
 | OUROBOROS_PRESENTATION | (unset) | Env-only: launcher-exported presentation (`desktop_window`/`browser_fallback`/external `android_app`; absent renders `web`) |
+| OUROBOROS_DESKTOP_BACKGROUND | (unset) | Env-only: `1` when the desktop launcher can keep running with its window hidden (Windows, macOS); without it the keep-running control is unavailable |
 | OUROBOROS_EXTERNAL_HOST_UPDATE | (unset) | Env-only: selected external-host installer supporting read-only `--check`; no second Git updater |
 | OUROBOROS_EXTERNAL_HOST_RESULT | (unset) | Env-only: launcher-verified installed-artifact/input/source facts for one core generation; not a reusable persisted PASS |
 | OUROBOROS_USER_FILES_ROOT | "" (home) | Env-only: user_files jail root (empty = `$HOME`) |
@@ -172,7 +175,7 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults canonical in `settings_
 | OUROBOROS_HUB_CATALOG_URL | `https://raw.githubusercontent.com/razzant/OuroborosHub/main/catalog.json` | OuroborosHub catalog URL (automatic fetch limited to catalog JSON; installs verify SHA-256) |
 | OUROBOROS_CLAWHUB_REGISTRY_URL | `https://clawhub.ai/api/v1` | ClawHub registry URL |
 | OUROBOROS_PROMPT_CACHE_TTL | 1h | Prompt-cache tier default/5m/1h for cache markers on compatible Anthropic-family wire payloads; the final send boundary legalizes ordering, so prompt builders own no provider TTL policy; `review_helpers.cached_prompt_blocks` and `usage_accounting._reservation_cost` also consult it; usage records the applied tier |
-| OUROBOROS_EFFORT_TASK | medium | Task reasoning effort (none/minimal/low/medium/high/xhigh/max/ultra; Settings hides `minimal`); preferred tier; exact-route, success-confirmed adaptation, original/sent/reported facts stay in usage/Logs. Controls Light post-task synthesis (reflection, Pattern Register update, episodic summary), which has no separate level |
+| OUROBOROS_EFFORT_TASK | medium | Task reasoning effort (none/minimal/low/medium/high/xhigh/max/ultra; Settings hides `minimal`), the start of every ordinary root that names no explicit `reasoning_effort` (§6 Explicit starting effort of a root); preferred tier; exact-route, success-confirmed adaptation, original/sent/reported facts stay in usage/Logs. Controls Light post-task synthesis (reflection, Pattern Register update, episodic summary), which has no separate level |
 | OUROBOROS_EFFORT_EVOLUTION | high | Evolution effort |
 | OUROBOROS_EFFORT_REVIEW | high | Review effort for rows that pin none; a plan envelope's `reviewer_effort` outranks it and a row's pinned effort for that plan (a compound route slug keeps its encoded effort); the effective per-seat effort is recorded and a panel ordered weaker than the owner's setting is named |
 | OUROBOROS_EFFORT_SCOPE_REVIEW | high | Scope-review effort |
@@ -210,6 +213,7 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults canonical in `settings_
 | OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE | "" | Owner-only persistent campaign bias; still passes review gates |
 | LOCAL_MODEL_PORT | 8766 | Local-model server port |
 | OUROBOROS_HOST_SERVICE_PORT | 8767 | Host Service port (loopback-only; §12) |
+| OUROBOROS_DESKTOP_KEEP_RUNNING | false | Desktop window close keeps Ouroboros running in the background (Windows, macOS; `launcher_background.py`). Disk-authored consent: absent until the owner chooses in Behavior or answers the first close's one question (`GET/POST /api/desktop/background`) |
 | OUROBOROS_PRESENCE_MAX_ACTIVE | 2 | Cross-process Presence turn cap (UI-bounded 1–20) |
 | LOCAL_MODEL_CHAT_FORMAT | "" | Local-model chat template override |
 | GITHUB_TOKEN | "" | GitHub token (push/PR/issues) |

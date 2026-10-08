@@ -35,6 +35,8 @@ _SAFE_TEMP_ROOT = os.environ.get("OUROBOROS_TEST_TEMP_ROOT", "")
 # Repo root for a live-DATA run, which has no pytest data dir to hang it off. Created lazily,
 # so the hermetic lane never creates an unused temp dir.
 _PYTEST_REPO_FALLBACK = None
+_NEVER_INHERITED = ("OUROBOROS_MANAGED_BY_LAUNCHER", "OUROBOROS_MANAGED_REPO_DIR",
+                    "OUROBOROS_REVIEW_RUN_CAP_USD", "OUROBOROS_CLAUDEXOR_ATTACH_HOME")
 if os.environ.get("OUROBOROS_ALLOW_LIVE_DATA_TESTS") != "1":
     _LIVE_DATA_ROOT = (
         os.environ.get("OUROBOROS_TEST_LIVE_DATA_ROOT")
@@ -63,8 +65,10 @@ if os.environ.get("OUROBOROS_ALLOW_LIVE_DATA_TESTS") != "1":
     # launcher's root under safe_test, the invoking temp directory otherwise.
     _PYTEST_DEFAULTS["GIT_CEILING_DIRECTORIES"] = str(_PYTEST_ROOT.parent)
     os.environ.update(_PYTEST_DEFAULTS)
-    os.environ.pop("OUROBOROS_MANAGED_BY_LAUNCHER", None)
-    os.environ.pop("OUROBOROS_MANAGED_REPO_DIR", None)
+    # Run identities, never lane controls: launcher authority, and the isolated
+    # review's run cap / attach-only engine selection (no test reaches a host engine).
+    for _key in _NEVER_INHERITED:
+        os.environ.pop(_key, None)
     os.environ["OUROBOROS_TEST_LIVE_DATA_ROOT"] = _LIVE_DATA_ROOT
     _PYTEST_DATA_DIR = pathlib.Path(os.environ["OUROBOROS_DATA_DIR"])
     if _SAFE_TEMP_ROOT:
@@ -175,8 +179,8 @@ def _isolated_child_env(value) -> dict:
     if not value.get("OUROBOROS_SETTINGS_PATH"):
         child_env["OUROBOROS_SETTINGS_PATH"] = str(
             pathlib.Path(child_env["OUROBOROS_DATA_DIR"]) / "settings.json")
-    child_env.pop("OUROBOROS_MANAGED_BY_LAUNCHER", None)
-    child_env.pop("OUROBOROS_MANAGED_REPO_DIR", None)
+    for key in _NEVER_INHERITED:
+        child_env.pop(key, None)
     child_env["OUROBOROS_PYTEST_ACTIVE"] = "1"
     child_env["OUROBOROS_TEST_LIVE_DATA_ROOT"] = _PYTEST_CHILD_LIVE_ROOT
     return child_env
@@ -602,6 +606,17 @@ def _reset_custody_memo_between_tests():
 
 
 @pytest.fixture(autouse=True)
+def _reset_accepted_ids_between_tests():
+    """The named-ingress index (``message_ingress._AcceptedIds``) is keyed by chat-log path:
+    no folded prefix outlives its test, whatever the next one writes at that path."""
+    from supervisor.message_ingress import reset_accepted_ids
+
+    reset_accepted_ids()
+    yield
+    reset_accepted_ids()
+
+
+@pytest.fixture(autouse=True)
 def _unlatch_supervisor_event_bus_between_tests():
     """A TestClient lifespan runs the server shutdown, whose ``workers.shutdown_event_q()``
     latches ``_EVENT_Q_SHUTDOWN`` for the rest of the xdist worker; the next test in that
@@ -629,6 +644,26 @@ def _clear_server_stop_flags_between_tests():
         server_process._supervisor_stop.clear()
         server_process._restart_requested.clear()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _keep_process_logging_out_of_the_pytest_process(monkeypatch):
+    """Restart and shutdown tests run ``server.main()`` in this process and launcher tests import
+    ``launcher``; each would run the per-process logging bootstrap here, leaving root handlers
+    bound to that test's tmp dir and captured stderr, the root level at INFO and both excepthooks
+    replaced for the rest of the xdist worker. A later test then logged through the stale handlers
+    (the supervisor-watchdog stack test lost its watchdog thread that way, red only in the full
+    battery). The pytest process owns its own logging: the bootstrap is a no-op here and both hooks
+    are restored after every test; tests/test_process_logging.py runs the bootstrap in fresh
+    interpreters."""
+    import sys
+    import threading
+
+    from ouroboros import process_logging
+
+    monkeypatch.setattr(process_logging, "_configured", True)
+    monkeypatch.setattr(threading, "excepthook", threading.excepthook)
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
 
 
 @pytest.fixture(autouse=True)
@@ -795,7 +830,8 @@ def _isolate_workspace_executor_globals():
     (services._LOCK is non-reentrant, so calling a service helper there would deadlock).
     """
     try:
-        from ouroboros import workspace_executor as we
+        from ouroboros import owned_shutdown, workspace_executor as we
+        owned_shutdown._GENERATION_STOP = owned_shutdown._Stop()  # the one owned-work stop is per process
     except Exception:
         we = None
     try:

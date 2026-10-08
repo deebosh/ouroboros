@@ -104,7 +104,8 @@ def test_model_send_design_note_matches_the_observability_contract():
     assert (REPO / "ouroboros" / "model_send_seal.py").exists()
     assert "refuse dispatch with the existing `PhysicalAttemptPreparationFailed`" \
         not in note_flat
-    assert "The call is NOT blocked" in note_flat
+    assert "It never calls `verify_sealed_candidate` or reads that record back" in note_flat
+    assert "facts; they do not gate a later model call" in note_flat
 
 
 def test_settings_docs_name_every_key_owner_and_what_startup_persists():
@@ -208,6 +209,72 @@ def test_architecture_component_map_covers_every_live_runtime_module():
         "docs/ARCHITECTURE.md names no owner for these live modules: "
         f"{missing}"
     )
+
+
+def test_architecture_map_row_of_the_review_subject_names_its_nodes():
+    """The component-map row of ``tools/review_subject.py`` must name the subject
+    operation's nodes, not only the managed resolution delta it began as: a reader
+    sent to the map finds where a subject is frozen, materialized and identified."""
+    arch = _read("docs/ARCHITECTURE.md")
+    rows = [line for line in arch.splitlines() if "review_subject.py ←" in line]
+    assert len(rows) == 1, rows
+    for node in ("ReviewSubjectSpec", "freeze_subject", "FrozenSubject", "is_gate_subject", "isolated_checkout",
+                 "checkout_token", "review_reuse_key", "review_round_sha", "review_retry_key", "reuse_or_none",
+                 "Subject operation"):
+        assert node in rows[0], node
+
+
+def _change_review_items() -> dict:
+    """``number -> item`` over the Change Review Checklist and the Ouroboros Body
+    Layer tables (one continued numbering), read from the live CHECKLISTS.md."""
+    text = (REPO / "docs/CHECKLISTS.md").read_text(encoding="utf-8")
+    start = text.index("## Change Review Checklist")
+    end = text.index("## Shared Contract Ownership")
+    return {int(n): name for n, name in re.findall(r"^\| (\d+) \| ([a-z_]+) \|", text[start:end], flags=re.M)}
+
+
+def test_checklist_item_numbers_cited_outside_the_checklist_name_the_current_items():
+    """The change-review checklist was renumbered (core 1-9, body layer 10-31).
+    Every place that cites an item BY NUMBER AND NAME — the engineering chapters,
+    the architecture book, runtime comments, test docstrings — must agree with the
+    live table; a number that names the wrong item sends a reviewer to the wrong
+    rule. The standing archive keeps its historical numbers by its own note."""
+    items = _change_review_items()
+    assert items[7] == "capability_regression" and items[11] == "development_compliance" and len(items) == 31
+    names = "|".join(sorted(items.values(), key=len, reverse=True))
+    forms = (
+        # "item 17 (`subagent_isolation`)", "item 21 `source_completeness`", "item 15 (self_consistency)", "item 27, `gateway_parity`"
+        re.compile(rf"\bitems?\s+(\d{{1,2}})(?:\([a-z]\))?,?\s+\(?`?({names})`?", flags=re.I),
+        # "cache_friendliness item 28"
+        re.compile(rf"\b({names})\s+item\s+(\d{{1,2}})\b"),
+        # "`self_consistency` (item 15)"
+        re.compile(rf"`({names})`\s+\(item\s+(\d{{1,2}})\)"),
+    )
+    roots = ("docs/CHECKLISTS.md", "docs/development", "docs/architecture", "ouroboros", "tests")
+    skip = {pathlib.Path(__file__).resolve(), (REPO / "docs/CHECKLISTS_ARCHIVE.md").resolve()}
+    wrong = []
+    for root in roots:
+        path = REPO / root
+        files = [path] if path.is_file() else [*path.rglob("*.md"), *path.rglob("*.py")]
+        for file in files:
+            if file.resolve() in skip:
+                continue
+            text = file.read_text(encoding="utf-8", errors="replace")
+            for line_no, line in enumerate(text.splitlines(), 1):
+                for pattern in forms:
+                    for match in pattern.finditer(line):
+                        number, name = match.groups() if pattern is forms[0] else reversed(match.groups())
+                        if items.get(int(number)) != name:
+                            wrong.append(f"{file.relative_to(REPO)}:{line_no}: item {number} is not `{name}`")
+    assert not wrong, "\n".join(wrong)
+    # Sub-item citations carry no name; the engineering chapters cite the body layer's
+    # development_compliance (11) and self_consistency (15) letters, never the old 2/13.
+    dev = _read("docs/DEVELOPMENT.md")
+    for cite in ("CHECKLISTS items 11(g) and 14", "CHECKLISTS item 11(e)", "CHECKLISTS item 11(f)", "CHECKLISTS item 11(c)",
+                 "CHECKLISTS item 11(d)", "CHECKLISTS item 11(h)", "CHECKLISTS items 11(i) and 30", "CHECKLISTS item 15(b)",
+                 "CHECKLISTS item 17 and ARCHITECTURE", "CHECKLISTS items 10 and 7", "review-only under CHECKLISTS item 5."):
+        assert cite in dev, cite
+    assert not re.search(r"CHECKLISTS items? (?:2|13)\([a-z]\)", dev)
 
 
 def test_architecture_mentions_shared_log_grouping_and_direct_provider_review_fallback():
@@ -364,7 +431,7 @@ def test_phase3_governance_language_is_pinned_without_new_qa_surface():
     assert "AST analyzer" in development
     assert "Diff size, line count, and file count alone are not findings" in development
 
-    assert "Mutable external-fact inventory" in development
+    assert "External facts: unknown is not no" in development
     for column in (
         "Location",
         "Fact",
@@ -375,7 +442,13 @@ def test_phase3_governance_language_is_pinned_without_new_qa_surface():
         "Recommendation",
     ):
         assert f"| {column} " in development
-    assert "does not migrate their runtime representations" in development_flat
+    for rule in (
+        "Unknown is not no.",
+        "A refusal is an observation about one request.",
+        "A model name, prefix or family is never that evidence",
+        "tests/test_model_name_invariance.py",
+    ):
+        assert rule in development_flat
 
     for text in (development, system, authoring, architecture, checklists):
         flat = " ".join(text.split())
@@ -406,8 +479,9 @@ def test_continuity_projection_contract_is_mirrored_across_governance_docs():
     assert "state/skill_review_root_tasks.jsonl" in development
     assert "state/skill_review_root_tasks.jsonl" in architecture
     assert "SKILL_REVIEW_ROOT_TASKS_WARN_BYTES" in architecture
-    assert "eight hot stores" in architecture
-    assert "eight os.stat calls" in _read("ouroboros/agent_startup_checks.py")
+    assert "nine hot stores" in architecture
+    assert "memory/chronicle/records.jsonl" in architecture
+    assert "nine os.stat calls" in _read("ouroboros/agent_startup_checks.py")
     for item in (
         "source_completeness",
         "actor_readable_projection",
@@ -585,7 +659,7 @@ def test_prompt_tool_names_resolve_to_registered_tools(tmp_path):
 # Language-tagged code fences (```yaml, ```python …) are examples and are not
 # scanned; the plain ``` fence holding the §1 module tree IS scanned. The first
 # ARCHITECTURE line carries the release version by contract and is skipped, as
-# are DEVELOPMENT's "Mutable external-fact inventory" (dated provenance is the
+# are DEVELOPMENT's "External facts: unknown is not no" (dated provenance is the
 # rule there) and the "Documentation contract" section that quotes the markers.
 
 DOC_RESIDUE_PATTERNS = {
@@ -603,7 +677,7 @@ DOC_RESIDUE_PATTERNS = {
     "cyrillic": r"[А-Яа-яЁё]",
 }
 DOC_RESIDUE_SKIPPED_SUBSECTIONS = {
-    "docs/DEVELOPMENT.md": ("Mutable external-fact inventory", "Documentation contract"),
+    "docs/DEVELOPMENT.md": ("External facts: unknown is not no", "Documentation contract"),
 }
 
 
@@ -726,7 +800,7 @@ def test_architecture_endpoint_table_mirrors_route_registries(tmp_path):
 # retired alias whose migration the table still explains (pinned by test_review_cycles).
 SETTINGS_TABLE_ENV_ONLY_ROWS = frozenset({
     "OUROBOROS_TRUST_NONLOCAL_BIND_WITHOUT_PASSWORD", "OUROBOROS_DISABLE_MANAGED_UPDATES",
-    "OUROBOROS_PRESENTATION", "OUROBOROS_USER_FILES_ROOT", "OUROBOROS_OBSERVABILITY_KEEP_RAW",
+    "OUROBOROS_PRESENTATION", "OUROBOROS_DESKTOP_BACKGROUND", "OUROBOROS_USER_FILES_ROOT", "OUROBOROS_OBSERVABILITY_KEEP_RAW",
     "OUROBOROS_OBSERVABILITY_RETENTION_DAYS", "OUROBOROS_REVIEW_MODEL_TIMEOUT_SEC",
     "OUROBOROS_REVIEW_MAX_TOKENS", "OUROBOROS_PREFLIGHT_TIMEOUT_SEC", "OUROBOROS_PREFLIGHT_SERIAL",
     "OUROBOROS_PREFLIGHT_TEST_WORKERS", "OUROBOROS_BUNDLE_DIR",

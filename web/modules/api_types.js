@@ -1,4 +1,4 @@
-/** Dependency-free JSDoc mirror of `ouroboros.gateway.contracts`. */
+/** Dependency-free JSDoc mirror of `ouroboros.gateway.contracts`; the interface-language envelopes (`UiI18n*`) sit in ./ui_i18n_types.js. */
 /**
  * @typedef {Object} CostPresentation
  * @property {'own'|'root_tree'} scope
@@ -44,18 +44,17 @@
  * @property {ActiveChatActivity[]=} active_chat_activities  // combined snapshot: direct/ephemeral turns + root managed queue tasks
  */
 /**
- * Background Consciousness alarm-clock snapshot (server._describe_bg_consciousness_state over
- * consciousness.status_snapshot). A wake-up is an ordinary Main turn; its liveness is the direct-activity census, never a flag here.
+ * Background Consciousness alarm clock (server._describe_bg_consciousness_state over consciousness.status_snapshot). A wake-up is an ordinary Main turn; the direct-activity census owns its liveness.
  * @typedef {Object} BgConsciousnessState
  * @property {boolean} enabled
- * @property {string} status  // disabled | stopped | thinking | sleeping | waiting_for_first_conversation | allowance_exhausted | allowance_unknown | wake_rejected | wake_failed
+ * @property {string} status  // disabled | stopped | thinking | sleeping | waiting_for_first_conversation | allowance_exhausted | allowance_unknown | wake_rejected | wake_failed | wake_paused | wake_outcome_unknown
  * @property {string} detail  // one honest owner-readable line (e.g. "Sleeping until 14:05.")
  * @property {string} level  // observe | act | full
  * @property {string} next_wake_at  // ISO instant; "" when unknown
  * @property {string} pending_reason  // the event that will wake it early, "" when none
  * @property {string} last_wake_at  // ISO instant; "" before the first wake of this process
  * @property {string} last_wake_task_id
- * @property {string} last_wake_outcome  // running | done | failed | rejected:<reason> | skipped:<reason>
+ * @property {string} last_wake_outcome  // running | done | paused | pausing | unknown | failed | rejected:<reason> | skipped:<reason>
  * @property {string} last_error
  * @property {?number} spent_24h_usd  // null when the ledger could not be read
  * @property {?number} daily_usd
@@ -80,7 +79,9 @@
  */
 /**
  * @typedef {Object} ActiveChatActivity
+ * @property {Object=} owner_wait  // quiz-bound state, quiz_state and optional wait_ended_at, independent of Project detail
  * @property {Object=} project_admission_hold  // accepted unstarted work waiting for original Project authority
+ * @property {string=} pause_cause  // budget | owner | restart | sleep | unknown; display only
  * @property {Object=} required_question  // read-only pointer to the current required Project quiz
  * @property {boolean=} required_question_unavailable  // a recorded owner-question wait whose detail could not be read: possibly blocked, never "no question"
  * @property {Object.<string,Object>=} model_waits
@@ -136,7 +137,6 @@
  * @property {AvailableSubagentRoute} route
  * @property {string=} effort
  */
-
 /**
  * @typedef {Object} AvailableSubagentsSetting
  * @property {boolean} enabled
@@ -179,9 +179,8 @@
  */
 
 /**
- * POST /api/onboarding/subagents/preview accepts the same open provider/local
- * draft and subscription declarations as onboarding completion. It returns a
- * canonical editable actor list without persisting anything.
+ * POST /api/onboarding/subagents/preview accepts the same open provider/local draft and subscription
+ * declarations as onboarding completion. It returns a canonical editable actor list without persisting anything.
  * @typedef {OnboardingCompleteRequest} OnboardingSubagentsPreviewRequest
  */
 
@@ -282,22 +281,22 @@
  * @property {string} content
  * @property {string} ts
  * @property {boolean=} ingress_accepted Canonical inbound row saved; not proof of task start or model delivery.
+ * @property {boolean=} ingress_dispatched This live host process accepted the row and entered its dispatch; absent after a host restart (unknown).
+ * @property {boolean=} ingress_pending This live host process accepted the row and has entered or refused neither yet: a later echo or history read says which.
+ * @property {boolean=} ingress_undispatched History only: this live host process proved the row's write raised before dispatch; one Send again hands it over.
+ * @property {Array<NonNullable<UploadResponse['view']>>=} attachments The owner message's ChatAttachmentView list: the same views history replays.
+ * @property {boolean=} text_placeholder The owner row's text is the host's placeholder (no words were sent): no caption is shown.
  * @property {boolean=} markdown
  * @property {boolean=} is_progress
  * @property {string=} task_id
- * @property {Object=} origin_message_ref
- *   Host-captured inbound identity for a correlated operation's terminal reply.
+ * @property {Object=} origin_message_ref Host-captured inbound identity for a correlated operation's terminal reply.
  * @property {boolean=} ephemeral_decision
  * @property {number=} tool_calls
  * @property {number=} rounds
  * @property {string=} suggested_name
  * @property {Object=} model_execution
- * @property {string=} task_phase
- *   "finalizing" on a root's early final answer: post-task synthesis still
- *   runs, so the frame is not the task's terminal conclusion.
- * @property {string=} task_terminal_status
- *   Typed terminal fact on a frame that IS the turn's conclusion (stamped on
- *   direct/ephemeral finals and the direct error branch).
+ * @property {string=} task_phase "finalizing" on a root's early final answer: post-task synthesis still runs, so the frame is not the task's terminal conclusion.
+ * @property {string=} task_terminal_status Typed terminal fact on a frame that IS the turn's conclusion (stamped on direct/ephemeral finals and the direct error branch).
  * @property {string=} task_incident
  * @property {string=} cancel_physical_task_id
  *   A cancellation fault names the physical task it could not settle when that
@@ -381,16 +380,14 @@
  *   the fact (an older worker, a supervisor note, a stored row), which keeps
  *   the legacy reading that promoted every progress frame.
  * @property {string=} initiator
- *   The turn's origin label: "consciousness" on every frame and row of a
- *   self-initiated wake-up (and the roots it starts); absent on an owner's turn.
+ *   The turn's origin label: "consciousness" on every frame and row of a self-initiated wake-up (and the roots it starts); absent on an owner's turn.
  * @property {boolean=} cancelable
  *   v6.82 (P5): host-attested — this frame's task is a supervisor-queue task that
  *   POST /api/tasks/{id}/cancel can force-cancel: a lineage-resolved pooled root or
  *   the live in-process direct-chat turn (stopped cooperatively through the same
  *   ownership seam); never a subagent frame or an ephemeral decision turn.
  * @property {?number=} accounted_upper_bound_usd
- *   C2: an accounted upper bound, not a settled receipt; null when unknown.
- *   (ABI-3: the deprecated `cost_usd` alias is removed from the contract.)
+ *   C2: an accounted upper bound, not a settled receipt; null when unknown (ABI-3 removed the `cost_usd` alias).
  * @property {?number=} accounted_upper_bound_usd_with_children
  *   C2: subtree upper bound (formerly aliased `cost_usd_with_children`); null when unknown.
  * @property {"available"|"unavailable"=} cost_accounting_status
@@ -457,10 +454,7 @@
  * @property {Object=} transport
  * @property {string=} system_type
  * @property {"timeline"|"reviews"=} card_row
- *   A host-stamped placement fact for a task-keyed System row: "timeline" = a
- *   timeline item of the task's card, "reviews" = the card's Reviews group
- *   carries the fact (the row is still attached to the card); absent = an
- *   ordinary row.
+ *   A host-stamped placement fact for a task-keyed System row: "timeline" = a timeline item of the task's card, "reviews" = the card's Reviews group carries the fact (the row is still attached to the card); absent = an ordinary row.
  * @property {string=} card_row_id  // the row's stable identity across live delivery, outbox replay and history
  * @property {number=} card_row_revision  // canonical source order, independent of delivery timestamp
  * @property {Object=} late_evidence
@@ -472,6 +466,9 @@
  * @property {string=} handoff_id  // immutable origin/destination receipt identity
  * @property {Object=} terminal_time  // host-owned occurrence; ts remains publication time
  * @property {string=} completion_answer  // a Project root's model-authored final answer, mirrored into Main
+ * @property {string=} set_at  // a `reminder` row: when its words were written (live frame only; the text carries the signature)
+ * @property {string=} scheduled_for  // a `reminder` row: the due point it was written for
+ * @property {string=} delivered_at  // a `reminder` row: when the host showed it (later than due after downtime)
  * @property {number=} chat_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  */
@@ -639,6 +636,7 @@
  * @property {string=} reason
  * @property {string=} detail
  * @property {string=} cause  // the owner-facing sentence for a refused routing act (409 dispatch_rejected)
+ * @property {string=} reasoning_effort  // a New task picked from the card: the start its admitted row requests; never on a steer
  */
 
 /**
@@ -681,8 +679,7 @@
  */
 
 /**
- * Bubble-free presentation update for an existing owner message.
- * @typedef {Object} MessageAnnotationOutbound
+ * @typedef {Object} MessageAnnotationOutbound Bubble-free update for an existing owner message.
  * @property {"message_annotation"} type
  * @property {"routing_ack"} annotation_type
  * @property {number=} chat_id
@@ -697,6 +694,7 @@
  * @property {AttachmentManifestEntry[]=} attachment_manifest
  * @property {string=} routing_token
  * @property {string=} cause  // host-authored owner sentence for a REFUSED act; absent on scheduled/delivered/pending and on the picker frame
+ * @property {string=} reasoning_effort  // the explicit start a New task picked from this picker card requests
  * @property {boolean} suppress_bubble
  * @property {string=} ts
  */
@@ -825,7 +823,8 @@
  * @property {string} path
  * @property {number} size
  * @property {string=} sha256
- * @property {string} mime
+ * @property {string} mime  // the extension's type, as the model-input rail reads it
+ * @property {{name: string, kind: ('image'|'video'|'audio'|'file'), mime: string, size: (?number|undefined), available: boolean, url: (string|undefined)}=} view  // ChatAttachmentView (chat_uploads.attachment_view): the sender's own bubble renders exactly this; `kind` proven from bytes, `url` only while available
  */
 
 /**
@@ -1052,6 +1051,7 @@
  * @property {string=} expected_output
  * @property {string=} constraints
  * @property {boolean=} context_requires_self_body_docs
+ * @property {string=} reasoning_effort Optional explicit starting effort of this root (a server-validated effort tier); omitted = the Task default; metadata.reasoning_effort is refused.
  * @property {string=} actor_id Top-level task actor/provenance id; metadata.actor_id is reserved.
  * @property {string=} source Top-level task source/provenance label.
  * @property {Object=} metadata Arbitrary task metadata; executor_ref/workspace_executor keys are reserved.
@@ -1282,7 +1282,6 @@
  * @property {string=} cleanupWarning
  * @property {ClaudexorVendorCredentialDisposition=} vendorCredentialDisposition
  */
-
 /**
  * Mirrors `gateway/schedule_contracts.py`, which states what each field means.
  * @typedef {Object} ScheduledTasksResponse
@@ -1315,7 +1314,6 @@
  * @typedef {Object} ScheduleDeleteResponse
  * @property {boolean} ok
  */
-
 /**
  * @typedef {Object} TaskPauseRequest
  * @property {string} request_id
@@ -1407,7 +1405,6 @@
  * @property {string=} archived_at
  * @property {string=} archived_reason
  */
-
 /**
  * Same request/live-attempt or already armed latch returns one acknowledgement with duplicate=true.
  * @typedef {Object} TaskHurryResponse
@@ -1419,13 +1416,11 @@
  * @property {boolean=} duplicate
  * @property {string=} error
  */
-
 /**
  * @typedef {Object} LogTailResponse
  * @property {string} name
  * @property {Object[]} entries
  */
-
 /**
  * @typedef {Object} SkillDeleteResponse
  * @property {boolean} ok
@@ -1437,11 +1432,11 @@
  * @property {string} extension_reason
  * @property {string=} error
  */
-
 /**
  * @typedef {Object} UiPreferencesResponse
  * @property {string[]} widget_order
  * @property {Object.<string,'auto'|'manual'|'retain'>} widget_start_mode  // owner per-card launch-policy override, keyed "<skill>:<tab_id>"
+ * @property {Object.<string,{w:number,h:number}>} widget_size  // owner Widgets card width: w masonry columns the card spans (12 = full width), h 0 (reserved)
  * @property {boolean} nested_subagents_expanded
  * @property {number} sidebar_width  // px; 0 = CSS default (v6.33.0)
  * @property {number} project_panel_width  // px; 0 = CSS default
@@ -1449,7 +1444,12 @@
  * @property {{mode:'default'|'hidden'|'custom',text:string}} welcome  // install-wide empty-Main UI copy, not chat history
  * @property {boolean=} ok
  */
-
+/**
+ * Host sign-in registration as its OS reports it, or (/api/desktop/background) the keep-running choice; `reason` only when unavailable.
+ * @typedef {Object} DesktopAutostartResponse
+ * @property {'unavailable'|'off'|'on'|'other_copy'|'disabled_by_os'} state
+ * @property {string=} reason
+ */
 /**
  * @typedef {Object} UpdateMergePlan
  * @property {boolean=} available
@@ -1541,24 +1541,24 @@
  */
 
 /**
- * The LLM-written update letter, delivered inside the ordinary
- * `/api/update/status` and `/api/update/check` payloads as the additive
- * `letter` key (absent or null when the install has none). It outlives the
- * update it describes: `relation` says what the running checkout is to the
- * letter's target, and the panel relabels the paragraph instead of deleting
- * it.
+ * LLM-written update letter in `/api/update/status` and `/api/update/check`.
+ * The additive `letter` is absent/null without a stored letter. It outlives its update;
+ * `relation` compares startup source to target so the panel can relabel it instead of deleting it.
  *
  * @typedef {Object} UpdateLetter
  * @property {'ready'|'failed'} state
- * @property {'pending'|'applied'|'superseded'|'other'} relation  offered now / already the running version / a newer target appeared after it was written / HEAD moved elsewhere
- * @property {string} text  markdown, one short paragraph; may be empty when a failed write has no previous good letter
+ * @property {'pending'|'applied'|'superseded'|'other'} relation  offered now / included in running source / newer target appeared / source moved elsewhere
+ * @property {string} text  markdown; may be empty when a failed write has no previous good letter
  * @property {string} author_version  the Ouroboros version that wrote it
  * @property {string} target_version  the version it describes
  * @property {string} written_at  ISO 8601
- * @property {''|'no_credentials'|'budget_exhausted'|'context_overflow'|'timeout'|'material_unavailable'|'output_truncated'|'provider_unavailable'|'empty_response'} error_kind
+ * @property {''|'no_credentials'|'budget_exhausted'|'context_overflow'|'timeout'|'material_unavailable'|'output_truncated'|'provider_unavailable'|'empty_response'|'runtime_source_unavailable'} error_kind
  * @property {string} error_text  short, secret-free; empty when state is ready
  * @property {{base_sha: string, target_sha: string, update_channel: string, target_ref: string}} key  the exact range the letter was written for
  * @property {boolean} has_last_good  `text` is the previous good letter kept through a failed rewrite; `relation`, `key` and the provenance describe THAT letter, not the range that failed
+ * @property {boolean} description_current  successful shown text covers the exact running-source to checked-target range
+ * @property {string} failed_at  ISO 8601 time of the failed attempt, independent of the shown text's written_at
+ * @property {({base_sha: string, target_sha: string, update_channel: string, target_ref: string}|null)} latest_failed_key  the failed attempt's range, never the provenance of retained text
  */
 
 export const MAX_LINK_ACTIONS = 12;
@@ -1566,8 +1566,7 @@ export const MAX_QUIZ_OPTIONS = 6;
 // Mirror task_decision._COMMENT_MAX: ingress refuses longer comments, never
 // truncates; cards must offer only comments the ingress can deliver verbatim.
 export const MAX_DECISION_COMMENT = 2000;
-export const GATEWAY_CONTRACT_VERSION = '7.5.1';
-
+export const GATEWAY_CONTRACT_VERSION = '7.6.0';
 /**
  * @typedef {Object} ChatHistoryPosition
  * @property {'chat'|'progress'} source

@@ -8,6 +8,7 @@ findings no longer change severity based on its working-window size.
 
 import hashlib
 import json
+import re
 import subprocess
 from types import SimpleNamespace
 
@@ -35,6 +36,7 @@ from tests._review_session_route_shared import (
     FakeLLM,
     _terminal_detail,
 )
+from tests._usage_store_testing import ledger_rows
 
 # ---------------------------------------------------------------------------
 # 5.2/5.6/5.7 — surface wiring: scope and triad deliver sessions without packs
@@ -627,9 +629,7 @@ def test_skill_review_all_session_composition_uses_strict_schema_and_no_api_fall
                "docs/CREATING_SKILLS.md" in request["prompt"] for request in starts)
     assert all("Empty arrays and NO_FINDINGS are invalid" in request["prompt"]
                and "manifest_schema" in request["prompt"] for request in starts)
-    ledger = [json.loads(line) for line in
-              (ctx.drive_root / "state" / "usage_attempts.jsonl").read_text().splitlines()
-              if line.strip()]
+    ledger = ledger_rows(ctx.drive_root)
     sessions = [row for row in ledger if row.get("kind") == "subscription_session"]
     assert len(sessions) == 2
     assert {row["review_slot_id"] for row in sessions} == {"skill-slot-a", "skill-slot-b"}
@@ -800,7 +800,9 @@ def test_the_brief_carries_the_index_the_governance_tiers_and_both_manifests(tmp
     # The index: every tracked path's class, the touched paths' facts and their
     # importers — and no file body (beta.py imports alpha.py, so it is listed).
     assert "## Repository index" in task
-    assert "indexed\talpha.py" in task and "beta.py" in task
+    # An ordinary path is a bare row (the `indexed` label is implied, not repeated).
+    assert re.search(r"^alpha\.py$", task, re.M) and "beta.py" in task
+    assert "indexed\talpha.py" not in task
     assert manifest["repository_index"]["strategy"] == "repository_index"
     # alpha.py, gamma.py, prompts/SYSTEM.md
     assert manifest["repository_index"]["touched_count"] == 3
@@ -1093,6 +1095,18 @@ def test_the_brief_of_a_three_file_change_on_the_real_tree_is_measured(tmp_path)
           f"({without_diff:,} without the diff slot)")
     for name, chars in sorted(sections.items(), key=lambda item: -item[1]):
         print(f"  {name:32s} {chars:>9,}")
-    assert without_diff < 200_000, without_diff
+    # 200_000 -> 205_000 (PR #940 rework, 2026-10-03): the base sat 285 chars under the
+    # ceiling, so the repository index alone (+~1k chars: the interface-language modules,
+    # their tests and the per-chapter grant files) crossed it; still a measured sum, raised
+    # by what those files are, not by aspiration.
+    # 205_000 -> 210_000 (checklist layers, 2026-10-07): the base measured 203,286; the
+    # split of the commit checklist grew the tier-1 inline (the archive's renumbering
+    # note and the shared-section intro, +1.5k) and the DEVELOPMENT governance chapter
+    # that names scope_review.py (+1.9k), to 206,750 — the same measured sum, re-read.
+    # Re-measured on the assembled subject-operation tree (2026-10-07): 209,106 — the
+    # repository index grew to 56,982 over the review subject / body-fact / operation
+    # modules, their tests and chapters, the selected governance inline to 35,084. 894
+    # chars under the ceiling: the next index growth must re-read this sum, not round it.
+    assert without_diff < 210_000, without_diff
     assert sections["repository_index"] > 20_000          # the index really ran
     assert sections["governance_stable_inline"] > 40_000  # BIBLE really inline

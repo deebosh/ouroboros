@@ -31,11 +31,12 @@ _ADDED_OWNERS = {
     "SUPERVISOR_EVENT_BATCH_MAX_EVENTS": runtime_limits,
     "SUPERVISOR_EVENT_BATCH_MAX_SEC": runtime_limits,
     "BUDGET_PROJECTION_RETRY_SEC": runtime_limits,
-    # The two bounds of the usage ledger's display (stale-while-revalidate) read path.
+    # The usage store display read's short wait (then the fact is reported unavailable).
     "USAGE_DISPLAY_LOCK_TIMEOUT_SEC": runtime_limits,
-    "USAGE_DISPLAY_REVALIDATE_AFTER_SEC": runtime_limits,
     "IMMEDIATE_SETTINGS": settings_scales,
     "RESTART_REQUIRED_SETTINGS": settings_scales,
+    # An explicit root starting effort is validated against the effort scale it names.
+    "requested_effort": settings_scales,
     "get_finalization_grace_sec": runtime_limits,
     "PROMOTE_CONFIRM_WAIT_SEC": runtime_limits,
     "get_promote_confirm_wait_sec": runtime_limits,
@@ -57,6 +58,10 @@ _ADDED_OWNERS = {
     "task_model_binding": model_slots,
     "route_binding": model_slots,
     "apply_model_role_override": model_slots,
+    # A slot's model as it routes (its USE_LOCAL_* flag), for image candidate choice.
+    "_SLOT_LOCAL_FLAGS": model_slots,
+    "local_lane_label": model_slots,
+    "slot_lane_label": model_slots,
     "CLAUDEXOR_MODEL_POLL_INTERVAL_SEC": runtime_limits,
     "CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC": runtime_limits,
     "CLAUDEXOR_STOP_EXIT_WAIT_SEC": runtime_limits,
@@ -65,7 +70,6 @@ _ADDED_OWNERS = {
     # Consciousness settings scaffolding: the alarm's SSOT default interval, the closed
     # autonomy enum and the readers for the three consciousness keys.
     "WAKE_DEFAULT_SEC": runtime_limits,
-    "USAGE_LEDGER_FOLD_MIN_AGE_SEC": runtime_limits,
     "CONSCIOUSNESS_AUTONOMY_LEVELS": runtime_limits,
     "get_consciousness_autonomy": runtime_limits,
     "get_consciousness_daily_usd": runtime_limits,
@@ -114,6 +118,8 @@ _MOVED_OWNERS = {
     "CLAUDEXOR_ADMISSION_WAIT_SEC": settings_defaults,
     "CLAUDEXOR_ADMISSION_POLL_SEC": settings_defaults,
     "ENDPOINT_AUTHORED_SETTINGS": settings_defaults,
+    "ENDPOINT_WRITTEN_SETTINGS": settings_defaults,
+    "ENDPOINT_WRITERS": settings_defaults,
     # v6.104.0 upstream: the OpenRouter shipped-model defaults arrive in the
     # vocabulary leaf the v7 split created for exactly this class of fact.
     "OPENROUTER_DEFAULTS": settings_defaults,
@@ -211,6 +217,7 @@ _MOVED_OWNERS = {
     "get_task_idle_timeout_sec": runtime_limits,
     "get_vision_caption_timeout_sec": runtime_limits,
     "get_update_letter_timeout_sec": runtime_limits,
+    "get_ui_translation_timeout_sec": runtime_limits,
     "get_websearch_timeout_sec": runtime_limits,
 }
 
@@ -323,5 +330,6 @@ def test_settings_extraction_size_bounds_have_meaningful_headroom():
     assert counts["ouroboros.config"] <= 1000
     assert all(count <= 1000 for count in counts.values())
     # 500 -> 520: the Z.ai direct provider adds its key and plan rows to the leaf (PR #1207).
-    assert counts["ouroboros.settings_defaults"] <= 520
+    # 520 -> 521: the desktop keep-running consent key's default row (PR #1404; its disk-authored entry adds none).
+    assert counts["ouroboros.settings_defaults"] <= 521
     assert (PACKAGE / "config.py").is_file()

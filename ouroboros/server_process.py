@@ -1,6 +1,6 @@
 """Facts one server process shares with every server leaf.
 
-The drive root it was launched against, the ``server`` logger every server
+The drive root and source baseline it was launched against, the ``server`` logger every server
 module writes to, and the restart-request signals plus the setter that raises
 them, and the two uvicorn shapes that decide who owns the process signals
 (``_SignalStopServer`` for the main server, ``_embedded_uvicorn_server`` for a server
@@ -14,7 +14,9 @@ import logging
 import os
 import pathlib
 import re
+import sys
 import threading
+import time
 from contextlib import nullcontext
 from typing import Callable
 
@@ -28,6 +30,7 @@ DATA_DIR = pathlib.Path(os.environ.get("OUROBOROS_DATA_DIR",
 
 
 log = logging.getLogger("server")
+PROCESS_STARTED_MONOTONIC = time.monotonic()  # the boot clock's zero: this module loads first in the server
 
 
 _restart_requested = threading.Event()
@@ -40,6 +43,7 @@ _supervisor_stop = threading.Event()
 # PROCESS is exiting. Unlike ``_supervisor_stop`` it is never cleared — a settings
 # save that lands mid-teardown must not revive a supervisor generation (#1142).
 _exit_signalled = threading.Event()
+_stop_source = "external_signal"
 
 
 # Set only when the OWNER asked for the restart (the chat Restart button, and the
@@ -52,6 +56,28 @@ _owner_restart_requested = threading.Event()
 _applied_restart_settings: dict = {}
 _applied_server_host_source = "unknown"
 _applied_settings_lock = threading.Lock()
+_source_baseline: str | None = None
+
+
+def capture_server_source_baseline(repo_dir: pathlib.Path) -> str:
+    """Capture this server generation's source before startup can change the checkout.
+
+    This is the startup baseline, not a claim about every lazy/hot-loaded module.
+    An unreadable initial identity stays unknown; later disk HEAD cannot replace it.
+    """
+    from ouroboros.gateway.state import _git_checkout_identity
+
+    global _source_baseline
+    with _applied_settings_lock:
+        if _source_baseline is None:
+            _source_baseline = _git_checkout_identity(repo_dir)[1]
+        return _source_baseline
+
+
+def server_source_baseline() -> str:
+    """Read the captured source, never infer adoption from mutable checkout state."""
+    with _applied_settings_lock:
+        return _source_baseline or ""
 
 
 def record_applied_restart_settings(values: dict, *, server_host_source: str | None = None) -> None:
@@ -320,6 +346,11 @@ def runtime_service_identity(drive_root: pathlib.Path, port: int,
     return _custodied_local_model(drive_root, port, host_matches)
 
 
+def server_stop_source() -> str:
+    """Diagnostic stop ingress; no effect on custody or restart policy."""
+    return _stop_source
+
+
 class _SignalStopServer(uvicorn.Server):
     """uvicorn.Server whose SIGTERM/SIGINT handler stops the supervisor loop AT THE SIGNAL.
 
@@ -332,10 +363,64 @@ class _SignalStopServer(uvicorn.Server):
     the loop, and the lifespan ``finally`` still sets the event on every path.
     """
 
+    def request_shutdown(self) -> None:
+        """The same irreversible stop for OS signals and the launcher's owned pipe."""
+        global _stop_source
+        _stop_source = "launcher_quit"
+        _exit_signalled.set()
+        _supervisor_stop.set()
+        self.should_exit = True
+
     def handle_exit(self, sig: int, frame) -> None:
+        # Let uvicorn see the previous should_exit value (repeated SIGINT forces exit).
+        global _stop_source
+        _stop_source = "external_signal"
         _exit_signalled.set()
         _supervisor_stop.set()
         super().handle_exit(sig, frame)
+
+    def watch_launcher_stop(self) -> None:
+        """Windows has no SIGTERM handler path; consume its launcher's private stdin.
+
+        Opt-in only: direct servers retain their stdin. EOF is not a Quit command.
+        Retain a private raw descriptor, then give ordinary children null stdin:
+        inheriting the control pipe can strand Windows Git's output readers at boot.
+        Raw I/O also avoids a daemon thread holding sys.stdin's buffered shutdown lock.
+        """
+        if os.environ.pop("OUROBOROS_LAUNCHER_STOP_STDIN", "") != "1":
+            return
+        stream = getattr(sys.stdin, "buffer", None)
+        if stream is None:
+            return
+        stdin_fd = stream.fileno()
+        private_fd = os.dup(stdin_fd)
+        try:
+            os.set_inheritable(private_fd, False)
+            with open(os.devnull, "rb", buffering=0) as empty:
+                os.dup2(empty.fileno(), stdin_fd)
+            if sys.platform == "win32":
+                import ctypes
+                import msvcrt
+                # Default child stdin uses the Win32 table, not only the CRT fd table.
+                kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+                kernel.SetStdHandle.argtypes = (ctypes.c_uint32, ctypes.c_void_p)
+                kernel.SetStdHandle.restype = ctypes.c_int
+                if not kernel.SetStdHandle(-10, msvcrt.get_osfhandle(stdin_fd)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            private = os.fdopen(private_fd, "rb", buffering=0)
+        except BaseException:
+            os.close(private_fd)
+            raise
+
+        def receive() -> None:
+            with private:
+                try:
+                    if private.readline(5) == b"quit\n":
+                        self.request_shutdown()
+                except (OSError, ValueError):
+                    log.warning("Launcher stop pipe closed without a Quit request", exc_info=True)
+
+        threading.Thread(target=receive, name="launcher-stop", daemon=True).start()
 
 
 def _embedded_uvicorn_server(config: "uvicorn.Config") -> "uvicorn.Server":

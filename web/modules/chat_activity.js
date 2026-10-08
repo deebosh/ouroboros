@@ -10,7 +10,9 @@ import { projectReference } from './project_reference.js';
 import { delegatedActivityBodyHtml, delegatedHeadline, delegatedLineView } from './delegated_activity.js';
 import { joinMarkdownHeadings, MARKDOWN_FENCED_CODE } from './utils.js';
 import { REUSABLE_TASK_IDS } from './task_control_menu.js';
+import { activityWaitPhase, pausePhaseLabel } from './task_phase_chip.js';
 import { apiFetch } from './api_client.js';
+import { currentLanguage, fmt, isEnglish, tr, tx } from './i18n.js';
 import {
     accountedUpperBound,
     accountedUpperBoundWithChildren,
@@ -93,11 +95,11 @@ export function evidenceLinkHtml(evidenceRef) {
         : '';
 }
 
-// A host-placed card row (timeline or Reviews) as its timeline summary: the first line
-// heads, `card_row_id` is the row's stable identity, and a late-review row carries its
-// record link (`cardRowEvidenceRef`).
+// A placed row's first line heads; card_row_id keeps identity, and late reviews
+// retain their record link. Only typed host pause copy enters the translator.
 export function cardRowSummary(msg, phase, rawTs = '') {
-    const lines = String(msg.text ?? msg.content ?? '').split('\n');
+    const text = String(msg.text ?? msg.content ?? '');
+    const lines = (msg.role === 'system' && msg.system_type === 'task_pause_notice' ? tx(text) : text).split('\n');
     const rowId = String(msg.card_row_id || '').trim() || `${String(msg.system_type || '').trim()}|${rawTs}`;
     return {
         phase, headline: lines[0].trim(), body: lines.slice(1).join('\n').trim(), dedupeKey: `cardrow|${rowId}`,
@@ -260,12 +262,13 @@ const perToolLine = (entries) => entries
     .filter(([name, n]) => name && n > 0)
     .map(([name, n]) => (n > 1 ? `${name} ×${n}` : name)).join(' · ');
 
-/**
- * The block's one tool row, built from the live map and the host's totals
- * together: the host answers what it stated, the live map answers the rest.
- * The closed row carries the counts only (summary outranks details); the
- * per-tool names live behind Expand, so the row stays one line either way.
- */
+export function toolEvidenceIncomplete(coverage) {
+    return Boolean(coverage && (coverage.gaps?.length || coverage.matched > coverage.shown
+        || coverage.source && !Number.isFinite(coverage.live_size)));
+}
+
+// One tool row combines host counts with invocation facts; names and read scope
+// live behind Expand. A bounded read is not an unknown invocation outcome.
 export function toolEvidenceView(fold = null) {
     const live = fold?.calls instanceof Map ? [...fold.calls.values()] : [];
     const host = fold?.host || null;
@@ -273,7 +276,9 @@ export function toolEvidenceView(fold = null) {
     const calls = Math.max(Number.isInteger(host?.calls) ? host.calls : 0, observed);
     // Frozen totals count model wait errors. Canonical evidence reports operation
     // outcomes; a bounded partial read discloses its gap instead of reviving waits.
-    const partial = Boolean(fold?.coverage) && observed > 0 && observed < calls;
+    const partial = toolEvidenceIncomplete(fold?.coverage) || Boolean(fold?.coverage) && observed < calls;
+    const bounded = fold?.coverage && (fold.coverage.archives_bounded || fold.coverage.archives_available > fold.coverage.archives
+        || fold.coverage.live_size > fold.coverage.live_window);
     // Only settled, individually identified calls can supersede an aggregate
     // host error. Partial replay and legacy start-only rows have no such proof.
     const outcomesKnown = calls > 0 && live.length === calls && !(fold?.legacy?.calls)
@@ -283,21 +288,26 @@ export function toolEvidenceView(fold = null) {
         : Math.max(Number.isInteger(host?.errors) ? host.errors : 0, observedErrors);
     const liveCounts = new Map();
     for (const call of live) liveCounts.set(call.tool, (liveCounts.get(call.tool) || 0) + 1);
-    const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+    const headline = !calls && partial ? tr('task.tools.history_incomplete', 'Tool history incomplete')
+        : fmt(calls === 1 ? '{n} tool call' : '{n} tool calls', { n: calls });
     return {
         phase: errors > 0 ? 'warn'
             : ((!host && live.some((call) => call.status === 'calling')) ? 'calling' : 'result'),
-        headline: `${plural(calls, 'tool call')}${errors > 0 ? ` · ${plural(errors, 'error')}` : ''}`
-            + (live.some(call => call.waitEnded) || fold?.legacy?.wait_ended ? ' · wait ended' : '')
-            + (live.some(call => call.status === 'unknown') || fold?.legacy?.unknown || partial ? ' · outcome unknown' : ''),
+        headline: headline + (errors > 0 ? ` · ${fmt(errors === 1 ? '{n} error' : '{n} errors', { n: errors })}` : '')
+            + (live.some(call => call.waitEnded) || fold?.legacy?.wait_ended ? ` · ${tr('task.tools.wait_ended', 'wait ended')}` : '')
+            + (calls && (live.some(call => ['unknown', 'wait_ended'].includes(call.status)) || fold?.legacy?.unknown || fold?.coverage && observed < calls)
+                ? ` · ${tr('task.tools.outcome_unknown', 'outcome unknown')}` : ''),
         body: '',
-        fullBody: (partial ? 'Invocation evidence is incomplete. ' : '') + perToolLine(host?.counts && typeof host.counts === 'object'
+        fullBody: (partial || bounded ? (partial ? tr('task.tools.incomplete', 'Invocation evidence is incomplete.')
+            : tr('task.tools.bounded_window', 'Only recent tool history was read.'))
+            + (fold?.coverage?.source ? ` ${fmt('Source: {source}.', { source: fold.coverage.source })}` : '') + ' ' : '')
+            + perToolLine(host?.counts && typeof host.counts === 'object'
             ? Object.entries(host.counts) : [...liveCounts]),
         visible: true,
         // Host-stamped routing/completion acts are receipts, never work. Missing
         // aggregate fields do not erase complete per-invocation receipt evidence.
-        receipt: errors <= 0 && (Number(host?.routing || 0) + Number(host?.completion || 0) >= calls
-            || live.length >= calls && live.length > 0 && live.every((call) => call.receipt)),
+        receipt: calls > 0 && errors <= 0 && (Number(host?.routing || 0) + Number(host?.completion || 0) >= calls
+            || !partial && live.length >= calls && live.every((call) => call.receipt)),
         calls,
         errors,
     };
@@ -363,7 +373,7 @@ export function isNonTerminalMediaHistoryRow(msg) {
  * distinction for the replay passes and the pager's page-row count.
  */
 export function isReplayEvidenceRow(row) {
-    return row?.system_type === 'quiz_answer' || Boolean(row?.summary_kind && row?.historical_terminal);
+    return ['quiz_answer', 'task_evidence'].includes(row?.system_type) || Boolean(row?.summary_kind && row?.historical_terminal);
 }
 
 export function isForegroundLiveCard(record) {
@@ -895,9 +905,7 @@ export function isTerminalTaskPhase(phase = '', terminal = false) {
     return Boolean(terminal) || ['done', 'lifecycle_error', 'cancelled'].includes(phase);
 }
 
-// ---------------------------------------------------------------------------
 // In-flight chat activity status (owner decisions 1A-5A; managed continuity).
-// ---------------------------------------------------------------------------
 
 /**
  * One request/apply clock for every /api/state consumer on a page. Responses
@@ -1057,16 +1065,21 @@ export function positiveTaskTerminalFact(row) {
 }
 
 /**
- * Single status reducer for the chat header (owner decisions 2A/5A; managed
- * activities added by the project-continuity contract). Priority: disconnected
- * > background live card (Working...) > admitted managed work (Working...) >
- * a root settling its Pause (Pausing…) > server-confirmed direct/ephemeral
- * turns (Thinking...) > local pending submissions (Sending...) >
- * queue-admitted but unstarted managed work (Queued...) > model access wait >
- * paused work (Paused) > idle. A queued task ranks below
- * Sending... because an unacknowledged local submission is the more actionable
- * state. Idle is Starting… until the host proves `supervisor_ready` (В9),
- * then Online. Pure over its inputs for dependency-free node tests.
+ * Whether an unkeyed live row ends the unscoped Main turn, by its typed kind. An
+ * incident report, a note Ouroboros left for this moment and a skill's notice arrive
+ * in the middle of a conversation and conclude nothing.
+ */
+export function unkeyedFrameEndsTurn(row) {
+    return !['terminal_incident', 'reminder', 'skill_notice'].includes(String(row?.system_type || ''));
+}
+
+/**
+ * One header reducer: offline > active managed work > pausing > direct turns
+ * > pending submissions > queued work > access/answer wait > unknown > paused
+ * > Project hold > idle. A queued task ranks below an unacknowledged submission;
+ * neither admission nor a connected socket proves execution or readiness.
+ * Idle says Starting until the supervisor confirms readiness. Multiple tasks
+ * are counted independently, so one paused task never hides another working.
  */
 export function computeDerivedChatStatus({
     isConnected = true,
@@ -1076,41 +1089,30 @@ export function computeDerivedChatStatus({
     queuedManagedCount = 0,
     pausingManagedCount = 0,
     pausedManagedCount = 0,
+    pausedCause = '',
+    waitingOwnerCount = 0,
     unknownActivityCount = 0,
     waitingModelCount = 0,
     projectWaitLabel = '',
     pendingSubmissionsCount = 0,
     supervisorStarting = false,
 } = {}) {
-    if (!isConnected) {
-        return { kind: 'offline', text: 'Reconnecting...', showDots: false };
-    }
-    if (hasActiveLiveCard) {
-        return { kind: 'thinking', text: 'Working...', showDots: false };
-    }
-    if (activeManagedCount > 0) {
-        return { kind: 'thinking', text: 'Working...', showDots: true };
-    }
+    if (!isConnected) return { kind: 'offline', text: 'Reconnecting...', showDots: false };
+    if (hasActiveLiveCard) return { kind: 'thinking', text: 'Working...', showDots: false };
+    if (activeManagedCount > 0) return { kind: 'thinking', text: 'Working...', showDots: true };
     // Sent work still finishing under the owner's Pause: settling, not working.
     if (pausingManagedCount > 0) return { kind: 'thinking', text: 'Pausing…', showDots: true };
-    if (activeDirectCount > 0) {
-        return { kind: 'thinking', text: 'Thinking...', showDots: true };
-    }
-    if (pendingSubmissionsCount > 0) {
-        return { kind: 'thinking', text: 'Sending...', showDots: true };
-    }
+    if (activeDirectCount > 0) return { kind: 'thinking', text: 'Thinking...', showDots: true };
+    if (pendingSubmissionsCount > 0) return { kind: 'thinking', text: 'Sending...', showDots: true };
     if (queuedManagedCount > 0) {
         if (waitingModelCount > 0) return { kind: 'online', text: 'Waiting for access', showDots: false };
         return { kind: 'thinking', text: 'Queued...', showDots: true };
     }
     if (waitingModelCount > 0) return { kind: 'online', text: 'Waiting for access', showDots: false };
+    if (waitingOwnerCount > 0) return { kind: 'online', text: tr('task.chip.waiting_for_answer', 'Waiting for your answer'), showDots: false };
     if (unknownActivityCount > 0) return { kind: 'online', text: 'Activity unconfirmed', showDots: false };
-    if (pausedManagedCount > 0) {
-        // Paused work is NOT running and will not start by itself: never dress
-        // it up as Working or Queued. The census phase is shared by a budget
-        // pause, the owner's Pause and a Restart hold, so no cause is claimed.
-        return { kind: 'online', text: 'Paused', showDots: false };
-    }
+    // Mixed or unknown causes stay generic; paused work never claims Running.
+    if (pausedManagedCount > 0) return { kind: 'online', text: pausePhaseLabel('budget_paused', pausedCause), showDots: false };
     if (projectWaitLabel) return { kind: 'online', text: projectWaitLabel, showDots: false };
     if (supervisorStarting) return { kind: 'starting', text: 'Starting…', showDots: false };
     return { kind: 'online', text: 'Online', showDots: false };
@@ -1122,21 +1124,26 @@ export function computeDerivedChatStatus({
 export function chatStatusCounts(activities, records, isWaiting = () => false) {
     const counts = { activeDirectCount: 0, activeManagedCount: 0, queuedManagedCount: 0, pausingManagedCount: 0,
         pausedManagedCount: 0, unknownActivityCount: 0, hasActiveLiveCard: false, waitingModelCount: 0,
-        projectWaitLabel: '' };
+        projectWaitLabel: '', waitingOwnerCount: 0, pausedCause: '' };
+    const pauseCauses = new Set();
     for (const [id, entry] of activities) {
         // A Project verification hold is a static wait: never queued or working,
         // while its pause/pausing/unknown census phase still counts as itself.
         const projectHold = entry?.project_admission_hold?.label;
         if (projectHold) counts.projectWaitLabel = projectHold;
         else if (isWaiting(id)) continue;
+        const waitPhase = activityWaitPhase(entry);
         if (entry?.phase === 'unknown') counts.unknownActivityCount += 1;
         else if (entry?.phase === 'budget_pausing') counts.pausingManagedCount += 1;
-        else if (entry?.phase === 'budget_paused') counts.pausedManagedCount += 1;
+        else if (entry?.phase === 'budget_paused') { counts.pausedManagedCount += 1; pauseCauses.add(entry.pause_cause || ''); }
+        else if (waitPhase === 'unknown') counts.unknownActivityCount += 1;
+        else if (waitPhase === 'owner_wait') counts.waitingOwnerCount += 1;
         else if (projectHold) continue;
         else if (String(entry?.kind || '') !== 'managed_task') counts.activeDirectCount += 1;
         else if (String(entry?.phase || '') === 'queued') counts.queuedManagedCount += 1;
         else counts.activeManagedCount += 1;
     }
+    if (pauseCauses.size === 1) counts.pausedCause = [...pauseCauses][0];
     for (const record of records) {
         if (!isForegroundLiveCard(record)) continue;
         if (record.projectHold) {
@@ -1220,14 +1227,22 @@ export function formatMsgTime(isoStr) {
         const pad = n => String(n).padStart(2, '0');
         const hhmm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
         const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        // English keeps this hand format byte for byte; an install language takes its month
+        // names from Intl and its two words from the catalog (web/modules/i18n.js).
+        const monthName = (date) => {
+            if (!isEnglish()) {
+                try { return new Intl.DateTimeFormat(currentLanguage(), { month: 'short' }).format(date); } catch { /* hand list below */ }
+            }
+            return months[date.getMonth()];
+        };
         const todayStr = now.toDateString();
         const yesterday = new Date(now);
         yesterday.setDate(now.getDate() - 1);
         let short;
         if (d.toDateString() === todayStr) short = hhmm;
-        else if (d.toDateString() === yesterday.toDateString()) short = `Yesterday, ${hhmm}`;
-        else short = `${months[d.getMonth()]} ${d.getDate()}, ${hhmm}`;
-        const full = `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} at ${hhmm}`;
+        else if (d.toDateString() === yesterday.toDateString()) short = `${tr('time.yesterday', 'Yesterday')}, ${hhmm}`;
+        else short = `${monthName(d)} ${d.getDate()}, ${hhmm}`;
+        const full = `${monthName(d)} ${d.getDate()}, ${d.getFullYear()} ${tr('time.at', 'at')} ${hhmm}`;
         return { short, full };
     } catch {
         return null;
@@ -1239,12 +1254,12 @@ export function routingOptionLabel(option) {
     if (!option || typeof option !== 'object') return '';
     if (option.label) return String(option.label);
     if (option.action === 'new_task_in_project') {
-        return `New task in ${String(option.project_name || 'Project')}`;
+        return fmt('New task in {name}', { name: String(option.project_name || tr('routing.generic_project', 'Project')) });
     }
     if (option.title || option.project_name) {
         return String(option.title || option.project_name);
     }
-    return option.project_id && !option.task_id ? 'Project' : 'Task';
+    return option.project_id && !option.task_id ? tr('routing.generic_project', 'Project') : tr('routing.generic_task', 'Task');
 }
 
 /** Human text for a typed routing annotation ('' hides the line). */
@@ -1254,25 +1269,26 @@ export function routingAnnotationText(annotation) {
     // it outranks the status matrix below. Absent on scheduled/delivered/
     // pending rows and on the picker frame, so those labels are unchanged.
     const cause = String(annotation.cause || '').trim();
-    if (cause) return cause;
+    if (cause) return tx(cause);
     const action = String(annotation.action || '');
     const status = String(annotation.status || '');
     const target = String(annotation.target || '');
     const targetLabel = String(annotation.target_label || '')
-        || (target ? (action === 'project_route' ? 'Project' : 'Task') : '');
-    if (status === 'pending') return 'Choosing the right destination…';
+        || (target ? (action === 'project_route' ? tr('routing.generic_project', 'Project') : tr('routing.generic_task', 'Task')) : '');
+    if (status === 'pending') return tr('routing.pending', 'Choosing the right destination…');
     if (status === 'needs_manual_target') {
         const optionLabels = (Array.isArray(annotation.options) ? annotation.options : [])
             .map(routingOptionLabel)
             .filter(Boolean);
-        if (optionLabels.length) return `Choose a target · ${optionLabels.join(' / ')}`;
+        if (optionLabels.length) return `${tr('routing.choose_target', 'Choose a target')} · ${optionLabels.join(' / ')}`;
         // No options and (by the guard above) no cause: a receipt written
         // before the host sentence existed, or by a producer that bypasses
         // `_emit_routing_receipt`. Nothing can be chosen on such a row, so it
         // must not invite a choice.
-        return targetLabel ? `Not routed · ${targetLabel}` : 'Not routed';
+        const notRouted = tr('routing.not_routed', 'Not routed');
+        return targetLabel ? `${notRouted} · ${targetLabel}` : notRouted;
     }
-    if (status === 'project_unavailable') return 'Project is unavailable';
+    if (status === 'project_unavailable') return tr('routing.project_unavailable', 'Project is unavailable');
     const labels = {
         mailbox_delivery: 'Delivered to task',
         steer_task: 'Steered task',
@@ -1280,7 +1296,8 @@ export function routingAnnotationText(annotation) {
         route_to_project: 'Routed to project',
         project_route: 'Project routing',
     };
-    const label = labels[action] || status.replaceAll('_', ' ') || action.replaceAll('_', ' ');
+    const label = labels[action] ? tr(`routing.action.${action}`, labels[action])
+        : (status.replaceAll('_', ' ') || action.replaceAll('_', ' '));
     return targetLabel && label ? `${label} · ${targetLabel}` : label;
 }
 
@@ -1314,6 +1331,10 @@ export function computeHydratedDirectActivities(existingMap, turnsList, chatId, 
             activityId: aid,
             kind: turn.kind || 'direct_chat',
             phase: turn.phase || 'thinking',
+            ...(turn.pause_cause ? { pause_cause: turn.pause_cause } : {}),
+            ...(turn.required_question ? { required_question: turn.required_question } : {}),
+            ...(turn.owner_wait ? { owner_wait: turn.owner_wait } : {}),
+            ...(turn.required_question_unavailable ? { required_question_unavailable: true } : {}),
             ...(turn.project_admission_hold ? { project_admission_hold: turn.project_admission_hold } : {}),
             clientMessageId: turn.client_message_id || nextMap.get(aid)?.clientMessageId || '',
         });
@@ -1431,17 +1452,18 @@ export function clearTransientRoutingAnnotations(messagesDiv = globalThis.docume
     return changed;
 }
 
-// В9: the host stamps a typed `ingress_accepted: true` on an owner echo only after the durable
-// chat write, so that client_message_id's bubble says `Input saved` — never that work began.
-// No flag is unknown and adds nothing. The note wears the delivery note's quiet style.
+// В9: the host stamps a typed `ingress_accepted: true` on an owner echo only after the durable chat write, so that
+// client_message_id's bubble says `Input saved` — never that work began; `ingress_undispatched` (proven never dispatched) says
+// `Saved, not delivered.` and `ingress_pending` (the running host has not said yet) `Input saved`, each until the next fact.
 export function markIngressSaved(root, row) {
-    const cmid = String(row?.client_message_id || '');
+    const cmid = String(row?.client_message_id || ''), state = row?.ingress_undispatched === true ? 'undispatched' : row?.ingress_pending === true ? 'pending' : '';
     if (row?.role !== 'user' || row.ingress_accepted !== true || !cmid) return false;
     const bubble = [...root.querySelectorAll('.chat-bubble.user[data-client-message-id]')]
-        .find((node) => node.dataset.clientMessageId === cmid);
-    if (!bubble || bubble.querySelector('[data-ingress-saved]')) return false;
-    const note = Object.assign(document.createElement('div'), { className: 'msg-pending', textContent: 'Input saved' });
-    note.dataset.ingressSaved = '';
+        .find((node) => node.dataset.clientMessageId === cmid), prior = bubble?.querySelector('[data-ingress-saved]');
+    if (!bubble || (prior && (!['undispatched', 'pending'].includes(prior.dataset.ingressSaved) || prior.dataset.ingressSaved === state))) return false;  // `Input saved` and a kept send's delivery doubt are final
+    const note = Object.assign(document.createElement('div'), { className: 'msg-pending', textContent: state === 'undispatched' ? tr('chat.saved_undispatched', 'Saved, not delivered.') : 'Input saved' });
+    note.dataset.ingressSaved = state;
+    for (const doubt of [prior, bubble.querySelector('[data-ingress-unconfirmed]')]) doubt?.remove();  // the saved row settles a "Send again" doubt
     bubble.insertBefore(note, bubble.querySelector('.msg-time'));
     return true;
 }

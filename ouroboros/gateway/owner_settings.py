@@ -1,8 +1,8 @@
 """The owner-scoped settings WRITE seam — one lock, one commit boundary.
 
 Every owner endpoint that persists SETTINGS goes through here: the generic
-``POST /api/settings``, the FOUR single-decision owner endpoints (runtime mode,
-auto-grant, context mode, safety mode), and the atomic
+``POST /api/settings``, the FIVE single-decision owner endpoints (runtime mode,
+auto-grant, context mode, safety mode, desktop keep-running), and the atomic
 ``POST /api/onboarding/complete``. Membership is defined by calling
 ``_owner_update_settings`` — directly with a transform, or through
 ``_owner_write_settings`` with a whole document — not by wearing the decorator:
@@ -183,7 +183,8 @@ def owner_write_guard(endpoint: Callable) -> Callable:
     return _guarded
 
 
-def _owner_audit(request: Request, action: str, payload: Dict[str, Any]) -> None:
+def owner_audit(request: Request, action: str, payload: Dict[str, Any]) -> None:
+    """Record an owner action, including OS controls outside settings.json."""
     try:
         drive_root = request_drive_root(request)
     except Exception:
@@ -206,6 +207,9 @@ def _owner_audit(request: Request, action: str, payload: Dict[str, Any]) -> None
         )
     except Exception:
         log.debug("Failed to write owner API audit event", exc_info=True)
+
+
+_owner_audit = owner_audit  # Existing settings writers retain their import surface.
 
 
 def settings_document_digest() -> str:
@@ -380,6 +384,7 @@ __all__ = [
     "settings_document_mutation",
     "_CONTEXT_MODE_KEYS",
     "_owner_audit",
+    "owner_audit",
     "_owner_read_settings_raw",
     "_owner_update_settings",
     "_owner_write_settings",

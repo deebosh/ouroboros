@@ -14,6 +14,9 @@ def pending_invocations(
 
     from ouroboros import delegate_custody as c
 
+    from ouroboros.delegate_custody_current import active, pending
+    if rows is None and active(drive_root):
+        return pending(drive_root)
     found: Dict[str, Dict[str, Any]] = {}
     state: Dict[str, str] = {}
     source = rows if rows is not None else c.custody_rows(drive_root)
@@ -50,6 +53,8 @@ def pending_invocations(
                 "baseline_sha": str(row.get("baseline_sha") or ""),
                 "target_root": str(row.get("target_root") or ""),
                 "authority_source": str(row.get("authority_source") or ""),
+                # A pending continuation names the run whose snapshot it takes over.
+                **{key: str(row.get(key) or "") for key in ("continuation_of", "capture_id", "snapshot_task_id")},
                 # Copies: the source rows may be the shared, read-only custody memo.
                 "resource_ref": copy.deepcopy(row.get("resource_ref")) if isinstance(row.get("resource_ref"), dict) else {},
                 "selected_subagent_id": str(row.get("selected_subagent_id") or ""),

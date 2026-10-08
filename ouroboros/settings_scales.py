@@ -39,6 +39,20 @@ def effort_one_step_down(value: str) -> str:
     return EFFORT_SCALE[idx - 1] if idx > 0 else ("none" if idx == 0 else "medium")
 
 
+def requested_effort(value: Any) -> str:
+    """A caller's explicit starting effort for a new root task, as its EFFORT_SCALE tier.
+
+    The field is optional and its caller decides whether it was supplied; a value that
+    WAS supplied must name a tier — blank, unknown or non-string raises ``ValueError``
+    before the caller's first effect, never a silent default. It is a request: the
+    route may adapt it, and what was applied is recorded apart from it.
+    """
+    tier = value.strip().lower() if isinstance(value, str) else ""
+    if tier not in EFFORT_SCALE:
+        raise ValueError(f"reasoning_effort must be one of {', '.join(EFFORT_SCALE)}; got {value!r}")
+    return tier
+
+
 def resolve_effort(task_type: str) -> str:
     """Return the configured reasoning effort for the given task type."""
     t = (task_type or "").lower().strip()
@@ -120,6 +134,9 @@ _SAFETY_MODE_RANK = {"full": 2, "light": 1, "off": 0}
 # Effect vocabulary shared by the owner gateway and task-local runtime readers.
 IMMEDIATE_SETTINGS = frozenset({
     "TOTAL_BUDGET",
+    # The interface language is read live by the gateway (every /api/ui/i18n read) and by
+    # the Telegram skill; a running task's runtime block keeps the tag it started with.
+    "OUROBOROS_UI_LANGUAGE",
     # The OUTER per-call tool cap reads settings.json BEFORE env on every tool
     # call in every process (loop_tool_execution.py), so a saved change bites
     # the currently running task's next tool call. The inner shell subprocess
