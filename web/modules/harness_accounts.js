@@ -384,9 +384,21 @@ function facetGapNames(reads) {
 }
 
 export function daemonStatusLine(payload, { checking = false, reads = null } = {}) {
-    const base = daemonBaseStatusLine(payload, { checking, reads });
+    return withEngineFacts(daemonBaseStatusLine(payload, { checking, reads }), payload);
+}
+
+// The engine's last stop and measured heap ride on whichever line the banner
+// finally shows: a refused facet read must not hide them (it is exactly when
+// the daemon misbehaves that they matter).
+function withEngineFacts(line, payload) {
+    const facts = engineFactsPhrase(payload);
+    if (!line || !facts || line.text.includes(facts)) return line;
+    return { ...line, text: `${line.text} · ${facts}` };
+}
+
+function engineFactsPhrase(payload) {
     const daemon = payload?.daemon || {};
-    if (daemon.ownership_problem) return base;
+    if (daemon.ownership_problem) return '';
     const facts = [];
     const exit = daemon.last_exit;
     if (exit) {
@@ -405,7 +417,7 @@ export function daemonStatusLine(payload, { checking = false, reads = null } = {
             facts.push(`Heap limit ${gib(memory.heapLimitBytes)} GiB; use unknown`);
         }
     }
-    return facts.length ? { ...base, text: `${base.text} · ${facts.join(' · ')}` } : base;
+    return facts.join(' · ');
 }
 
 function daemonBaseStatusLine(payload, { checking = false, reads = null } = {}) {
@@ -855,8 +867,8 @@ export function serviceBannerLine(store, { wakeError = '', wakeBusy = false } = 
     // directly printed "could not be read" and dropped it.
     const states = new Set(bad.map((facet) => reads[facet]));
     if (bad.length === 3 && states.size === 1) {
-        return faultOutranksReassurance(service,
-            store.unavailableNote(bad[0], { subject: 'agents, accounts and limits' }));
+        return withEngineFacts(faultOutranksReassurance(service,
+            store.unavailableNote(bad[0], { subject: 'agents, accounts and limits' })), store.snapshot);
     }
     // A PARTIAL gap: name EVERY facet that could not be read — one sentence per
     // distinct way they failed — and let the closing reassurance cover only the
@@ -886,7 +898,8 @@ export function serviceBannerLine(store, { wakeError = '', wakeBusy = false } = 
     // backend stamps `reads` per facet on every answer, so a mixed verdict is
     // an ordinary state — and a muted "some facets were never asked · the rest
     // read normally" must not swallow a runtime that needs repair.
-    return faultOutranksReassurance(service, { tone, text: `${sentences.join(' ')}${tail}` });
+    return withEngineFacts(faultOutranksReassurance(service,
+        { tone, text: `${sentences.join(' ')}${tail}` }), store.snapshot);
 }
 
 export async function removeAccount(harness, profileId, { fetchImpl = apiFetch } = {}) {

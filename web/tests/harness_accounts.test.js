@@ -2138,6 +2138,35 @@ test('the family markup mounts a per-family login host under its header (3=A)', 
     assert.ok(headIdx < loginIdx && loginIdx < rowsIdx);
 });
 
+test('a refused facet read keeps the engine stop and heap facts in the service banner', () => {
+    const reads = { catalog: 'ok', accounts: 'ok', quota: 'failed' };
+    const store = {
+        reads,
+        facet: (name) => reads[name],
+        error: '',
+        snapshot: { daemon: { state: 'running', engine_version: '3.22.1', runtime: {},
+            last_exit: { classification: 'heap_exhausted', phase: 'serving', exit_signal: 6 },
+            memory: { heapUsedBytes: 3 * 2 ** 30, heapLimitBytes: 16 * 2 ** 30 } } },
+        loading: false,
+        everSettled: true,
+        unavailableNote: (facet, { subject = '' } = {}) =>
+            statusUnavailableNote(reads[facet], { error: '', facet, subject }),
+    };
+    const line = serviceBannerLine(store);
+    assert.match(line.text, /Your subscription limits could not be read/);
+    assert.match(line.text, /Last stop: heap exhausted while serving \(signal 6\)/);
+    assert.match(line.text, /headroom 13\.0 GiB/);
+    // A healthy read shows the facts once, never twice.
+    reads.quota = 'ok';
+    const healthy = serviceBannerLine(store).text;
+    assert.equal(healthy.split('Last stop:').length, 2);
+    // Without recorded facts the banner is unchanged.
+    reads.quota = 'failed';
+    store.snapshot.daemon.last_exit = null;
+    store.snapshot.daemon.memory = null;
+    assert.doesNotMatch(serviceBannerLine(store).text, /Last stop|Heap/);
+});
+
 test('daemon status appends observed stop and measured heap without changing readiness', () => {
     const payload = { daemon: { state: 'running', engine_version: '3.22.1',
         last_exit: { classification: 'heap_exhausted', phase: 'serving', exit_signal: 6 },
