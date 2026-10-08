@@ -896,7 +896,9 @@ def isolated_checkout(ctx: Any, spec: ReviewSubjectSpec, *,
     Removed on exit unless ``retain()`` names open custody then (a reviewer seat
     whose answer is still owed, an open preflight run): a checkout a paid worker
     may still read is kept for reconciliation, and the caller records the fact.
-    An unreadable custody answer is disclosed as unknown and keeps the checkout."""
+    An unreadable custody answer is disclosed as unknown and keeps the checkout, and
+    so does a wave that fails while reading a checkout an earlier wave retained:
+    its custody was never established, so the earlier owner's claim stands."""
     from ouroboros.tool_access_paths import canonical_data_root
 
     spec = _normalized_spec(ctx, spec)
@@ -905,13 +907,21 @@ def isolated_checkout(ctx: Any, spec: ReviewSubjectSpec, *,
     checkout_root = canonical_data_root(ctx) / "state" / CHECKOUT_SUBDIR / name
     checkout = checkout_root / "repo"
     frozen = dataclasses.replace(identity, checkout=str(checkout))
+    reused = failed = False
     try:
-        if not _retained_checkout_at(checkout, frozen.tree_sha):
+        reused = _retained_checkout_at(checkout, frozen.tree_sha)
+        if not reused:
             _materialize_checkout(spec.root, checkout_root, checkout, frozen)
         yield frozen
+    except BaseException:
+        failed = True
+        raise
     finally:
-        if checkout_retention(retain):
-            log.warning("review checkout %s retained: custody unresolved", checkout)
+        held = checkout_retention(retain)
+        if not held and failed and reused:
+            held = {"custody_undetermined": "the wave failed before it settled its own custody"}
+        if held:
+            log.warning("review checkout %s retained: custody unresolved (%s)", checkout, ", ".join(sorted(held)))
         else:
             _git_bytes(spec.root, ["worktree", "remove", "--force", str(checkout)])
             shutil.rmtree(checkout_root, ignore_errors=True)
@@ -955,12 +965,15 @@ def _materialize_checkout(root: str, checkout_root: pathlib.Path, checkout: path
                                     f"subject tree {frozen.tree_sha[:12]}")
 
 
-def checkout_token(retry_key: str) -> str:
-    """The isolated checkout's name for one custody retry key (identity c,
-    ``review_retry_key``): the same round of the same subject materializes at the
-    same path, so a rerun's ``session_root`` — part of the custody attempt key and of
-    every operation's recovery binding — is the path of the operation it rejoins."""
-    return hashlib.sha256(str(retry_key or "").encode("utf-8")).hexdigest()[:16]
+def checkout_token(retry_key: str, *, task_id: str = "") -> str:
+    """The isolated checkout's name for one task's custody of one round (identity c,
+    ``review_retry_key``, and the task that keys attempt rows): the same round of the
+    same subject on the same task materializes at the same path, so a rerun's
+    ``session_root`` — part of the custody attempt key and of every operation's
+    recovery binding — is the path of the operation it rejoins. Another task's wave of
+    the same round has its own path, so its cleanup never removes this one."""
+    key = f"{task_id}\x00{retry_key or ''}" if task_id else str(retry_key or "")
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
 def checkout_retention(retain: Optional[Callable[[], Mapping[str, Any]]]) -> Dict[str, Any]:

@@ -10,7 +10,7 @@ Rules by change class: tool registration, skill payloads, the live E2E stand, li
 - A tool that WRITES the repo working tree needs the GUARD surfaces too, not only the visibility ones: add it to `_ROOT_ARG_REPO_WRITE_TOOLS` (the single set every repo-write fence keys on — the acting-no-workspace fence, the protected-write gate and the acting root-enum narrowing; ARCHITECTURE §6 "Tool capability and execution") and canonicalize its target paths — `_PATH_NORMALIZED_TOOLS` for a top-level `path`, `canonical_repo_relative_path` + `_payload_write_paths` for payload-borne paths. Visibility checks can all be green while these are missing, so tests must exercise the real guard chain, not only a mocked resolver.
 - New memory/data files: decide in the same change whether they appear in LLM context (`context.py`).
 
-Enforcement: CHECKLISTS items 11(g) and 14 (`tool_registration`) in commit review; `tests/test_tool_api_v2_public_surface.py` pins the public schema/registry contract and `tests/test_local_routing_and_safety.py` the safety-policy fallthrough; CHECKLISTS item 11 backstops the memory/context decision.
+Enforcement: CHECKLISTS items 11(g) and 14 (`tool_registration`) in commit review; `tests/test_tool_api_v2_public_surface.py` pins the public schema/registry contract and `tests/test_local_routing_and_safety.py` the safety-policy fallthrough; CHECKLISTS item 25 (`context_building`) backstops the memory/context decision.
 
 ### Skill repair and payload lanes
 

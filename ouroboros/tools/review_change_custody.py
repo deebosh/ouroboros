@@ -9,9 +9,10 @@ open operation of the SAME logical round on the SAME task (identity c,
 ``review_subject.review_retry_key``) is collected through the commit gate's
 reconcile-only path (``review_custody``: settled seats replay, the exact pending
 delegated invocation is rejoined, nothing new is sent). A rejoin reads the retained
-checkout at the round's deterministic path (``review_subject.checkout_token``), so
-its custody attempt key and every operation's recovery binding are those of the
-operation it rejoins, in this process or after a restart.
+checkout at the deterministic path of this task's round
+(``review_subject.checkout_token``), so its custody attempt key and every
+operation's recovery binding are those of the operation it rejoins, in this process
+or after a restart; another task's wave of the round has its own path.
 """
 
 from __future__ import annotations

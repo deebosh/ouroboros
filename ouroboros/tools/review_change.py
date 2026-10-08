@@ -744,26 +744,31 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
                              body_fact=str(fact.body), body_how=str(fact.how), layer=layer)
     # The gate's own subject (the body's staged index against HEAD) is read on its live
     # root exactly as the gate reads it; every other subject is materialized in an
-    # isolated checkout, where every delivery reads the frozen tree, at the path of its
-    # ROUND (identity c): a rerun of the round reads the checkout its open operation
-    # still may, and open custody after the wave keeps it (review_subject.isolated_checkout).
+    # isolated checkout, where every delivery reads the frozen tree, at the path of this
+    # TASK's custody of its ROUND (identity c plus the task that keys attempt rows): a
+    # rerun of the round reads the checkout its open operation still may, another
+    # task's wave of the round never removes it, and open custody after the wave keeps
+    # it (review_subject.isolated_checkout).
     retention: Dict[str, Any] = {}
+    task_id = str(getattr(ctx, "task_id", "") or "")
     frozen_subject = (contextlib.nullcontext(freeze_subject(ctx, spec)) if is_gate_subject(spec)
                       else isolated_checkout(ctx, spec, retain=lambda: retention, token=lambda identity: checkout_token(
-                          review_retry_key(identity, round_sha=_round_sha(request, identity)))))
+                          review_retry_key(identity, round_sha=_round_sha(request, identity)), task_id=task_id)))
     with frozen_subject as frozen, _panel_in_force(panel):
         if not str(getattr(frozen, "diff_text", "") or "").strip():
             raise ReviewChangeArgumentError(f"subject={request.subject} of {root} has no change to review")
         wave = _prepare_wave(ctx, request, frozen, panel, root=root, fact=fact, layer=layer)
-        prior = reuse_or_none(ledger_root(ctx), wave.reuse_key, questions=request.author_questions)
-        if prior is not None:
-            return review_result(prior["record"], reused=True)
-        # An open operation of this round is collected, not paid for again: the cycle
-        # ceiling meets only a NEW paid wave, so a reached ceiling never strands an answer.
+        # This task's open operation of the round is collected first, not paid for again
+        # and not answered by another task's settled record of the same round: its paid
+        # seats settle into its own record. Only then may a settled record be reused, and
+        # the cycle ceiling meets only a NEW paid wave, so it never strands an answer.
         rejoin = pending_round_attempt(ctx, root=wave.root, retry_key=wave.retry_key)
         if rejoin is not None:
             wave = dataclasses.replace(wave, rejoin=rejoin, record_id=str(rejoin.review_record_id or wave.record_id))
         else:
+            prior = reuse_or_none(ledger_root(ctx), wave.reuse_key, questions=request.author_questions)
+            if prior is not None:
+                return review_result(prior["record"], reused=True)
             exhausted = _cycles_exhausted(ctx, wave)
             if exhausted is not None:
                 return _refuse_exhausted(ctx, wave, exhausted)

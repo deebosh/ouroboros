@@ -416,6 +416,102 @@ def test_a_rerun_after_a_restart_rejoins_the_pending_round_from_durable_state(tm
     assert not checkout.exists()
 
 
+def _pending_once_seat(seat_id: str, token: str):
+    """The FIRST start of ``seat_id`` goes in flight with an unknown outcome (task A's
+    wave); every later new start answers at once (another task's wave of the same
+    round), and the exact rejoin of ``token`` answers."""
+    starts: list[dict] = []
+
+    def answer(request, slot, actor, *, retry_state, pending_invocation_checkpoint):
+        if slot.slot_id != seat_id or retry_state.get("pending_invocation_id") == token or starts:
+            return actor
+        starts.append({"session_root": str(request.session_root or ""), "retry_state": dict(retry_state)})
+        pending_invocation_checkpoint(token)
+        actor.status, actor.error, actor.raw_text = "error", "delegated start outcome unknown", ""
+        actor.usage = {"pending_invocation_id": token}
+        return actor
+
+    return answer, starts
+
+
+def test_another_task_on_the_same_round_never_removes_a_pending_tasks_checkout(tmp_path, monkeypatch):
+    """Pending custody is per task, and so is the checkout. Task A's wave settles
+    ``pending`` and keeps its checkout; task B asks the identical round, pays its own
+    wave in ITS own checkout, settles and removes only that one. A's checkout stays
+    for A's reviewer, and A's rerun collects its own operation there instead of
+    taking B's settled record of the same round as a reuse."""
+    ctx, project = _foreign_project(tmp_path, monkeypatch)
+    (project / "app.py").write_text("VALUE = 2  # staged\n", encoding="utf-8")
+    shared.git(project, "add", "app.py")
+    sends: list[dict] = []
+    answer, starts = _pending_once_seat("t2", "invocation-t2-task-a")
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", shared.golden_physical_seam(sends, answer=answer))
+    ask = dict(subject="index", goal="Bump", scope="app.py")
+
+    first = run_review_change(ctx, **ask)
+    assert first["state"] == "pending", first
+    checkout_a = Path(first["subject"]["checkout"])
+    assert checkout_a.is_dir() and len(sends) == 3
+
+    task_b = ToolContext(repo_dir=ctx.repo_dir, system_repo_dir=ctx.system_repo_dir, drive_root=ctx.drive_root,
+                         workspace_root=project, workspace_mode="external", task_id="task-other")
+    other = run_review_change(task_b, **ask)
+    assert (other["state"], other["aggregate"], other["reused"]) == ("settled", "PASS", False), other
+    checkout_b = Path(other["subject"]["checkout"])
+    assert checkout_b != checkout_a and not checkout_b.exists()  # B's own path, removed when B settled
+    assert checkout_a.is_dir()  # A's reviewer still reads here
+    roots_b = {send["session_root"] for send in sends[3:]} - {""}  # packet seats carry no root
+    assert len(sends) == 6 and roots_b == {str(checkout_b)}
+
+    rerun = run_review_change(ctx, **ask)
+    assert (rerun["state"], rerun["aggregate"], rerun["reused"]) == ("settled", "PASS", False), rerun
+    assert rerun["record_id"] == first["record_id"] != other["record_id"]
+    assert len(sends) == 7 and sends[6]["slot_id"] == "t2" and sends[6]["reconcile_only"] is True
+    assert sends[6]["session_root"] == str(checkout_a) and len(starts) == 1
+    assert sends[6]["retry_state"] == {"pending_invocation_id": "invocation-t2-task-a"}
+    assert not checkout_a.exists()
+
+
+def test_a_failed_custody_read_keeps_the_retained_checkout_and_the_next_rerun_rejoins(tmp_path, monkeypatch):
+    """The rerun of a pending round cannot read its custody (the review state lock
+    times out): it fails before any dispatch, and the checkout the earlier wave
+    retained stays, because its reviewer still reads it. The next rerun rejoins the
+    exact invocation there. A FIRST wave failing the same way leaves no checkout."""
+    ctx, project = _foreign_project(tmp_path, monkeypatch)
+    (project / "app.py").write_text("VALUE = 2  # staged\n", encoding="utf-8")
+    shared.git(project, "add", "app.py")
+    sends: list[dict] = []
+    answer, starts = _pending_then_answering_seat("t2", "invocation-t2-unreadable")
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", shared.golden_physical_seam(sends, answer=answer))
+    ask = dict(subject="index", goal="Bump", scope="app.py")
+
+    def unreadable(*_args, **_kwargs):
+        raise TimeoutError("review state lock timed out")
+
+    first = run_review_change(ctx, **ask)
+    assert first["state"] == "pending", first
+    checkout = Path(first["subject"]["checkout"])
+    with monkeypatch.context() as failing:
+        failing.setattr(review_change, "pending_round_attempt", unreadable)
+        with pytest.raises(TimeoutError):
+            run_review_change(ctx, **ask)
+    assert checkout.is_dir() and len(sends) == 3  # nothing dispatched; the reviewer's checkout kept
+
+    rerun = run_review_change(ctx, **ask)
+    assert (rerun["state"], rerun["aggregate"]) == ("settled", "PASS"), rerun
+    assert rerun["record_id"] == first["record_id"] and len(sends) == 4 and len(starts) == 1
+    assert sends[3]["session_root"] == str(checkout)
+    assert sends[3]["retry_state"] == {"pending_invocation_id": "invocation-t2-unreadable"}
+    assert not checkout.exists()
+
+    checkouts = Path(ctx.drive_root) / "state" / CHECKOUT_SUBDIR
+    with monkeypatch.context() as failing:
+        failing.setattr(review_change, "pending_round_attempt", unreadable)
+        with pytest.raises(TimeoutError):
+            run_review_change(ctx, **{**ask, "goal": "Another brief"})
+    assert len(sends) == 4 and not [path for path in checkouts.iterdir()]  # a fresh checkout is not kept
+
+
 SERVING_RULE = "SERVING-CONSTITUTION-MARKER: the rule that is running."
 CANDIDATE_RULE = "CANDIDATE-CONSTITUTION-MARKER: the candidate rewrote its own rule."
 
