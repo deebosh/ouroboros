@@ -888,7 +888,7 @@ def isolated_checkout(ctx: Any, spec: ReviewSubjectSpec, *,
     equal the frozen ``tree_sha`` or the subject is refused.
 
     ``token(frozen)`` names the checkout from the frozen subject's identity (the
-    operation's ``checkout_token``: one path per round), else the name is random.
+    operation's ``checkout_token``: one path per task and round), else the name is random.
     A checkout already at that path with the frozen tree — one an earlier wave's
     open custody retained — is read as it is, never rebuilt; any other content
     there is replaced.
