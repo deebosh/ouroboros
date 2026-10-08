@@ -2137,3 +2137,23 @@ test('the family markup mounts a per-family login host under its header (3=A)', 
     // family header, above the account rows — not after every family.
     assert.ok(headIdx < loginIdx && loginIdx < rowsIdx);
 });
+
+test('daemon status appends observed stop and measured heap without changing readiness', () => {
+    const payload = { daemon: { state: 'running', engine_version: '3.22.1',
+        last_exit: { classification: 'heap_exhausted', phase: 'serving', exit_signal: 6 },
+        memory: { heapUsedBytes: 3 * 2 ** 30, heapLimitBytes: 16 * 2 ** 30 },
+    } };
+    const line = daemonStatusLine(payload);
+    assert.equal(line.tone, 'ok');
+    assert.match(line.text, /Last stop: heap exhausted while serving \(signal 6\)/);
+    assert.match(line.text, /Heap 3\.0 of 16\.0 GiB; headroom 13\.0 GiB/);
+    payload.daemon.memory.heapUsedBytes = null;
+    assert.match(daemonStatusLine(payload).text, /Heap limit 16\.0 GiB; use unknown/);
+    assert.doesNotMatch(daemonStatusLine(payload).text, /headroom|Heap 0\.0/);
+    payload.daemon.memory = null;
+    payload.daemon.last_exit = null;
+    assert.equal(daemonStatusLine(payload).text, 'Claudexor ready (engine 3.22.1) · home ');
+    payload.daemon.state = 'stale';
+    payload.daemon.last_exit = { classification: 'unclassified', phase: 'startup', exit_code: 1 };
+    assert.match(daemonStatusLine(payload).text, /Last stop: unclassified while startup \(exit code 1\)/);
+});

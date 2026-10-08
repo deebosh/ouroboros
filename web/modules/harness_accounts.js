@@ -384,6 +384,31 @@ function facetGapNames(reads) {
 }
 
 export function daemonStatusLine(payload, { checking = false, reads = null } = {}) {
+    const base = daemonBaseStatusLine(payload, { checking, reads });
+    const daemon = payload?.daemon || {};
+    if (daemon.ownership_problem) return base;
+    const facts = [];
+    const exit = daemon.last_exit;
+    if (exit) {
+        const cause = String(exit.classification || 'unclassified').replaceAll('_', ' ');
+        const ending = exit.exit_signal != null ? ` (signal ${exit.exit_signal})`
+            : exit.exit_code != null ? ` (exit code ${exit.exit_code})` : '';
+        facts.push(`Last stop: ${cause}${exit.phase ? ` while ${exit.phase}` : ''}${ending}`);
+    }
+    const memory = daemon.memory;
+    const measured = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+    const gib = (value) => (value / 2 ** 30).toFixed(1);
+    if (memory && measured(memory.heapLimitBytes)) {
+        if (measured(memory.heapUsedBytes)) {
+            facts.push(`Heap ${gib(memory.heapUsedBytes)} of ${gib(memory.heapLimitBytes)} GiB; headroom ${gib(memory.heapLimitBytes - memory.heapUsedBytes)} GiB`);
+        } else {
+            facts.push(`Heap limit ${gib(memory.heapLimitBytes)} GiB; use unknown`);
+        }
+    }
+    return facts.length ? { ...base, text: `${base.text} · ${facts.join(' · ')}` } : base;
+}
+
+function daemonBaseStatusLine(payload, { checking = false, reads = null } = {}) {
     const daemon = payload?.daemon || {};
     const runtime = daemon.runtime || {};
     const runtimeState = String(runtime.state || '');
@@ -456,18 +481,9 @@ export function daemonStatusLine(payload, { checking = false, reads = null } = {
         return { tone: 'muted', explainsUnread: true, text: 'No accounts connected yet. Connect installs Claudexor and starts Ouroboros’s own agent daemon automatically.' };
     }
     if (status === 'stale') {
-        // NOT a warning: the daemon is LAZY by design (the status read never
-        // spawns it), so "home exists, nothing answering" is the ordinary idle
-        // state, not a fault. Lead with what is true and what happens next; a
-        // genuine RUNTIME fault renders through the `error` branch above.
-        // Disclosed residual (both review lenses, 2026-08-08): `stale` is also
-        // what a CRASHED daemon lands in — the state machine cannot tell the two
-        // apart (the detail lives only in last_error, which the warn-toned line
-        // never showed either), so the only thing a crash loses here is the
-        // alarming tone. The sentence stays true for it: ensure_running restarts
-        // a dead daemon on the next login or delegated run, and a crash mid-run
-        // surfaces through that run's own typed failure, not this panel. Hence
-        // no "yet" — that word would claim it had never started.
+        // An idle owned home and an observed crash share this liveness state.
+        // daemonStatusLine appends any saved exit fact without changing tone;
+        // the next explicit wake or delegated run still owns restart policy.
         const version = runtime.version ? ` ${runtime.version}` : '';
         return { tone: 'muted', explainsUnread: true, text: `Claudexor${version} is installed; the agent daemon is not running. It starts automatically on the next login or delegated run.` };
     }
