@@ -676,15 +676,18 @@ def test_reconciliation_recovers_a_pending_invocation_whose_worker_died(tmp_path
         def close(self): pass
 
     class _Unreachable:
+        def __init__(self, status): self.status = status
         def handshake(self, **_kw): return {}
         def start_run(self, request, *, idempotency_key=""):
-            raise ClaudexorUnavailable("daemon_busy", "RPC timeout", status_code=503)
+            code = "daemon_busy" if self.status else "daemon_unreachable"
+            raise ClaudexorUnavailable(code, "RPC timeout", status_code=self.status)
         def close(self): pass
 
-    down = dc.reconcile_orphaned_runs(tmp_path, set(), gateway_factory=lambda: _Unreachable())
-    assert [o["action"] for o in down] == ["recovery_unreachable"]
-    assert [r["invocation_id"] for r in dc.pending_invocations(tmp_path)] == [token2], \
-        "an unknown outcome never destroys the invocation"
+    for status in (0, 503):  # a dead socket and a busy engine are both unknown outcomes
+        down = dc.reconcile_orphaned_runs(tmp_path, set(), gateway_factory=lambda: _Unreachable(status))
+        assert [o["action"] for o in down] == ["recovery_unreachable"]
+        assert [r["invocation_id"] for r in dc.pending_invocations(tmp_path)] == [token2], \
+            "an unknown outcome never destroys the invocation"
     refusing = _Refusing()
     gone = dc.reconcile_orphaned_runs(tmp_path, set(), gateway_factory=lambda: refusing)
     assert [o["action"] for o in gone] == ["invocation_retired"]

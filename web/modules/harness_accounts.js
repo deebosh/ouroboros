@@ -405,7 +405,11 @@ function engineFactsPhrase(payload) {
         const cause = String(exit.classification || 'unclassified').replaceAll('_', ' ');
         const ending = exit.exit_signal != null ? ` (signal ${exit.exit_signal})`
             : exit.exit_code != null ? ` (exit code ${exit.exit_code})` : '';
-        facts.push(`Last stop: ${cause}${exit.phase ? ` while ${exit.phase}` : ''}${ending}`);
+        const phase = exit.phase === 'startup' ? ' during startup' : exit.phase ? ` while ${exit.phase}` : '';
+        const seen = typeof exit.observed_at === 'string' && exit.observed_at.length >= 16
+            ? `, seen ${exit.observed_at.slice(0, 16).replace('T', ' ')}${exit.observed_at.endsWith('Z') ? ' UTC' : ''}` : '';
+        const when = exit.engine_version || seen ? ` · engine ${exit.engine_version || 'unknown'}${seen}` : '';
+        facts.push(`Last stop: ${cause}${phase}${ending}${when}`);
     }
     const memory = daemon.memory;
     const measured = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0;

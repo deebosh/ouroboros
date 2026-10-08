@@ -2184,5 +2184,10 @@ test('daemon status appends observed stop and measured heap without changing rea
     assert.equal(daemonStatusLine(payload).text, 'Claudexor ready (engine 3.22.1) · home ');
     payload.daemon.state = 'stale';
     payload.daemon.last_exit = { classification: 'unclassified', phase: 'startup', exit_code: 1 };
-    assert.match(daemonStatusLine(payload).text, /Last stop: unclassified while startup \(exit code 1\)/);
+    assert.match(daemonStatusLine(payload).text, /Last stop: unclassified during startup \(exit code 1\)/);
+    // The stop names its own engine and time, so an old engine's crash is not read as the current one's.
+    payload.daemon.last_exit = { classification: 'heap_exhausted', phase: 'serving', exit_signal: 6,
+        engine_version: '3.22.0', observed_at: '2026-10-07T19:34:11Z' };
+    assert.match(daemonStatusLine(payload).text,
+        /Last stop: heap exhausted while serving \(signal 6\) · engine 3\.22\.0, seen 2026-10-07 19:34 UTC/);
 });
