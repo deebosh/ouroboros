@@ -59,6 +59,7 @@ def test_live_owner_can_continue_after_settlement_then_normal_finish_retires_onc
     settle(tmp_path, gateway, row)
     assert gateway.removed == []
     sweep(tmp_path, gateway, {'owner'})
+    assert gateway.removed == []
     facts, refusal, _ = bind_continuation(SimpleNamespace(task_id='owner'), tmp_path, 'run',
         actor={}, route=SimpleNamespace(route_id='route'),
         authority=SimpleNamespace(access='readonly'), target_root='')
@@ -100,6 +101,31 @@ def test_root_offer_and_recorded_continue_chain_keep_child_run(tmp_path):
     sweep(tmp_path, gateway, {'next'})
     assert gateway.removed == []
     result(tmp_path, 'next')
+    sweep(tmp_path, gateway, set())
+    assert gateway.removed == ['project']
+
+
+@pytest.mark.parametrize('broken', [
+    {'status': 'failed', 'reason_code': 'worker_crash_signal'},
+    {'status': 'completed', 'reason_code': 'round_limit'},
+    {'status': 'cancelled', 'cancel_origin': {'source': 'server_shutdown', 'reason': 'server_shutdown'}},
+])
+def test_technically_broken_continue_successor_keeps_its_offer(tmp_path, broken):
+    # The owner pressed Continue, and the successor itself broke before it
+    # continued the delegated run: its own card offers Continue again, so the
+    # run's project must survive until that offer closes.
+    gateway = Gateway()
+    row = seed(tmp_path, task_id='child', root_task_id='root')
+    result(tmp_path, 'child', parent_task_id='root', root_task_id='root')
+    binding = {'predecessor_task_id': 'root', 'successor_task_id': 'next'}
+    result(tmp_path, 'root', status='failed', reason_code='worker_crash_signal', continued_by={
+        'successor_task_id': 'next', 'state': 'admitted', 'binding': binding,
+        'binding_sha256': binding_sha(binding)})
+    result(tmp_path, 'next', root_task_id='next', **broken)
+    settle(tmp_path, gateway, row)
+    sweep(tmp_path, gateway, set())
+    assert gateway.removed == []
+    result(tmp_path, 'next', root_task_id='next')  # an ordinary finish closes the offer
     sweep(tmp_path, gateway, set())
     assert gateway.removed == ['project']
 

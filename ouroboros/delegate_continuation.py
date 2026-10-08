@@ -123,7 +123,12 @@ def _task_line(ctx: Any, drive: Any, state: Dict[str, Any], entry: Any) -> str:
 
 
 def still_continuable(drive: Any, entry: Any, live_task_ids=None) -> bool:
-    """Retain a registration until its owner line and root Continue offer end.
+    """Retain a registration until its owner line and every root's Continue offer end.
+
+    Each root of the recorded Continue chain (the original root and every
+    successor it admitted) can be offered Continue after a technical break, so
+    the offer is read at every settled member the walk reaches, not only at the
+    run's own root; child tasks never carry an offer.
 
     The sweep supplies its authoritative live/reserved census. Addressed result
     reads validate retry and Continue edges; missing/changed evidence keeps the
@@ -182,7 +187,7 @@ def still_continuable(drive: Any, entry: Any, live_task_ids=None) -> bool:
                         or not recorded_continuation(drive, task_id, successor)):
                     return True
                 pending.append(successor)
-            elif task_id == root and continuation_offer(current, root)['eligible']:
+            elif continuation_offer(current, task_id)['eligible']:
                 return True
         return not reads.unchanged(reads.rows)
     except Exception:
