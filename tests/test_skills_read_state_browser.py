@@ -685,9 +685,9 @@ def test_failed_review_runs_read_as_failures_with_their_recorded_reason(
         first, second = rows.all_inner_texts()
         assert first.splitlines()[0].endswith(" · clean · lifecycle failed · skills"), first
         assert first.splitlines()[1].startswith("Reason: pip install failed: eee")
-        assert first.endswith("…[truncated]")
+        assert first.splitlines()[1].endswith("…[truncated]")
         assert second.splitlines()[0].endswith(" · review verdict unavailable · lifecycle failed · skills")
-        reason = rows.first.locator(".skills-review-reason")
+        reason = rows.first.locator("div.skills-review-reason")
         assert reason.get_attribute("title").endswith("e" * 100)
         assert reason.bounding_box()["height"] < 200, "the bounded reason stays a few lines"
         _capture(page, browser_name, width, "review-run-failed")
