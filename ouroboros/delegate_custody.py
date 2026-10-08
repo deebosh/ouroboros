@@ -1037,8 +1037,11 @@ def _retire_project_locked(drive_root: Any, gateway: Any, custody: RunCustody, *
         if any(not run.settled and run.run_id != custody.run_id for run in rows):
             return
         from ouroboros.delegate_continuation import still_continuable
-        if any(still_continuable(drive_root, run, live_task_ids) for run in rows):
+        keeper = next((run for run in rows if still_continuable(drive_root, run, live_task_ids)), None)
+        if keeper is not None:
+            _CONTINUABLE_KEEPERS[(str(drive_root), custody.project_id)] = keeper
             return
+        _CONTINUABLE_KEEPERS.pop((str(drive_root), custody.project_id), None)
     except Exception:
         log.warning("Retirement deferred: replay failed for %s",
                     custody.run_id, exc_info=True)
@@ -1479,6 +1482,10 @@ def owned_project_registrations(drive_root: Any, state: Optional[Dict[str, RunCu
             if custody.project_owned and custody.project_id]
 
 
+# (drive root, project id) -> the run whose continuability deferred the last full-chain retirement read.
+_CONTINUABLE_KEEPERS: Dict[Tuple[str, str], RunCustody] = {}
+
+
 def retire_settled_registrations(drive_root: Any, gateway: Any, *, live_task_ids=None) -> None:
     """Retire projects every sharer has settled; a LIVE sharer (owned or not
     - only the creator carries the registration, but any live sibling makes
@@ -1492,8 +1499,12 @@ def retire_settled_registrations(drive_root: Any, gateway: Any, *, live_task_ids
         if not owned or any(not row.settled for row in rows):
             continue  # nothing registered here, or a live sharer defers
         from ouroboros.delegate_continuation import still_continuable
+        # The current projection drops a settled sharer that is not the owner;
+        # the last full read's keeper stands in for it until it stops keeping.
+        keeper = _CONTINUABLE_KEEPERS.get((str(drive_root), rows[0].project_id))
         if (not any(row.project_persistent for row in rows)
-                and any(still_continuable(drive_root, row, live_task_ids) for row in rows)):
+                and any(still_continuable(drive_root, row, live_task_ids)
+                        for row in rows + ([keeper] if keeper is not None else []))):
             continue  # still continuable: skip the locked full-chain re-read until it is not
         try:
             retire_project(drive_root, gateway, min(owned, key=lambda row: row.run_id), live_task_ids=live_task_ids)

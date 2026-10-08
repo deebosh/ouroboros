@@ -103,6 +103,25 @@ def test_timeout_retried_owner_releases_once_its_retry_finishes(tmp_path):
     assert gateway.removed == ['project']
 
 
+@pytest.mark.parametrize('leaf, kept', [
+    ({'status': 'failed', 'reason_code': 'worker_crash_signal'}, True),
+    ({'status': 'completed', 'reason_code': 'round_limit'}, True),
+    ({'status': 'completed'}, False),
+])
+def test_timeout_retried_owner_follows_the_card_offer_of_its_broken_retry(tmp_path, leaf, kept):
+    # Before startup recovery heals the raw row, the card already offers Continue
+    # from the retry leaf's technical end; the sweep must read the same offer.
+    gateway = Gateway()
+    row = seed(tmp_path)
+    result(tmp_path, 'owner', status='interrupted', reason_code='timeout_retry',
+           superseded_by='retry', retry_task_id='retry')
+    result(tmp_path, 'retry', root_task_id='owner', supersedes_task_id='owner',
+           original_task_id='owner', timeout_retry_from='owner', **leaf)
+    settle(tmp_path, gateway, row)
+    sweep(tmp_path, gateway, set())
+    assert gateway.removed == ([] if kept else ['project'])
+
+
 def test_root_offer_and_recorded_continue_chain_keep_child_run(tmp_path):
     gateway = Gateway()
     row = seed(tmp_path, task_id='child', root_task_id='root')
@@ -168,4 +187,54 @@ def test_review_settlement_keeps_immediate_retirement(tmp_path):
     gateway = Gateway()
     row = seed(tmp_path, source='review_substrate')
     settle(tmp_path, gateway, row)
+    assert gateway.removed == ['project']
+
+
+def _counting_full_reads(monkeypatch):
+    calls = []
+    original = custody._project_runs
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(custody, '_project_runs', counted)
+    return calls
+
+
+def test_continuable_owned_project_never_pays_the_full_chain_read(tmp_path, monkeypatch):
+    from ouroboros.delegate_custody_current import current_reads
+    gateway = Gateway()
+    row = seed(tmp_path)
+    result(tmp_path, 'owner', status='failed', reason_code='worker_crash_signal')
+    settle(tmp_path, gateway, row)
+    calls = _counting_full_reads(monkeypatch)
+    with current_reads(tmp_path):
+        sweep(tmp_path, gateway, set())
+        sweep(tmp_path, gateway, set())
+    assert gateway.removed == [] and calls == []
+
+
+def test_shared_project_kept_by_a_settled_sharer_reads_the_full_chain_once(tmp_path, monkeypatch):
+    # The production sweep reads the current projection, which drops a settled
+    # sharer that does not own the registration; the keeper it found stands in.
+    from ouroboros.delegate_custody_current import current_reads
+    gateway = Gateway()
+    owner = seed(tmp_path, task_id='a')
+    sharer = custody.RunCustody(run_id='run-b', task_id='b', route_id='route', model='model',
+                                project_id='project', project_owned=False, ledger_root=str(tmp_path))
+    assert custody.record_started(tmp_path, sharer, shape={'access': 'readonly', 'mode': 'ask'})
+    result(tmp_path, 'a')
+    result(tmp_path, 'b', status='failed', reason_code='worker_crash_signal')
+    settle(tmp_path, gateway, owner)
+    settle(tmp_path, gateway, sharer)
+    calls = _counting_full_reads(monkeypatch)
+    with current_reads(tmp_path):
+        sweep(tmp_path, gateway, set())
+        first = len(calls)
+        sweep(tmp_path, gateway, set())
+    assert gateway.removed == []
+    assert first == 1 and len(calls) == 1
+    result(tmp_path, 'b')  # an ordinary finish closes the sharer's offer
+    with current_reads(tmp_path):
+        sweep(tmp_path, gateway, set())
     assert gateway.removed == ['project']

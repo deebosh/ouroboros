@@ -140,7 +140,7 @@ def still_continuable(drive: Any, entry: Any, live_task_ids=None) -> bool:
         return True
     from types import SimpleNamespace
     from ouroboros.owner_continue import continuation_offer, recorded_continuation
-    from ouroboros.task_status import SETTLED_STATUSES
+    from ouroboros.task_status import SETTLED_STATUSES, load_effective_task_result
     from supervisor import queue
     from supervisor.queue_transitions import _live_retry_target_locked
     from supervisor.task_ownership import TaskOwnershipRead, prepare_retry_chain
@@ -193,8 +193,9 @@ def still_continuable(drive: Any, entry: Any, live_task_ids=None) -> bool:
                         or not recorded_continuation(drive, task_id, successor)):
                     return True
                 pending.append(successor)
-            elif continuation_offer(current, task_id)['eligible']:
-                return True
+            elif continuation_offer(load_effective_task_result(drive, task_id, materialize_artifacts=False)
+                                    or current, task_id)['eligible']:
+                return True  # the offer exactly as the task card reads it (a retry leaf's end)
         return not reads.unchanged(reads.rows)
     except Exception:
         log.debug('Registration continuation authority unavailable for %s', entry.run_id, exc_info=True)
