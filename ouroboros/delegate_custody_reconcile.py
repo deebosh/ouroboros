@@ -83,7 +83,7 @@ def release_task_runs(drive_root: Any, task_id: str, *,
 @timed_phase("custody_reconcile", within="release_task_runs")
 def reconcile_task_runs(drive_root: Any, task_id: str, *,
                         gateway_factory: Optional[Callable[[], Any]] = None,
-                        deliberate_terminal: str = "", live_task_ids=None) -> List[Dict[str, Any]]:
+                        deliberate_terminal: str = "") -> List[Dict[str, Any]]:
     """Settle or cancel ONE task's open runs from the DURABLE rows (kill path).
 
     The supervisor-side twin of ``release_task_runs`` for a task whose worker was
@@ -179,9 +179,14 @@ def _reconcile_each(drive_root: Any, runs: List[RunCustody],
     from ouroboros.delegate_continuation import still_continuable
 
     snapshot = list(_custody().replay(drive_root).values())
-    unsettled_projects = {row.project_id for row in snapshot
-                          if row.project_id and row.run_id and (not row.settled
-                          or still_continuable(drive_root, row, live_task_ids))}
+    # Only a still-owned registration can be retired, so only its rows are asked
+    # (each ask reads task results); one continuable row keeps the whole project.
+    owned = {row.project_id for row in snapshot if row.project_owned and row.project_id}
+    unsettled_projects: set = set()
+    for row in snapshot:
+        if (row.project_id in owned and row.project_id not in unsettled_projects and row.run_id
+                and (not row.settled or still_continuable(drive_root, row, live_task_ids))):
+            unsettled_projects.add(row.project_id)
     registrations = [row for row in snapshot
                      if row.project_owned and row.project_id
                      and row.project_id not in unsettled_projects]
